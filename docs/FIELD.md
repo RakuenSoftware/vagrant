@@ -1,0 +1,846 @@
+# Fields
+
+New Game opens zone 1, map 0: `MAP/ZONE001.ZND` and the first map it lists, `MAP/MAP001.MPD` (Duke Bardorba's manor at Graylands). The installer verifies every file on the disc against the retail digest and keeps it as the disc holds it (with each file's start sector, for the game's tables that address files by sector). As the console does, the game decodes what it needs when it needs it: `runtime/FieldContent.cs` converts the room with `installation/MapConversion.cs` into a shared-engine field document (`field_z001_m00`) and its textures, which `scenes/field/FieldView.cs` gives to the engine's `FieldScene`. Events, characters, weapons, effects, overlays and the menus' data are decoded the same way, each once a session.
+
+**Window shape.** The field fills a window of any shape (the project stretches with `expand`). The camera keeps retail's 240 lines at its projection distance (its vertical field of view, 2 atan(120 / H)), so a window wider than 4:3 sees more of the room to the sides. The sky panorama and the dome map a screen pixel by the window's height, so they widen rather than stretch. What is laid out on the 320 by 240 screen (the HUD, the system box, the simple map, the command list, the gadget bag, the item menu) is scaled by the window's height and keeps to the edge it stands by on retail's screen: the HP, MP and RISK blocks, the figure, the item menu's strip and STATUS, its panels and the descriptions to the left edge; BATTLE MODE, the part list, the simple map, the command list, the bag's panel and the menus' lists to the right; the system box and the item menu's backdrop with Ashley stay in the middle (`FieldView.Pin`). A picture drawn over the room (an overlay layer in mode 0) stands centred between black bars, as a pre-rendered screen; balloons and the dialogue layer stay on the centred screen.
+
+**Screen pixels.** Retail's 320-pixel screen does not fill a television's width, so a screen pixel shows narrower than it is high: Episode 2's footage, undone from its uploader's 16:9 stretch, shows one 2.3125 × 3/4 video pixels wide to 1.99 high, 0.87 (`FieldView.PixelAspect`). Retail draws its 3D view 9/8 wider in screen pixels to make up for it (BATTLE.PRG 0x8007ACB0 scales the roll matrix by 9/8 across), so rooms and characters show true; the field's camera draws them true already. Everything laid out on the 320 by 240 screen is drawn at that aspect: the HUD, menus, system box, balloons, damage numbers, overlay pictures, the dialogue layer (`FieldScene.DialoguePixelAspect`), the title screen and its movie, and the loading picture. Measured against the footage, the attack sphere's outline then matches retail's (1.14 wide to high there, 1.18 here) and the HUD's blocks match its widths.
+
+**Conversion and loading.** The installer converts every room on the disc (833; 100 more zone-list entries name no file) and Ashley's rig, in parallel from the files it has just verified, into the installation (`rooms/`): each room's document and its pictures, and the rig's model and definition. With the disc copy and the opening movie the install takes about half a minute here. The manifest records the build that converted them; another build ignores them and converts as the field needs (so a change to the conversion is never hidden by an older one). A room read from the installation makes again what its conversion leaves behind: the room for its local events and sound bank, and its characters' unit files and battle sets. Everything else converts as the field first needs it; character rigs are then kept in the installation's cache (`cache/<build>/`, one folder per build, older ones removed), by name, unit file and battle set, with only their skeleton rebuilt for the event sets added later. Within a session each rig is parsed once and copied for each actor (each copy with its own mesh and materials), and each installed file is verified once. Room surfaces are flat lists (x, y, z; u, v; r, g, b, a), which the field reads in one piece. Reloading a room takes about 50 ms here, a first visit about 120; a session's first load, with the runtime's own start, 300 to 400 ms. NOW LOADING shows only when the destination is not yet converted (its room not installed, or one of its characters' rigs not yet cached); the title, all installed, shows none.
+
+## Zone textures
+
+A ZND's texture section is a list of 16-bit TIM images. Each one is a VRAM rectangle (texture pages and palettes alike), uploaded verbatim at its own position. The converter replays these uploads into an emulated 1024×512 VRAM.
+
+## Room geometry
+
+The MPD header holds six (offset, length) pairs: room, cleared, script, door, enemy and treasure. The room section starts with 24 sub-section lengths (96 bytes); geometry comes first.
+
+Geometry is a group count, a 64-byte header per group, and then each group's triangle and quad counts followed by its faces:
+
+| Bytes | Triangle (32) and quad (40) fields |
+|---|---|
+| 0–5 | First corner, three signed 16-bit coordinates |
+| 6–8, 9–11 | Second and third corners, signed 8-bit offsets from the first |
+| 12–14, 16–18, 20–22 | Corner colours one to three; byte 15 is the GPU command (bit 1: semi-transparent) |
+| 19, 23 / 24, 25 / 28, 29 | Texture coordinate pairs one to three |
+| 26–27 | Palette (CLUT) |
+| 30–31 | Texture page |
+| 32–34, 35, 36–38, 39 | Quads only: fourth corner offset, u, colour, v |
+
+- A group header opens with a u16 of flags:
+  - the low byte is the camera-direction mask;
+  - 0x0800 marks corner offsets in map units (other groups store them in eighths);
+  - 0x8000 marks parts left out of the first-person view, mostly black boxes that close off the view out of the room (MAP026's wall in front of the Minotaur's grate). The renderer (BATTLE.PRG 0x8009723c) skips them while the switch at 0x800f19c8 is set (both its callers pass the switch): a room load clears it (0x8008a09c), entering the first-person view sets it and leaving it clears it (0x80074580, 0x800745ec).
+- Words 4, 8 and 12 of the header place the group: its faces are modelled about that point, which the object takes as its position (2350 groups in 374 rooms have one; platforms move it).
+- Each group becomes its own model and object, so the field can show and hide groups as the retail renderer does (see "Room groups" below).
+- Texture coordinates are rotated one corner against positions: corner 1 uses pair 2, corner 2 pair 3, corner 3 pair 1, and corner 4 its own pair. Colours are not rotated.
+- Quads use the hardware's Z order and are split as (1,2,3) and (2,4,3).
+- Retail space is x right, y down, z forward. A half turn about x gives the engine's y-up space; 128 map units are one engine unit.
+- Polygons are back-face culled.
+- Bit 0 of a polygon's command byte (byte 15) makes it double-sided: the room renderer draws a triangle that faces away rather than culling it (BATTLE.PRG 0x800973C8). It clears the bit before the GPU sees the polygon (0x8009756C, 0x800978DC), so every room polygon is modulated by its colours, never drawn raw.
+- The room is drawn through an ordering table, so of two identical opaque faces facing the same way, the earlier group's is drawn over the later's. MAP005 (the chapel) has its floor's centre twice, in groups 102 (lit warm by the torches) and 103 (lit cold): only the warm one shows. The installer sets such a later copy half a unit behind its face, so it shows only where the earlier one is hidden.
+- Bits 13 and 14 of a group's flags are how many times its polygons near the camera are subdivided (less one for each 512 of depth).
+
+**Room groups**
+- With the cut-away on (the default; `7c 01`), a group is drawn only while its mask holds the bit for the camera's octant. The octant is the camera's direction from what it looks at: 0 is −z, 2 is +x, 4 is +z and 6 is −x. So a wall between the camera and the room is not drawn. `7c 00` draws every group.
+- `62 n` sets that switch (0x800b97e4): the marked groups are hidden while n is 1. A room loads with them shown. `65 g` hides group g and `64 g` shows it again.
+- The renderer also skips a group whose flags hold 0x0100 or 0x1000.
+
+**Room animations**
+- Room sub-section 11 lists animations of three kinds by byte 6 (20, 32 and 36 bytes; BATTLE.PRG's sizes at 0x80068EE8, handlers at 0x800E85CC). Each runs from the start unless byte 5 is set. `79 0 n` starts number n (counting all of them) and `79 1 n` holds or resumes it; n from 0x40 counts sub-section 12's scripts.
+- **Scrolling faces** (kind 2, 1590 in the game; 0x80091e10): word 0 is a face's offset in the geometry. Every period (byte 7, plus one, frames) an offset (bytes 0xC, 0xD) moves by a signed step (0x10, 0x11) within a window (from bytes 8 and 9, 0xA and 0xB wide; the offset spans 0xE and 0xF of it): below it, it comes round to the far end, and past the far end back to the start. The face's texture coordinates are a base (0x14 to 0x17 for u, 0x18 to 0x1B for v) plus the offset. Each such face is its own surface, given the cycle of offsets about its stored coordinates.
+- **Image frames** (kind 1, 544; 0x80091fe8): every period a VRAM copy. The rectangle (0xC to 0x12: x and y in halfwords, w, h) is in the zone images' coordinates (the game repeats each copy 320 left and 256 down, and at half size, in copies of the textures not drawn here). With word 8 clear it is a flipbook: frame n (byte 1, counting from 1 to byte 2) is the cell n mod byte 3 across and n / byte 3 down of a sheet of such rectangles. Otherwise its right half scrolls onto its left half, byte 8 rows further each period, wrapping round. The installer plays the copies on its VRAM and renders, for every room texture whose page they touch, the touched area's frames into an image; the field draws them in turn.
+- **Scripted groups** (room sub-section 12: 367 scripts in 131 rooms, numbered from 0x40; loader near 0x800926c4, interpreter at 0x80092b04): each opens with a count of geometry groups and a running byte (2), the groups (padded to four bytes), then commands of a halfword size and a halfword operation until a size of 0; operation 11 jumps back by its size. Every group it lists runs the commands with its own state (0x80092b04 steps them in turn; MAP004's door stands both leaves ajar this way, where taking only the first left one shut over Ashley). Each moves its group (position in 16ths of a map unit, angles 4096 a turn): 0 (0x80092c68) blasts it away from a point by a reach, on each axis at a quarter of the reach less its distance there and not at all beyond it, tumbling by the low bits of its new velocity and damping by argument 4 plus one; 1 sets the velocity, its damping (in 16ths a frame), the turning and its damping; 2 does nothing; 3 hides its group, 4 shows group n and 10 hides it; 5 runs mode m for n frames (0x8000 for as long as it falls): mode 1 (0x8009306c) moves and turns, falls 16 faster a frame and below the floor bounces twice while it damps (its fall turned back and divided by its damping plus two, the rest halved) before it rests, mode 2 (0x80093364) moves and turns with both damping, and any other mode only waits; 8 places the group, 9 starts room animation n, 12 restarts script 0x40 + n, and 6 and 7 play and stop sound n (the second argument) from the room's own bank (sub-section 19, an event-bank layout of a count and offsets to AKAO programs; BATTLE.PRG 0x8009352c plays it on voice 0x200). The room bank is kept as the room holds it and its sounds play through the driver until their stop.
+- **Swinging groups** (kind 6, 720, all waiting for a script; 0x800923f8): word 0 locates a group's header; byte 7 the angle it turns (1 about y, 2 about x, else z; header words 0x14, 0x10, 0x18). Started, the angle sets off from word 0x1C at the velocity in 0x20; each frame it adds the velocity, and the velocity eight times word 0xC. Passing the target (0x18) closer than its speed, the velocity turns back, shifted down by word 0x10; at 32 or less the group rests on the target, and start and target change places, so the next start swings it back.
+
+**Platforms**
+- Room sub-section 17 lists the room's platforms, 184 bytes each (30 rooms have one or more). Byte 0 is a geometry group (0xFF none).
+- The first word: bit 8 marks a lift, bit 9 a platform switched off, bits 10 and 11 the last waypoint, bit 26 the direction, bits 27 and 28 the waypoint it travels to and bits 29 to 31 the leg in hand.
+- From byte 8 come four waypoints of 16 bytes: x, y and z in 4096ths of a map unit (y up), then the frames it waits there. From 0x48 come four legs of 16 bytes: a velocity a frame and the frames the leg takes, in the order travelled (out to the last waypoint and back). Words 0xA8 to 0xB0 are where it starts.
+- Switching off: as the room loads, and whenever `60 p s` sets bit 9 (to `(s - 1) & 1`), the bit is copied to the group's 0x0100, so a platform switched off is not drawn (BATTLE.PRG 0x8008e224, list at 0x800f1ca0).
+- Movement (BATTLE.PRG's update near 0x8008c9a8, a step a frame): a platform moves along its leg, snaps to the waypoint, waits its frames, and goes on to the next, turning back at either end. A platform without bit 8 moves whenever it is switched on; a lift moves only while someone rides it (word 4's bits 1 to 7 name the rider, 0x7f none), and dips by 8, 14, 16, 11, 7, 3, 1 and 0 units as it sets off (0x80068bec).
+- `b7 0e n` stops every platform while n is set (0x800f1d6e) and `b7 0c n` holds them for n frames (0x800f1d68).
+- The field moves each platform's group, carries Ashley while she stands on its top, and takes its top (from its group's extent) as floor under her.
+
+**Texture detail**
+- The GPU blends a semi-transparent polygon's texels only where their mask bit is set and draws the rest opaque. Half-and-half polygons carry that in alpha (masked texels at half); an additive or subtractive polygon is drawn twice, its unmasked texels opaque and its masked ones blended.
+- Past a depth (0x200 by default; `61` sets it, patching BATTLE.PRG 0x80097590 and 0x800978f8), the room renderer draws a polygon from the half-resolution copy of its texture: its texture coordinates halved and its page one row down. The game keeps those copies itself (the image-frame animations repeat each copy into them). The field's textures are mipmapped instead, so `61` changes nothing here.
+
+**Near rejection**
+- The retail room renderer drops each room polygon whose nearest corner depth, divided by four, is below the near clip (`eb`; 64 by default). Near polygons are subdivided first. The near value is patched into the renderer's code (BATTLE.PRG 0x800980F8).
+- So room geometry closer than four times the near clip is not drawn, and a camera beside a wall or prop sees past it.
+- `ec v` sets a view scale of v × 128 (4096 for 0; 0x800BDE58), which 0x8007CD14 stores at 0x1F800064 and 0x8007AF08 multiplies into the whole view matrix, translation included. That leaves every screen position as it is but scales every depth, so the near cut stands at four times the near clip over v / 32: under MAP003's `ec 128` close-up by the cart it is 64 units, and the cart's cover, some 160 units from the eye, is drawn in front of Ashley.
+- `FieldView` reproduces this with a hard per-pixel distance cut on the room materials at four times the near clip. Actors' rig materials are not cut: they keep the ordinary near plane (MAP003's Ashley crouching by the cart, some 220 units from the camera, stays whole).
+
+## Collision
+
+The room sub-section after the geometry is the collision map.
+
+**Header:** width and depth in 128-unit tiles, a base height, and the cell count per layer.
+
+**Layers:** two follow, floor then ceiling, one u16 per tile.
+- The top five bits are a height base.
+- The low eleven bits index a 16-byte block after the layers: one signed byte per 32-unit sub-cell of the tile's 4×4.
+
+**Heights**
+- A sub-cell's height is (base + byte) & 0x7F, and its world height (map base − height × 2) × 8. The byte's top bit is a flag.
+- In MAP001: cell 0x0001 gives the hall floor at −640, and 0xF800 a solid tile (−2672).
+
+**Use**
+- The converter builds the engine walkmesh, walkable wherever the floor lies below the ceiling.
+- It also writes the floor heights by sub-cell. Spawned actors and floor-snapped moves (height 0x8000) take their height from them.
+
+## Colour
+
+- Each page-and-palette pair a room samples is exported as a 256×256 image. Colour 0x0000 is transparent.
+- On half-and-half semi-transparent polygons, texels with the mask bit get half alpha and the rest stay opaque, which is exactly the hardware rule. Additive and subtractive polygons use full alpha; quarter-additive ones carry a quarter of their vertex colour.
+- The PlayStation modulates texels by vertex colour in display space, with 128 as unity and up to twice the texel's value. The document stores half the factor (colour / 256). `FieldView` makes the vertex colours sRGB and sets an albedo of 2 on every material, which restores the doubling.
+
+**Palette transforms (70)**
+- `70 m a a f r g b`: the high nibble of m picks an actor's palettes (0, actor at byte 2) or the room's (1); the low nibble is the operation. Byte f gives the fade value `(1 << f) & 0x1f` (BATTLE.PRG 0x800B9B5C; 0 from 5), and r, g, b a signed change in 5-bit units.
+- **Fades.** The executable's stepper (0x800483FC, the fade state at 0x80055D58) moves the colours to the new state in steps a frame: with a fade of 8 or more, 16 steps, one every fade / 8 frames; below 8, steps of 2, 4 or 8 (fades 4 to 7, 2 and 3, and 1), so 8, 4 or 2 frames; 0 changes them at once. Opcode 70's f = 0 to 4 thus fades over 2, 4, 8, 16 and 32 frames. Taking the value for a frame count halved opcode 70's fades and made the effects' longer ones (8 to 24) instant: the Dullahan's summoning (effect 221) lost its blue dimming.
+- The executable (0x80047280, operations through the table at 0x80041da0) rewrites each colour of the palettes but colour 0, clamped to 0..31. Operations 0, 10 and 14 add the change to the current colours; 1 halves them first; 2 and 3 take their grey, (2r + 3g + b) / 6, 3 halved; 4 and 9 add it to the original colours; 5 halves them; 6 and 7 take their grey (7 halved); 8 and 15 restore the originals; 12 inverts the current colours; 13 takes three quarters of the originals; 11 stops a fade.
+- Mode 1 covers palette sets 0, 1, 2 and 13 and light set 0; mode 0 an actor's palette set (slot + 4) and light set (slot + 1). Mode 2 changes another single colour set and is not presented.
+- `FieldView` keeps each transform as a scale, a grey weight and an offset of the original colours, fades between states, and draws textured surfaces it covers with a shader copy of their material that applies it to the texel. The light sets are not followed.
+
+## Characters
+
+`installation/CharacterConversion.cs` turns an SHP model and its SEQ animation sets into a skinned glTF rig. `RetailContent.Rig` builds it when the field first spawns the character, and `FieldScene.SetRig` attaches it to an actor.
+
+- **Enhanced characters** (`runtime/CharacterQuality.cs`, Settings › Characters, a saved preference; Original by default, which every footage comparison uses). Made at runtime from the installed rigs, nothing stored:
+  - textures are scaled up four times: doubled twice by an edge-following pixel-art scaler (a quarter takes a neighbour's colour where that neighbour and the next one round agree across the corner and the opposite pair differ; colours alike within 48 in brightness, 7 and 6 in the colour differences; transparent texels only match each other), then each texel blended with its alike neighbours (5 by 5, one pass, within 12 in brightness, so low-contrast folds such as a hood's keep their lines) and sharpened a little against that blend; drawn with mipmaps and smooth, anisotropic filtering;
+  - a head that is one shell (the one-sided faces wholly on the head bone, the bone whose part byte is 1: at least 20 edges, at most one in 40 shared by more than two faces, at most three tenths open) is divided twice; a layered head (a hood over a face, as MAP003's hooded soldier, or a helmet) is not, as lifting its outer layer pushes it through the inner one. Its faces are each new edge point lifted onto the curved-triangle edge between its corners' averaged normals; border edges stay straight, so the head meets neck and hair where it did;
+  - smooth normals (per bone, corners at one place shared) and per-pixel shading: a light from above, to the camera's left and in front, that turns with the camera (0.7, wrapped Lambert, no highlights), and an even fill (0.55). Rooms and effects are unshaded, so only characters take it; the room's light map still tints them as before. The item menu's Ashley stays unshaded.
+  The render scale (up to 200 %) and antialiasing in the shared graphics panel supersample their outlines further.
+- **Enhanced lighting** (`runtime/FieldLighting.cs`, Settings › Lighting, a saved preference; Original by default). Bright things bloom (glow over 0.9 of white, levels 2 to 5, added); effects' added sprites (fire, magic) are drawn three times brighter, which blooms and on an HDR display shows brighter than white; and each effect casts a light from its added sprites' middle, coloured by their texels and tints, its strength following how much of them there is, so firelight flickers on the characters near it (when they are drawn enhanced and take light).
+- **Heads.** A head bone's own faces (the bone whose part byte is 1) are drawn from both sides: culled one-sided, the layers at the back of some heads leave cracks that the PSX's 320 by 240 hides under a pixel but a higher resolution shows (the Duke's knight, model 01, MAP001: the wall through the back of his hair, closed only by faces 214 to 216 together). A layered head (a tenth or more of its edges shared by more than two faces: the hooded soldier of zone 3, 17 of 88) keeps its faces one-sided, as both sides of a hood and its lining would cover each other. A dark backing behind every one-sided face was tried and dropped: it showed as dark shapes behind thin pieces with nothing close behind them (an ear, a hair spike).
+- **Near the camera** (`EventActor.ProjectAsRetail`). The character renderer (BATTLE.PRG around 0x800B3B30) projects every corner with the GTE (RTPT) and draws a face whose normal clip is positive, at its average depth. The GTE divides the projection distance by a corner's depth only down to half of it (the quotient saturates at 2), so a corner nearer than H / 2 after the view's scale (`ec` over 4096), or behind the eye (its depth held at 0), is placed as if it stood at H / 2, and its screen place is held to -1024..1023; the GPU then drops a face over 1023 pixels across or 511 down. The model is not drawn when every corner is behind the eye (0x800B3A68 returns its corners' depths ORed, 0 then). When a bone of the posed rig stands within the limit plus 256 units, each corner goes through the current pose on the CPU, and if any is nearer than the limit a stand-in mesh with each corner at retail's screen place, at its own depth, is drawn instead (its faces culled by their materials on that winding, as the normal clip does). This is MAP008's close-up of Ashley (H 300 under `ec 77`, the limit at 62 units, her body 37 from the eye): retail shows her face and chest where the plain projection showed only her neck. A rig the eye stands inside (inside one of its pieces: a bone's own corners' bounds in that bone's posed frame; a box round the whole posed body took a camera merely beside the Duke's knight in MAP001 and hid him mid-shot) is not drawn at all: with the camera in MAP023's stand (Episode 1, 19:58, "An agent with no combat experience…"), nothing of it shows where its nearer faces would fall; how retail rejects it was not read. Effect sprites' corners go through the same limit (`FieldEffect.NearLimit`).
+
+- **Size.** Retail draws models at 1820/4096 (0.444) of their size: its model scale vector (BATTLE.PRG 0x800F4438, given to each actor at +0x183C) scales the actor's matrix and its root offset alike, and INITBTL.PRG sets it to 1820 as the field starts (the vector at 0x800F9808, passed to 0x8009FB64). Ashley stands about 222 map units tall. Taking it for a half made every character 12.5% too big: the Duke's knight's close-up in the opening lost his head off the top of the frame, and the item menu needed an unexplained 0.92 on her figure. Weapons are mounted in the skeleton's own space and take the size from the character holding them.
+- **Faces.** A plain face's byte 2, bit 0, marks it two-sided, as the rooms' type bit 0 does; the rest are drawn only from the front (BATTLE.PRG 0x800B3CF0 draws a face only when its screen winding, nclip, is positive). Gouraud-shaded props are drawn from both sides (where their flag sits was not read). Drawing every face from both sides blacked out MAP023's shot from inside the stand by the stairs.
+- **Shadow.** Each character with a shadow radius (its SHP header's u16 at 0x64, BATTLE.PRG's actor +0x64C) has one drawn on the floor under it every frame (0x800B4B14): a disc of a centre and two rings of eight points, 50 and 100 units out (tables at 0x800E9A68 and 0x800E9AD4), in 24 triangles, at full strength in the centre, half at the inner ring and none at the edge. Its size is the radius plus an eighth of the actor's height above the floor (at least 20), over 64. It is tipped to the floor's slope a radius either way in x and z (the gentler side; none past 0x280 of a turn), and subtracts from the screen (semi-transparency mode 2) the grey of the actor's light (r + 2g + b over 4, 128 neutral) plus 0x40, less four times the actor's byte at +0x6F2 (not read here). Ashley's radius is 48.
+- **Animation clock.** The shared field advances every rig's animation player itself on its 60 Hz presentation clock (the player's process mode is manual), so a clip plays at 30 frames a second, a SEQ frame to each tick of the 30 Hz event clock (the animation interpreter, 0x800AD714, steps one a tick); the clips' strides then match their glides. Nothing else may advance the player, or every clip runs twice as fast.
+- **Animation sets.** The rig carries the character's own sets: its base set and the battle set for its weapon. Others join it as the game loads them, the first time one of their clips is played: an event's set (`esqnnn`, OBJ/Ennn.ESQ with nnn in hex, the character's own entry or that of the model it answers to) and Ashley's battle set for another weapon category (`btn`) and her Break Arts (`artna`).
+
+**SHP model**
+- The file starts with the signature `H01`, followed by the bone count, group count and three face counts at 4–11.
+- Pointers at 0x12C, 0x130 and 0x134 (each plus 0xF8) locate the vertex groups, vertices and faces; the pointer at 0xF4 locates the effect section that precedes the texture.
+- Bones (16 bytes each, from 0x138) hold a signed length and a parent index.
+- Groups (bone, end vertex) assign vertices to bones. Vertices are three s16 coordinates plus padding, relative to their bone. Faces may span bones.
+- Most models' faces open with their type and size: 0x24 triangles (16 bytes) and 0x2C quads (20 bytes). Each holds vertex indices ×4, then u,v pairs. These are lit by the field.
+- Some props (for example 26, 3B, 8D and B1–C3) have Gouraud-shaded faces instead:
+  - each face opens with its vertex indices ×4, followed by one colour word per corner;
+  - the first colour word's top byte is the primitive code (0x34 triangle, 0x3C quad) and the second's is the size (24 or 32);
+  - texture coordinates follow the colours, except that a triangle's first pair sits between its indices and colours;
+  - a colour of 0x80 leaves the texel unchanged.
+- The texture is an 8-byte header (byte 4 the depth, then the image's width and height in bytes, halved, and the colours per palette), two palettes and the image; the first palette is the character's own. Depth 1 is an 8-bit image of 160 colours; 0x10 is a 4-bit one of 16, two texels a byte, low nibble first (26 models, the wyvern 3A among them). A model whose faces carry Gouraud colours (the dragons, the shaded props) multiplies its texture by them, doubled (0x80 leaves a texel as it is): the wyvern's grey ramp takes its cream and brown body, teal edges and red throat from its corners. glTF keeps the colours but not the material's use of them, so the field restores it as it loads a rig. Models with no colours are drawn in their vertex colours alone.
+
+**Light**
+- Characters are lit by the room's light map, room sub-section 4 (BATTLE.PRG 0x80098b38, called for each character by way of 0x8008c458). It opens with a colour word for anywhere it does not cover and two record counts; characters use the first set only. Each 32-byte record holds a bounding rectangle (min x, min z, max x, max z), three corners (x, z) and a colour for each.
+- A character takes the first record whose rectangle holds its x and z and whose triangle contains it, mixed from the corners by area. A record only counts when the GTE's NCLIP of corners 0, 2 and 1 is positive. Elsewhere the character takes the map's own colour; 0x80 is unity. A room with no light map (sub-section 4 under 12 bytes: MAP172) lights its characters at 0x80 (0x80098B38 keeps its 0x808080). Installations made before the map was kept light a character by the floor tile's baked light under it.
+
+**Animation scripts**
+- Each animation has a script (BATTLE.PRG's interpreter at 0x800AD714) at the stream its header's halfword at 4 names: a frame (255 then n for 255 + n), an operation and its operands, again, until operation 0. BATTLE.PRG's table at 0x800E9298 gives each operation's length.
+- The converter keeps four kinds of operation: 2 lands the blow, 4 and 5 play a resident sound (4: its id; 5: its id and volume), and 12 starts an effect part. Id 88 is the weapon's swing, by its category from BATTLE.PRG's bytes at 0x800E92DC (0 when it is sheathed).
+- An attack lands its blow on its animation's frame for operation 2, and plays its sounds on theirs; without a script, the blow lands halfway through.
+
+**Skeleton**
+- A bone sits at minus its parent's length along the parent's x axis.
+- Animations set each bone's local rotation to Rz·Ry·Rx, with 8192 units per turn.
+
+**SEQ animation set**
+- Header: slot count, bone count, size, and pointers (each plus 8) to the slot table; the key data begins after the slots.
+- Each animation header has a frame count, a base-animation index, two pointers, a translation pointer and one rotation pointer per bone.
+- A rotation stream is a big-endian base rotation (doubled), then velocity keys covering the animation's frames. An axis a key omits keeps its previous velocity.
+- The translation stream uses the same encoding and places the root bone above the actor's floor position. Its first value is in map units, but its keyed deltas are in half units. For example, Ashley's idle root (her pelvis) is about 318 units up; she stands about 400 units tall.
+- An animation built on a base animation (a base index of 0 or more) takes its first translation and rotations from the base. Its own streams are then keys only, from their first byte. Ashley's flinches and death are built this way.
+
+## Event scripts
+
+`installation/EventConversion.cs` translates the MPD script section into shared-engine flows when the room's event is first needed. No opcode interpreter runs in the game.
+
+**Script layout**
+- The section starts with a header of u16 offsets: total length, text table, and two further tables. Opcodes start at 0x10.
+- Opcode lengths come from a 256-byte table in the retail BATTLE.PRG at file offset 0x81430; the handler table follows at 0x81530.
+- The text table follows the opcodes (the header's text-table offset is where opcodes end): u16 offsets, counted in u16 units from the table, followed by the strings. Each `text.show` carries its decoded string, so chained EVT files bring their own text.
+
+**Text encoding**
+- Glyph codes index the dialogue font directly: 0x00–0x09 are digits, 0x0A–0x23 capitals, 0x24–0x3D small letters, and 0x8F is a space.
+- Controls: 0xE5 new page, 0xE6 the continue arrow, 0xE7 end, 0xE8 new line (13 pixels down), 0xF8 print speed, 0xF9 sound effect, 0xFA *n* a horizontal offset of *n* pixels (the word space is 6), and 0xFB a vertical offset, font table, justification or colour.
+
+**Dialogue font**
+- `installation/DialogueConversion.cs` converts the first font table of BATTLE/SYSTEM.DAT: 189 glyphs in 12×12 cells, 21 per row, at 4 bits through a grey ramp.
+- Advances come from the field engine's width table (BATTLE.PRG 0x83010): 6 pixels, or 12 for symbols.
+
+**Threads**
+- The retail script runs up to four threads. Opcode F5 forks a thread, F4 joins or kills one, and F6 ends the current thread.
+- Each thread becomes its own flow. The presentation starts it on a `thread.start` command and completes a `thread.join` once its flow has ended.
+
+**Batches and waits**
+- Within a flow, each run of opcodes that does not wait is one automatic edge. An opcode that waits ends its batch with one awaited command.
+- Awaited commands are: frame waits, text that waits for the player, actor status waits, camera waits, fade-outs and thread joins.
+- Waits that only cover loading are dropped, because installed content is always loaded.
+
+**Commands**
+- Commands keep retail units: map units with y down, 4096 angle units per turn, and frames of the 30 Hz event clock.
+- `scenes/field/FieldView.cs` presents them. `EventCamera` is the retail camera; `EventActor` handles actor motion, animation and bone attachment.
+
+**Local events and banks**
+- A room's local events, which its conditions start, are scripts in the MPD's fourth section (offset and length at bytes 24 and 28). The section opens with a u16 offset table, one entry per event, which runs up to its first event. A condition's event id with bit 15 set names entry id & 0xF (`event_zNNN_mNN_lN`); otherwise it names EVENT/nnnn.EVT.
+- Event files, local events, and a room an event changes to all start with the sound banks and event animation sets of the script that led to them. Retail keeps these in memory across a room change. For example, map017's local event loads E016.ESQ, and map022's script then plays Ashley's rise from it as `esq000`, its selected slot.
+- 68, the event room change, fills a door record (0x800B98C0) and Ashley arrives facing its quadrant (byte 6 × 1024); with its walk-in flag (byte 7 bit 1) she walks in along it. Footage (Ep. 2 13:16–13:22, map017's local event into map022): she gets up with her back to the opening camera, facing the quadrant (2048), and the next shot frames her from behind.
+
+**Coverage**
+- The output lists untranslated opcodes (none in MAP001) separately from opcodes that are understood but not presented yet.
+- `res://tests/event_contracts.tscn` translates every EVT file, every room's script and every local event (762 scripts). `--find=TEXT` names the scripts whose translation holds TEXT, and `--dump=NAME` prints one's translation.
+- The field contract can reach a scene as the story would:
+  - `--flag=N:V` (repeatable) sets story flags before the room loads;
+  - `--play=EVENT` plays an event once the player has control, then follows it into the rooms it leads to.
+
+## Ashley and the room's characters
+
+- **Ashley** is the player's actor in slot 0: model 0 (`00.SHP`) with script id 0, so scripts address her as `00 00`. No event creates her. She is in every room before its event starts.
+  - New Game puts her on tile (4, 2) facing +z; a room transition gives her arrival tile and facing.
+  - She is out of sight while a room's event runs, until the event shows her (opcode 23) or hands control back. This is an inference: MAP001 never addresses her, the story keeps her out of that scene, and its own actors are parked on her New Game tile, while MAP002 shows and hides her explicitly.
+- **Room characters.** A room places characters of its own as it loads, before its event runs.
+  - The MPD's actor list (offset and length at bytes 32 and 36, 40 bytes a record) names, for each slot, a character template in the zone.
+  - A ZND template (0x464 bytes, after the zone's unit-file list at ZND bytes 8 and 12) names its model in the low byte of the u16 at byte 2.
+  - A record gives the slot (0 means the first free one from 2 to 9), the tile, the floor level, a facing quadrant, and a stance (1 is weapon drawn).
+  - Tests can keep a character out of the room: its hidden byte, story-stage flags 1 and 2, flag 0x82, or a flag against a value. Tests on the player's hit points pass for now.
+  - Zone 1's templates are Guildenstern (model 1) and model 0x81; MAP001 places them in slots 2 and 4. MAP003 places zone 3's two Müllenkamp soldiers (models 0x85 and 0x87) on tiles (9, 16) and (10, 16), in slots 2 and 3.
+  - A template's last word indexes the zone's unit files (ZUD), listed as sector and size after the template count. A unit file is two id words, then offset and size pairs: the model (SHP), weapon (WEP), shield, an extra animation set, and the character's own set. The field takes a room character's model and base set from it; the soldiers have no base set in `OBJ`. The extra set fills slots the character's own set leaves empty (0xFF): MAP001's knight (Z001U00) has three slots, the third his standing pose after the opening's stab, which the event asks for as base animation 2.
+  - A frame's commands show on that frame: after them the characters are placed again, and a clip a command starts poses at once. Placed only before the commands, and posed only at the next step, a character moved on a camera cut stood a frame where it had been, or in the old clip's pose (the opening's knight sheathing his sword was drawn 225 units off his place on the cut), and seemed to vanish.
+- An event animation runs by one number across the actor's sets (BATTLE.PRG 0x800B822C adds the bank's offset from 0x800E9B58: 0, 220, 100, 0), which 0x800AD494 looks up by slot. An animation no set has a slot for is looked up again as 0 (0x800A0204), so an event's base animation that is missing plays base animation 0 where there is one.
+  - A template also holds the character's statistics: hit and magic points, strength, intelligence and agility, walk and run speed, reach, and the blade's and grip's equipment records (weapon model, category, strength, agility, material and range). Ashley's starting record has the same layout, in INITBTL.PRG at 0x800FAB18 (the file loads at 0x800F9800).
+- **Battle sets.** A character fights by `OBJ/<model>_BTn.SEQ`, for its weapon's category n in hex (A is bare-handed); Ashley's starting sword is category 2. With the weapon drawn, its animation numbers come from this set.
+
+## Gameplay camera
+
+When an event ends, the camera returns to the gameplay view around Ashley (`scenes/field/GameplayCamera.cs`). A room fades in on that view where she arrives, and while she plays the event camera stands with it, so an event that hands the camera back without having moved it (a room's entry script) returns at once, and one that eases from it starts from what the screen shows. Easing back from wherever the camera last stood made 9,8's entry spend five seconds gliding in from the room's far overview.
+- **View.** The look-at is 90 units above Ashley, and the eye sits at a 3D distance from it, at yaw and pitch.
+  - The pitch is −0x180. The distance is 0x600 near or 0x900 far, and Select toggles it. Yaw 0 puts the eye on the +z side.
+  - The projection is H 512, with near 64 and far 4096. The far value (`ec`, 128 a step) is no clip: it is the depth at which room polygons turn to their half-size far textures (0x80098194 patches it, over 8, into the renderer at 0x80097590 and 0x800978F8), so the field draws the whole room; MAP007's town lies 3000 to 5000 units beyond its window under `ec 16`.
+- **Bounds.** The look-at stays inside the room's camera bounds: the tile rectangle in the room header's last section, inset by 0.15625 of the distance. A room narrower than the inset is centred.
+- **Follow.** The look-at closes on its target by at most 18 units a frame on each horizontal axis. Height has a 96-unit dead zone.
+- **Turning.** L1 and R1 turn the camera by octants. The speed rises by 8 a frame to 40, then falls by 8 to a minimum of 8 within 120 units of the octant. Holding the button carries the turn on to the next octant.
+- **The return.**
+  - At an event's end (`ff`), the look-at moves in a line and the eye orbits round it, both eased in and out, at 40 units a frame of their combined travel.
+  - An event that chains on to another, or that already returned the camera with `e9`, skips this.
+  - `e9` returns the camera at once, to an octant ((byte + 4) & 7) and a near or far distance; EVT 0002 then eases it there itself.
+- **Control.** The player has Ashley once no event runs and every camera channel is idle.
+- **Actions.** An action (a spell, special attack, Break Art or item) holds the camera before it starts (BATTLE.PRG 0x800707xx, stepped by 0x80078xxx): the look-at steps by at most 40 units a frame to the point halfway between the actor and its target, and the action's record (byte 13, bits 4 and 5) picks a view: 0 keeps it, 1 closes in (the projection rises by 64 a frame from 512 to 768, and a distance over 0x600 falls by 192 a frame to it), 2 draws back (the distance rises by 192 a frame to 0x900). A close view is dropped when actor and target stand 0x1C1 units or more apart (0x80077F70). The action starts once the view is reached, and when it is over the projection and the distance step back by the same amounts (0x800793C0) and the camera follows Ashley again. Heal and the items close in; Drain Heart and the other attack spells draw back.
+
+## Player control
+
+`scenes/field/FieldPlayer.cs` moves Ashley on the retail 30 Hz clock.
+- **Input.** The stick or d-pad points her relative to the camera; up faces away from the eye.
+- **Speed.** She runs at 18 units a frame by default, and walks at 9 while R2 is held. These are her walk and run stats (10 and 20) scaled by 9/10. The per-frame units are an inference.
+- **Turning.** Her facing turns toward the input the shortest way, covering a twelfth of what remains each frame for 12 frames.
+- **Rises and drops.** A rise in front of her is taken by its size.
+  - Up to 64 units, she steps up over about 8 frames.
+  - From 65 to 192, she climbs after pushing into it for 8 frames (animation 36, or 39 above 128), over 8 frames per 64-unit level.
+  - From 193 to 256, she grabs the ledge and pulls herself up (41, then 39, 28 frames).
+  - Anything higher is a wall. On stair tiles (attribute bit 5), rises are never walls.
+  - A drop of 64 to 255 units she falls straight off; a deeper one only after pushing at the edge for 8 frames.
+- **Jumping.** Square jumps.
+  - Standing, she crouches (47) for 5 frames first; moving, she leaps at once at her walking or running speed.
+  - She leaves the ground at 30 units a frame, and gravity takes 3 from that every frame, so she rises 135 units in 9 frames.
+  - In the air the stick steers her at her ground speed (31 at most), and a ledge she meets is climbed at once.
+  - Take-off, apex, fall and landing play 44, 49, 45 and 46 standing; 48, 49, 50 and 51 walking; 53, 54, 55 and 56 running.
+- **Blocking classes.** A tile's blocking class (attribute bits 10 to 12) is solid over the whole tile at 5. At 1 to 4 it is solid over the half beyond a diagonal or an edge: where fx + fz > 128, fx > fz, fx + fz < 128 or fx < fz, by the position within the tile.
+- **Floor and walls.** The collision map is her floor.
+  - The floor is sampled at eight points on her 53-unit radius around where she is going. Ground more than 96 units above her feet is a wall, and motion into it is dropped on that axis, so she slides along it.
+  - She steps onto anything lower, and falls when the floor drops 64 units or more.
+- **Animations.** Base idle 1, walk 13, run 19, and 6 when stopping from a walk.
+- **Free-look.** Start with her weapon sheathed (the Quick Manual's free-look) looks out through her eyes, 160 units above her feet, facing where she faces. The stick turns the view, 32 units a frame across and 24 up and down, up to 0x300 either way. She is out of sight and the room's parts marked 0x8000 are left out (0x80074580); Start, Cross or Triangle look back. The eye height and turn rates are not retail's; they were not read.
+
+## Battle
+
+`scenes/field/FieldBattle.cs` runs battle in the field on the 30 Hz clock, between Ashley and the room's hostile characters (stance 2, or drawn by 3f).
+- **The weapon.** Circle draws it (battle set animation 9) and Cross sheathes it (10). While it is drawn, Ashley moves by her battle set.
+- **The attack sphere.** Circle with the weapon drawn opens it: an ellipsoid of the weapon's range plus the reach, 32 units a step (320 by 288 by 320 for Ashley), round her body. Time stops while it is open.
+  - Every limb inside it is a target, aimed at through the limb's bone (the first bone whose record byte 7 has the limb's number, from 1, in its low nibble) and named by that bone's body part (byte 6: the text table's part, less one), so a wolf's one limb is BODY: an enemy offers exactly the limbs whose points fall inside the ellipsoid about her body, 90 up from her feet, whether or not its body is in (retail footage: the Minotaur within reach offers HEAD and R.LEG, or L.ARM, BODY and L.LEG; a soldier at the edge L.ARM alone). A character without limbs is reached by its body.
+  - Each enemy's parts list on the side of the screen it stands on, relative to Ashley: the chosen enemy's, and the first other enemy on the other side (the left list mirrors the right: its bar from the screen's edge to x 72, the name ending at x 64, the line to x 94). Both lists start on the row the longer one's centring gives; only the chosen list has its part lit and the line. As the sphere opens each row slides in from its side by BATTLE.PRG's row steps (0x800EBBC8: 0, 1, 2, 4, 8, 16, 32, 56, ...): from step 7, a frame after the row above, two steps a frame (footage); the pointer's line shows once the chosen row is in.
+  - As retail's target mode shows it: the room darkens and turns bluer (its characters do not), the ellipsoid is drawn as green wireframe (four great circles and five parallels), sorted by depth with the room so nearer walls hide it, and grows open: its scale is the cosine of 64 n (4096 a turn) as n counts down a frame from 15 (0x800C05EC). The HUD's figure is put away, and the target's parts list down the right of the screen in the HUD lettering, a row every 11 lines from y 100 on a bar from x 248 to the edge, dark blue on the left to blue on the right; the chosen part's bar is bright on the left and darkens, and a grey line runs from it to x 226 and on to the part on the screen.
+  - The chosen part glows on the target's model: an added pass, cyan and pulsing over 16 frames, on the vertices whose bone belongs to the part (a bone record's byte 7, low nibble, is its limb, 1 to 6). The readout gives the part's own hit points and the chance to hit it ("R.ARM HP 49/90%").
+- **Death.** A felled character plays battle animation 70. Its script's operation 58, on the clip's last frame, marks it dead (BATTLE.PRG 0x800AD714), and the dying actor's routine (0x800AB9A4) then fades it: state 2 drains its palette's red and green by 2 of 31 a frame (0x800AC168 mode 0), leaving it blue, state 3 drains all three by 4 a frame (mode 1) to black, drawn semi-transparently, and state 4 fades its colour (and drops a crate it was carrying). The field fades it the same way over 24 frames and then hides it. An enemy whose room record sets byte 0x24 keeps its body (the field passes it as 0x80, which skips the dying routine): the opening's two soldiers lie where they fell, as the footage shows.
+- **Drops.** A felled character's loot is rolled as it falls (BATTLE.PRG's loot roll): its weapon, shield, accessory and each piece of armour (at most two) each drop when a roll of 0 to 254 is under the piece's rate (out of 255; the weapon's at record byte 0x125, the shield's 0x201, the accessory's 0x234, a limb's armour at the limb's 0x51), and the room record's first two items (ids at 0x1A and 0x1C, counts at 0x20 and 0x21) always, the third (0x1E) at its rate (0x22). Once the attack has played out (0x8006FB48), the gadget bag window (menu 12) opens on what dropped, as it does on a chest; the same item from two enemies is one stack, and a second weapon or shield waits for the next offer.
+- **Clip sounds.** A clip's script operation 10 plays sound n of the model's own bank, panned by where it stands (0x800AE4FC; n 4 is one of 4 to 7 at random): the thud of a body at frame 18 of the soldiers' death. These play in play as well as in events.
+- **Opening the sphere** flashes the whole target red, fading over 24 frames, before the chosen part's cyan takes over; Ashley glows cyan with it, her light's channels scaled toward (0.3, 1.3, 2.0) (from the footage). Retail also raises a balloon over the target as the sphere opens (a speech balloon's "…" over the opening's soldier, a shout's "!" over the Minotaur); what draws it was not found, so it is not drawn.
+  - The system box reads out the chosen part: BATTLE.PRG's text table (0x800EA868, halfword offsets in halfwords from itself) entry 20 is the readout, its string slots (ff n) the part's name (entries 1 to 15; a humanoid's limbs in record order are R.ARM, L.ARM, HEAD, BODY, LEGS), its hit points (entry 21: "HP", the target's hit points, a slash and the chance to hit with a percent sign), then "TARGET:" with the attack's kind (25 to 39; Single for a blow), its damage type (41 to 43, BLN/ EGD/ PRC/), its affinity (44 to 50, PHY for a physical blow) and the target's class (51 to 56, /Human to /Evil): "R.ARM HP 49/90%" over "TARGET: Single EGD/PHY/Human".
+  - Left and right choose the enemy, up and down its part. Circle attacks and Cross closes the sphere. With nothing in range Circle prints field message 0 ("No target in range!") under CAUTION, the empty sphere shows for as long (30 frames), and time runs on.
+- **The system box** (text box 7, type 4; 0x800CCF08 lays it out) has no frame: 24 columns from x 16, its first line's top at 242 less 13 a line for the lines it opens with, each line centred (fb 04). Under a header word (9 above the box) one line of text stands 7 lower and more start at the box's first line; menu refusals, the reclaim's lines and "No target in range!" open with four lines, from 190 (Episode 3: the reclaim's two lines 11 below CHECK, the refusal's under CAUTION, the band black from 188).
+  - A scene message (0x800CB2B8: field messages and announcements) opens with three lines, from 203. The information box (the attack readout, "No target in range!") opens with four, from 190, and its header byte (the type-4 box's second flags byte; scene messages use 3) names a word 9 lines above the box at x 10: 1 CAUTION, 2 INFORMATION, 3 CHECK. With a header the text starts 7 lines lower (retail footage).
+  - Either kind stands in a black band across the screen's width. The band starts three lines above the box, with three lines darkening into it, and covers the HUD (retail footage; the minimap and Ashley's figure are hidden under it). It prints in the upright font set, white (the glyphs' indices run from a faint edge to their core, as the font table's second ramp at VRAM (848, 223) runs from dark to white), at the fixed-width set's six-pixel advances. The field's messages print there for two seconds: BATTLE.PRG's table at 0x800EBDDC (0x800CB40C) holds "No target in range!" and the chests' and doors' (bound by magic, locked with a key or sigil, locked, unlocked with it; a sigil turns to dust), the key's name in a string slot.
+- **Characters' records** (zone templates and INITBTL) hold, after the weapon (0x34, 0x10c bytes):
+  - a shield (0x140, 0xc4 bytes) and an accessory (0x204, 0x34 bytes);
+  - six limbs (0x238, 92 bytes each): hit points, an agility bonus, chain evasion, type and affinity defences, four actions, armour (an equipment record), and the share of a hit's damage each limb takes when this one is struck.
+  - The character's class is the top three bits of byte 3.
+- **Attacks.**
+  - An attack faces the target and plays the attack for the limb's height: 72 below a pitch of −228, 74 from 172, 73 between. The hit lands halfway through. (85 and 87 are spell wind-ups.)
+  - **To hit:**
+    - Each side's agility counts its accessory, every limb's armour, and its weapon and shield while drawn, scaled by what RISK leaves of it. The target also adds the limb's agility bonus.
+    - The chance is the difference plus 100, give or take 5, from 0 to 100. The player rolls with a hidden 10 more.
+  - **Damage:**
+    - The weapon's damage type and its strongest affinity set what is tested.
+    - With the weapon drawn, its damage term is the grip's value for that type, plus its affinity and its class value against the target, less its wear. A quarter of that, plus 100, scales the attacker's strength (with weapon and accessory).
+    - The defence is three parts, all divided by 100 plus half the target's RISK:
+      - the target's strength above 20, scaled by the limb's type and affinity defences;
+      - the limb armour's strength, scaled by its class, type and affinity defences, less a quarter of its wear;
+      - the shield's strength in the same way, while its weapon is drawn.
+    - The damage is the difference, never below 0, plus 1 to 5.
+    - It doubles on a critical, a RISK/10 + 10 percent chance.
+  - **Sharing out:** the hit comes off the target's hit points, and off each limb's by the struck limb's split.
+  - **Wear** (BATTLE.PRG 0x800802c4 and 0x800803a4). DP and PP are held in hundredths of what the menus show. A blow that lands takes its damage off the attacker's weapon's DP and, while the target's weapon is drawn, off its shield's; each limb's armour loses that limb's share of the damage. The weapon and the shield each gain a tenth of the damage in PP, up to their most. A spell wears nothing. Wear is written back to the carried record, so it lasts and is saved; worn DP lowers the damage term as above.
+  - **Enemy memory** (BATTLE.PRG's zone enemy cache; a character's state is kept at 0x80069fc4 as it leaves): the last four rooms Ashley was in keep up to eight of their characters each, by their room records. Coming back to one, its felled characters stay gone and the rest return with the hit and magic points, limb hit points, place and facing they were left with; a fifth room pushes out the oldest. Opcode 53 (zone, room) forgets a room, so it fills again.
+  - **Gem effects** (a gem record's byte 4), for a weapon's gems while drawn and a shield's while its weapon is drawn: 1 adds 20 to a blow's chance to hit and a shield's 5 takes 20 off; 3 adds five percent to a blow's damage and a shield's 7 takes five off; 4 and 8 do the same for spells; 9 adds five percent to a weapon's PP gain and takes five off a shield's. A drawn shield's gem of effect 11, 12, 13, 14, 16, 18, 19 or 21 takes 20 off the chance of Degenerate, Psychodrain, Leadbones, Slow, Silence, Paralysis, Poison or Numbness landing on her (a spell that always lands then has 80).
+  - The target flinches from the front or the back (64 and 66; Ashley 68 and 69). At no hit points it plays its death (70), out of the battle, and then fades and is gone (see **Death** above) unless its room record keeps its body.
+  - A damage number shows over the target in the HUD's large digits (7 by 12 at (64 + 8d, 0), 6 apart), grey for either side, centred 150 units above it: each digit drops 6 pixels into place over 6 frames, the left first and each next 2 frames later, and the number holds until it goes after 32 frames (footage). Other marks (the chain's "!", Guard, a heal) are still plain text rising over the target.
+- **RISK.** Each attack adds its blade's cost.
+  - With the weapon drawn, RISK falls 1 every 60 frames, MP rises 1 every 90, and HP 1 every 120 (with one limb in turn).
+  - With it sheathed, every 15, 30 and 60 frames.
+- **Enemies.** Hostile characters with their weapons drawn act once they notice Ashley.
+  - The AI word in their record (0x2c) sets their sight (bits 18 to 20: 384, 512, 768, 896, 1024, 1536, 1792 or 8192 units, at most 1536 here), their view cone (bits 16 and 17: 360, 190, 85 or 40 degrees), and their pause between moves (the middle of their timing preset, bits 4 to 6).
+  - Once they have seen her, or been struck, they keep after her until she is half as far again beyond their sight.
+  - They walk to her (animation 13) along a route round what stands between them, then wait 60 frames and move.
+  - Fighters do not walk through one another: a step that brings one within 96 units of a living fighter it is not already nearer to is refused, for enemies and for Ashley alike (along the axis that would close on it, so she slides past).
+  - **Telegraph** (BATTLE.PRG 0x800D836C and 0x800DBFE4). Once its pause is over an enemy in reach sets out to act, unless it is resting (48 frames after its last move) or as many as the room allows are already telegraphing: one more than the top three bits of the word at 0x450 of room sub-section 5 (read by 0x800E6F9C as the battle starts), which is one in all but four rooms (MAP007 eight, MAP028 four, MAP203 three, MAP049 two). Its counter then runs a frame at a time: a rounded balloon over its head with one, two and three dots over frames 1 to 23 (8 each), then the jagged balloon with its mark to frame 120, when it moves. After the move the jagged balloon stays 90 frames, and a move begun while it is still showing skips the dots (the counter starts at 32). The balloons are SYSTEM.DAT's second page (beside BATTLE MODE) through the palette at (992, 220); 0x80095C18 places them about a point over the head by BATTLE.PRG's tables (0x80068F04 corners, 0x80068F64 texels, 0x80068F94 the dots' and mark's places), on the side away from Ashley, turning once the enemy is 32 pixels past her across the screen. While the jagged balloon's point is off the screen (left of x 16, right of 304, below 208, or, at the screen's side, above 40) it shows instead as a pointer clamped to the edge (0x8009651C): the HUD page's 16-pixel sprite at (48, 48) through the palette at (976, 223), on a square turned in eighths toward the enemy. No balloon shows while the attack sphere is open (footage; 0x8009627C draws none while its flag is set). The kinds this does not use (the small balloon, the heart) are not drawn.
+  - A move is one of the actions their limbs list, at random. A spell (54 to 140) they have the MP for is cast at her (or on themselves, if it heals), by the same rules as hers. Anything else is an attack, after the telegraph and a 31-frame wind-up, by the same sphere and rules, aimed at one of her limbs.
+  - **Special attacks** (actions 141 to 183: breaths, tail attacks, Stun Blast and the like) are action-table records like spells, costing MP (byte 3). Their damage word has hit function 3 and reckoning 2, as the natural attacks 2 to 5 (Pincer, Bite) do: a physical hit, by the attack's chance and damage formula but with the action's own damage type and affinity, scaled by its factor (factor × 10 + 100 percent). A second word may add a status (Stun Blast and Caesar's Thrust paralyse), landing by the attack's chance. They are cast through the spell wind-up (85 or 87, then 88 or 89): the animation each monster plays for them was not found.
+  - The retail AI routines are mostly hand-written assembly that was not read. The 31-frame wind-up is retail; the rest of the pacing is an inference.
+- **Abilities.** The action table holds chain abilities (22 to 39) and defense abilities (40 to 53): each one's name, RISK cost and effect words. Events teach them (b7 3, which reports in flag 0xb1 whether one was new; b7 4 asks after one).
+  - Learned abilities fill Circle, Triangle and Square in the order learned, chains and defenses separately; the menu's Battle Abilities shows them.
+  - Timing (BATTLE.PRG 0x80078AB4): the strike's clock runs in 60 Hz ticks about the moment its hit lands, against a margin of 10 ticks less a third of the chain so far (at least 2). A press of a button set to an ability is graded once a link: too fast up to a margin early, fast before the hit, in time up to a margin after it, slow up to two margins after, too slow beyond. The grade shows in the HUD's lettering centred on (44, 48) for 46 frames, sliding in from the left over 4 frames and out over the last 4 (0x800958A4): TOO FAST!, FAST!, SLOW! and TOO SLOW! in (0, 128, 128), (32, 128, 96), (96, 128, 32) and (128, 128, 0), and in time one of COOL!, GOOD!, EXCELLENT!, RIGHT ON!, PERFECT!, WELL TIMED!, NICE! or GREAT! at random in (64, 128, 64) (128 is a whole). From two ticks before the hit a red "!" (SYSTEM.DAT section 1's page, 22 by 32 at (0xC0, 0), palette (960, 221), tinted (240, 64, 32)) stands over Ashley's head for a margin's frames (0x800970BC).
+  - A chain button pressed in time after Ashley's hit, and not the button of the last link, adds its ability. Damage (58) is a share of the last hit or of her lost hit points, and healing (62, 63) a share of the last hit; each link adds the chain count, shown as "1 CHAIN" or "n CHAINS" centred on (44, 64) in (160, 64, 16) for 91 frames (0x80095A4C). The next link's hit is 4 frames on.
+  - A defense button pressed in time after she is hit applies its ability: Reflect Damage returns part of the hit, Impact Guard turns half of it away, and absorbing draws a fifth in.
+  - Each costs its RISK. Statuses, and buttons chosen by the player, are not kept yet.
+  - **Magic page** (MENU/MENU0.PRG, strings at 0x2258: each class's name, help and "yet to learn" line, then the spells' descriptions class by class; each class's spells in menu order from BATTLE.PRG at 0x800EBD70, 0x800EBD84, 0x800EBD8C and 0x800EBDA0, 18, 6, 18 and 8 actions): MAGIC above WARLOCK (ATT), SHAMAN (REC), SORCERER (AID) and ENCHANTER (AFF), a class greyed with no spell learned; Circle opens a class's known spells under its bar, greyed when they cannot be cast (MP short, silenced), the chosen spell's MP in the cost box and its description below. Teleportation (the fifth row once its spell is known) is not offered yet.
+  - **Break Arts page** (MENU/MENU1.PRG, strings at 0xC78: each category's name, help and "yet to learn" line, View Arts and its help, then each art's description). Out of battle mode BREAK ARTS stands greyed on the command list and Circle on it refuses: "This command cannot be used when not in battle mode." under CAUTION on the four-line box (BATTLE.PRG's menu refusal and reasons) with the refusal's sound (Episode 3, 6:57 and 7:56). Circle again while the refusal stands clears it and opens the page anyway, its arts greyed (6:57 to 6:58: the one press does both). The page shows BREAK ARTS dimmed above the equipped category's bar (its label-page icon cell, 3 + category, tinted light teal), the category's reclaimed arts a step further right (greyed when not usable: another category's, out of battle mode or beyond her HP), then View Arts on an olive bar; NEXT and the kills still wanted for the category's next art under the rows; and the chosen art's HP cost in a box at the bottom left (a dark-to-purple bar from x 0 to 78, "HP" at 6 and the cost ending at 72). BREAK ARTS over the page is dimmed out of battle mode only (Episode 3, 7:01 against 7:09), its name from x 186 under the category's bar. View Arts lists the ten categories (eight rows at a time) from DAGGER, each with its icon in a box 16 wide at the row's left (light teal when chosen, half as bright otherwise; boxes from 195, names from 219), greyed with none reclaimed and yellow for the one in hand (7:14); Circle shows one's arts, the pointer back on View Arts. Titled menu pages put BATTLE MODE away; the reclaim's untitled chooser leaves it up.
+  - **STATUS** (MENU/MENU4.PRG) stands over the menus' backdrop with Ashley's model as the item menu shows her (MENU3's camera), which L2 and the pad turn (64 a frame; the pitch from level to 896). The HP, MP and RISK blocks stand where the HUD's do, RISK always as a number. The fighter's name stands on a header bar at (180, 18). Each limb is a row from y 34, 16 apart: its name (BATTLE.PRG's pointers at 0x800EA620, by the limb's model part: its first bone's record byte 6, 1 HEAD, 2 R.ARM, 3 L.ARM, 4 LEGS, 6 BODY; a Silver Wolf's one limb is BODY) right-aligned to x 216 in the HUD capitals, its condition's square at (216, y + 2) (7 wide in the condition's colour from 0x800EBC54, 5 inside at twice it) and its word from x 224 (MENU4's pointers at 0x5884: DYING under 2 HP, BAD under a quarter, AVERAGE under three quarters, GOOD short of whole, else EXCELLENT). A leader line in teal (0x687018, half over what is under it; the chosen limb's doubled and whole) runs from the limb's bone on the model at 45 degrees to the row's foot (y + 8), then along it to x 216. The status effects' icons stand eight to a row from (0, 144), 16 apart, from the HUD page by 0x800EBC14 through the palette at (896, 223) or (912, 223); STRENGTH, INTELLIGENCE and AGILITY are ORG/EQP's rows (her own, then with what she wears). The pointer is the menu cursor (16 by 16 from (32, 48)), grey off the limbs; the pad leads by MENU4's table (0x801080FC) through the limbs, the stats, HP, MP, RISK and the icons, and INFORMATION reads the limb's part and condition ("R.ARM / Excellent condition.", string 12 with strings 13 to 17), a stat's or block's help (0 to 5) or an effect's (18 on). Cross goes back to the command list, Triangle leaves. Square on a limb shows its defences: the model slides to the middle, the other limbs dim to half and their lines go, and the limb's own AFFINITY (seven rows) or TYPE (three) page stands at the left (CLASS greyed, Square turns it, the rows' help strings 50 to 59, L1 and R1 the limb). Circle on a limb opens the equipment, EQUIP's eight slots under the fighter's name without the item menu's strip, on the limb's armour; Circle there shows the thing's panels. L1 and R1 go round the fighters: Ashley, then the room's living enemies, each on its own model, an enemy's readings "???" (small and large question marks from the digits page at (228, 0) and (234, 0), bars full) and its stats "??" until analysed; an enemy's equipment and defences are refused here.
+  - **Reclaiming.** A link in time adds a point toward the next battle ability once the story has reached flag 0x82 = 10, and a defense in time adds one at any time, each only up to the next requirement (the executable's 22 halfwords at 0x8004FE5C; BATTLE.PRG 0x8006FD1C); kills add none. Ashley's kills count toward her weapon category's next Break Art (from flag 0x82 = 10, up to its requirement; 0x80085500). When her action ends and the field is quiet, a Break Art or battle ability whose points stand is reclaimed (0x8006F760, 0x8006F89C): effect 20 plays on her and MENU2.PRG's reclaim opens with the HUD left up, the figure put away. A Break Art comes first: "Ashley has reclaimed the <category> Break Art <name> from his suppressed memory." under CHECK. Then a battle ability: CHAIN ABILITIES and DEFENSE ABILITIES (when both kinds have some left) with "Select a battle ability.", then the kind's remaining abilities in MENU2's order (0x2860, 0x286C) four rows at a time under its bar, each with its description (indices at 0x2878), and "Ashley has reclaimed the battle ability <name> from suppressed memory." The lines (MENU2's table at 0x26D8) close on a button or after 120 frames, left-aligned in the box. The Battle Abilities page's NEXT counts the points still wanted.
+- **Limb injuries.** At 1 hit point or less, Ashley's right arm halves her damage, her left arm doubles enemies' chance to hit her, her body slows RISK's fall, and her legs halve her pace. Each lasts until recovery lifts the limb to 2.
+- **Statuses.** Spells set statuses by their effect ids:
+  - 1 to 3 lower strength, intelligence and agility by a tenth, and 6 to 8 raise them; 18 (curse) lowers all three;
+  - 5 slows Ashley to half pace, and 10 quickens her by a quarter;
+  - 11 silences (no spells);
+  - 13 regenerates a twentieth of the most hit points, less 2, every 5 seconds;
+  - 15 paralyses (no moving or acting);
+  - 16 poisons: a twentieth of the hit points left, and 0 to 5 more, every 2 seconds;
+  - 17 numbs.
+
+  They last 15 seconds (slow and quicken 20); regeneration, poison and curse last until cured. The menu's cures (effects 0x1b to 0x1e, the cure-all 0x20, the magic cancel 0x1f) remove them, and its elixirs (50 to 54) raise a stat by 1 to 4 for good.
+- **Not kept yet:** the special attacks' own animations and areas (bytes 4 to 10, as for spells), and the rest of the retail AI routines.
+- **Path search.** Routes cross the collision map's 32-unit sub-cells by A* over eight neighbours. A step may climb at most 96 units, and no sub-cell within one of a wall is used.
+- **Status.** The HUD (BATTLE.PRG 0x800CA2EC) shows HP, MP and RISK as blocks at (10, 18), (80, 18) and (10, 22) (0x800C9B38): a dark track 66 by 5 (0, 0x28, 0x40), and a pixel in a 3-pixel bar ⌈value × 64 / most⌉ long, its colour on the right and toward (0xff, 0xf0, 0x9e) on the left by its length over 64 (0x800C99DC). HP and MP give their most in the page's small digits (6 by 10 at (6d, 0), 5 apart, right to left from (x + 56, y − 8)), a dot (5 by 10 at (32, 11)) two lower, then the value in the large digits (7 by 12 at (64 + 8d, 0), 6 apart) from 7 left of the dot (0x800C9950). RISK gives its value in the large digits at (x + 54, y + 3); at none the block is replaced by the string "RISK  ZERO" at (12, 22). Labels sit at (10, 10), (80, 10) and (10, 26). The HUD's lettering (0x800C6540) takes a character less 32 into 4-bit widths at 0x800EB7B4 and columns at 0x800EB7D4 (the low bit picks row 86 for capitals, else 76), 10 high; a pair of capitals closes by a 2-bit kerning at 0x800EB708; `$` centres what follows on its x (the chain timing's grades are centred on 44, as the footage shows), and `#` right-aligns it. The figure at (8, 184) is five pieces of the page (right arm, left arm, head, body, legs; a second pose with the weapon drawn; 0x800EBCEC, 0x800EBD14, 0x800EBD3C), each tinted by its limb (0x800C9E5C): dark red under 2 HP, orange under a quarter, yellow under three quarters, green when hurt, teal when whole. With the weapon drawn BATTLE MODE (SYSTEM.DAT section 1's page at (448, 256), 73 by 10 at (64, 0), palette (976, 220)) slides down to (236, 8) a step a frame; its half-grey colour has a sine over half a turn added to its red (0x800CA388), so it pulses between 64 and 192 and stays red. On the PSX a primitive added to an ordering-table slot is drawn before those already there, so the HUD is drawn in the reverse of the order it is built. Damage numbers run out during scenes as well as play. While a spell plays out, from its wind-up until its effect has run (and an item's effect likewise), the blocks, the figure and BATTLE MODE are put away, and its numbers, balloons and cues stay (footage: Ashley's Heal, the Dullahan's Drain Heart; Break Arts were not seen and keep them). If Ashley falls, the game-over scene (EVENT 0000) plays and the game returns to the title.
+- **Values.** Hit points carry from room to room.
+
+## Weapons
+
+A weapon model (`OBJ/<id>.WEP`, the blade's weapon id in hex) is an SHP-like model.
+- **Layout.**
+  - The SHP's counts sit at 4 to 11, then the size of a model block at 12. The block's part offsets are at 0x30 from its start, and its bones start at 0x40.
+  - The texture follows the block:
+    - an 8-byte header (width/2 at 5, and a format at 7 of 48 or 96 colours);
+    - a shared palette part of 16 (or 32) colours;
+    - seven material palettes of 32 (or 64) colours;
+    - the 8-bit image, 32 lines high;
+    - 8 bytes per bone.
+- **Material.** A material's palette is the shared part followed by its own palette. BATTLE.PRG's table at 0x800E8FC8 says which of the seven each material uses.
+  - Ashley's material comes from her INITBTL record (0). The New Game inventory in TITLE.PRG may differ; it was not read.
+- **Mounting.** A rig's bone with mount byte 0xF0 (record byte 6) holds the weapon, and 0xF1 the shield. The weapon is drawn only while it is out.
+
+## Doors and tiles
+
+- **Tile attributes.** Room sub-section 2 holds one u32 per collision tile, by row:
+  - bits 0 to 4 are the surface;
+  - 10 to 12 a blocking class (5 is blocked);
+  - 13 tests the room's type-2 conditions;
+  - 14 is a door;
+  - 16 a trap or lock;
+  - 17 a pit.
+- **Doors.** Room sub-section 3 holds 12-byte records. Bytes 0 and 1 are the destination zone (0 for this one) and room. The words that follow give:
+  - this door's tile and floor level;
+  - the destination's level and tile;
+  - the arrival facing, a half-tile nudge and walk-in;
+  - a flag and the value it must reach.
+- **Using a door.** When Ashley steps onto a door tile, the first door there whose flag test passes takes her.
+  - The screen fades out at 8 levels a frame. Fades subtract a grey from the whole screen, HUD included, in display values (a white fade adds one), so a room's strongest colour goes last: the orange-lit cellar turns red on its way to black, as in footage. The field draws it as a screen-reading shader over everything beneath it. A walk-in door keeps her walking on at half her run speed.
+  - The destination room loads with her on its arrival tile and facing, and the screen fades back in, unless the room's event takes it over.
+  - A record naming no room in the zone (255) is a placeholder.
+- **Loading.** A room is decoded from its ZND and MPD as the field enters it, with its event; an event file is decoded when a room's conditions or another event first lead to it, and starts with that room's or event's sound banks. A character is decoded with every event animation set (OBJ/Ennn.ESQ) that names it, from the unit file of a room that carries it or else OBJ/XX.SHP.
+
+## The inventory and the room's treasures
+
+- **Inventory.** New Game's inventory is TITLE.PRG's copy of the field inventory (at 0x80074c24; the file loads at 0x80068800, like BATTLE.PRG). It holds:
+
+  | Section | Offset | Count × size |
+  |---|---|---|
+  | weapons | 0 | 8 × 0x20 |
+  | shields | 0x100 | 8 × 0x30 |
+  | blades | 0x280 | 16 × 0x2c |
+  | grips | 0x540 | 16 × 0x10 |
+  | armour | 0x640 | 16 × 0x28 |
+  | gems | 0x8c0 | 48 × 0x1c |
+  | other items | 0xe00 | 64 × 4 |
+
+  Ashley starts with Fandango (a Bronze Scimitar on a Short Hilt), Leather armour, the Rood Necklace, and Cure Root, Vera Root, Yggdrasil's Tears, Faerie Chortle and Spirit Orison.
+- **Item names.** MENU/ITEMNAME.BIN holds 512 names of 24 bytes in the game's text, by item id.
+- **Chests.** Room sub-section 18 holds 0x234-byte records, and the MPD's treasure section (0x28 and 0x2c) is the first one's loot.
+  - A record's header gives:
+    - the tile and level;
+    - the room object of its lid;
+    - its lock (0 none, 1 key, 2 magic seal, 3 locked) and key;
+    - its index (below 0x40 a chest, whose opening sets flag 0x3c0 + index; 0x40 and above a container);
+    - the quadrant Ashley must face.
+  - The loot block (0x220 bytes) holds a weapon, a blade, a grip, a shield, two pieces of armour, an accessory, a gem and three items. Each drops when bit 0 of its difficulty mask is set.
+- **Using things.** Cross with the weapon sheathed acts on the tile in front of Ashley (her facing quadrant: 0 is −z, 1 −x, 2 +z, 3 +x).
+  - A locked door there (room sub-section 9, 20 bytes) unlocks with its key or sigil. That sets flag 0x1b6 + the item's id; a sigil (466 and up) is used up. The door's geometry group then opens and its tile stops blocking.
+  - A chest facing her opens, unlocking first if it must; its loot joins the inventory.
+  - A chest's or container's lid (the room animation its record names: a swinging group of sub-section 11) swings open first, and the bag or the container's question shows once it is still (retail footage); it stays open. A chest opened before stands open as the room loads (BATTLE.PRG 0x8008D710 by way of 0x80093824).
+  - A container facing her first asks, over the field, "Check the container?" under CAUTION with YES and NO from x 194 at y 148 and 164 (MENU7.PRG's table at 0x81B0, as retail footage shows it); NO or Cross leaves it shut. YES reads the memory cards first, the contents being kept there: "Accessing MEMORY CARDs..." (MCMAN 22) under CAUTION below the CONTAINER header over the backdrop, for about 8.2 seconds in footage (246 steps of 30 Hz here, as DATA's SAVE takes). Then the menu's container page: REMOVE, STORE and OK with both sides' counts. REMOVE and STORE open a transfer list on what has been picked (REMOVED or STORED, MENUD 25 and 26; empty, "Items to be stored in the container. Selected items will be added to the list.", 30), the categories WEAPONS to MISC either side of it (left and right, or L1 and R1). Circle on a thing opens its actions down the left in place of the counts, its name held in yellow: STORE or REMOVE (MENUD 33, 31, each with its help), then ITEMHELP's DISCARD and SORT (footage); STORE picks it (a stack of items whole), DISCARD drops it (an item one at a time; refusing what is worn or part of a set), SORT leaves the list as it is kept. Circle on the picked page puts a thing back. Every container holds the same store, which the save keeps. Leaving it (OK, or Cross) asks "The container transaction will be cancelled if game is not saved. Save?" (MENU7's fifth string) under CAUTION, YES chosen, YES and NO at (194, 148): YES saves (see Saving); NO or Cross goes back to the field (footage: the player then saved from DATA). What she holds or wears stays with her; an inventory weapon goes in whole with its blade and grip.
+  - A magic seal opens to the Unlock spell (see Magic).
+- **Traps and magic circles.** Room sub-section 8 holds 12-byte records: a tile, a type and a value. Stepping on a bit-16 tile triggers the record there.
+  - A magic circle (16) is a save point while Ashley stands on it.
+  - Any other type n is the executable's action n + 6 (52-byte records at 0x3C1DC; name at 0x1C, visual effect at byte 1, two effects at 0x14 and 0x18). Its name is announced with the "Trap" line, no header.
+  - Its strength is a tenth of her most hit points times the effect's factor, plus ten for each trap level and ten more. The trap level is byte 0x32 of room sub-section 10. Heal panels (62) heal that much. Damage (effect 58) lands on one of her limbs (picked at random here; how retail picks it was not read) less a defence, as BATTLE.PRG's trap-panel reckoning has it: (strength with the accessory's, less 20) times the limb's factor (100, or 100 plus the limb's defence against the damage type; plus its and the accessory's defence against the affinity), plus the limb armour's strength times its factor (the same from the armour, less a quarter of the percentage of its DP worn away), plus, with the weapon drawn, the shield's (the same, plus a quarter of its PP percentage), all over 100 plus half the RISK. It then varies by up to 5 either way, and never fells her: at most her hit points less one. In footage a level-1 Gust (factor 5) cost a 250-HP Ashley 59.
+  - Poison (16), paralysis (15) and curse (18) panels set the status; the cure panel (32, 29) clears them and numbness; Trap Clear (15) does nothing yet.
+- **Pits.** A pit (tile bit 17) costs 20 hit points and returns her to the door she came in by; with 20 or fewer, she dies.
+
+## Results
+
+The CONGRATULATIONS screen (`ResultsScreen`; MENU/MENUF.PRG submenu 0, opened by 59 after a boss) is drawn over the field, which darkens to about a third (retail lowers the room's palettes; the depth is measured from footage).
+
+- **Lettering.** SMALL/RANK.DIS holds three 4-bit pictures (256 by 256) whose texels are grey levels, 0 clear. The screen tints them by its draw colours, 128 leaving them as they are; the bonus reel uses the first picture's third palette, a gold ramp. MENUF.PRG's sprite table (file offset 0x69D8, 127 eight-byte entries: u, v, width, height, texture page 29 to 31, palette) places the digits, the words and the 42 rank words. The rank table (0x6DD0) gives each of the sixteen ranks one to three words; the reels (0x6E10) are three of sixteen stops, a stat sprite and an amount.
+- **Score.** Kills by enemy class times 20, 20, 40, 80, 100 and 60 (0x398), attacks by weapon kind times 20, 40, 20, 100, 60, 100, 60, 100, 80 and 60 (0x3A4), the highest chain by its band, 100,000 a clear, the streak score and the other score, at most 999,999,999. A kill adds its most hit points to the streak score, and half again for each kill in the current run of one class and each in the weapon's run. The other score takes the heal bonus as the screen opens: 100,000 less 100 for each heal since the last (Ashley's healing spells and items). The save keeps them all. The boss time trials and the play time are not counted yet.
+- **Rank.** The first of the sixteen whose title threshold (0x6FEC) and score threshold (0x700C) are met; no titles are kept yet, so only the score decides.
+- **Bonus.** Reel 0 if Ashley's intelligence and agility are both at least her strength, else 1 if her strength and agility are at least her intelligence, else 2. The stop it lands on is added to the stat for good (STR, AGL, INT, most HP or most MP, at most 999).
+- **Timing** is in the type's summary: each part comes in at its own frame of one timer, and Circle before frame 273 skips to the reel. Its sounds are resident ones played as the menus play theirs (below), the reel's turning loop among them, stopped by id as it lands; the music change is not played yet.
+
+**Menu sounds.** The menus play resident sounds on voices 1 to 6 in turn, centred and at full volume (the executable's 0x7E player): 4 as the cursor changes, 5 for a choice, 6 for leaving, 7 for a refusal, 8 for a file written. The command list, the item menu, EQUIP, the gadget bag and the memory card screens play them so far (a save written plays 8), and so does the title menu (New Game plays 1, 2 and 3 together) (the bag plays 13 as a thing is taken); taking up a weapon or shield plays 0x21 (0x22 for the empty row) and discarding 28, as MENU3.PRG does.
+
+## Quick Manual pictures
+
+- MENU/MENUE.PRG (loaded at 0x80102800) is the Quick Manual. A topic's HF0 has, after its text (rounded to four bytes from 0x10), a block of picture records: a count and halfword offsets. A record whose first halfword is 0 is a still picture (0x80103e6c): from byte 0x10 its x and y on the page, width and height in pixels, a halfword, its colours (16 for four bits a pixel, otherwise eight), its palette, and the cells that tile it row by row (16 pixels wide at four bits, 8 at eight; 16 high). Records with a nonzero first halfword blink (0x80104c30: a 16-bit mask at 2, stepped every halfword-4 frames; three in the game); they are drawn still.
+- The HF1 is a cell count and a palette count, the cells (128 bytes: four halfwords by 16 rows; the viewer uploads them 48 to a row at VRAM 0x340, 0x100) and 16-colour palettes (at 0x300, 0x1F0); palette p starts at colour 16 p.
+- The page is laid out in pixels: MENUE shows ten lines of 13 pixels in a 300 by 130 area at (13, 55), and draws a picture at that origin plus its x and y, less 13 for each line scrolled. The text's horizontal offsets (FA) become spaces of the font's six-pixel advance, so the menu draws the page with its spaces widened to six retail pixels at its line's scale, and the pictures at the same scale both ways; the text beside a picture then clears it.
+- After the pictures come the page's rules (0x80103d30), drawn while the header's third word is above 0. The block is at the pictures' block plus the header's second word (each rounded down to four): a count, then 28-byte records of a blink state (eight halfwords, as a picture's), two ends on the page and a colour. They are the red and blue lines that underline headings and box the pad diagrams.
+- The pictures are the pad's buttons, icons and figures.
+
+## The menu
+
+Triangle opens the field menu, with the retail rows: Magic, Break Arts, Battle Abilities, Items, Status, Map, Data, Options, Score and Quick Manual. Up and down move between the rows that can be used, Circle opens one, and Triangle or Cross goes back. Time stands still while the menu is open.
+
+A chest opens on the gadget bag (`GadgetBag`, MENU/MENUB.PRG's window), not straight into the inventory: its contents listed down the left (equipment with its label-page icon tinted teal, then items with their counts), the bag's seven categories and what each holds over its limit (8, 16, 16, 8, 16, 48, 64) on the right under GADGET BAG, and GET, ALL and END below, over the field darkened to about 45% (the HUD is not; footage); Circle takes the chosen thing, Square everything, Cross closes and leaves the rest in the chest, which counts as opened once it is empty. The words are MENUB.PRG's own ASCII (the title at 420, the categories at 380 back to 336, GET, ALL and END at 436 to 444). The description under INFORMATION is MENU/ITEMHELP.BIN's: an item's help (entry id - 1), or for equipment "Class: Weapon" or "Class: Armor" (entries 651 with 383 or 392) over its name. Positions were measured from retail footage; the icon cells for each kind were matched by eye.
+
+The command list is drawn as retail draws it (`MenuList`), on the 320 by 240 screen: the label page's COMMAND word in the top right (right edge at 313, y 6; a submenu shows MENU there), and for each command that can be used a bar 12 high from x 200 to the screen's edge, every 16 lines from y 18, dark blue on the left to blue on the right, with its name (BATTLE.PRG's menu table at 0x800EB9DC: MAGIC, BREAK ARTS, BATTLE ABILITIES, ITEMS, STATUS, MAP, DATA, OPTIONS, SCORE, QUICK MANUAL) in the system font from x 202. The chosen bar is bright on the left and darkens, and the cursor page's tilted pointer (at (31, 44), 17 by 20) stands just left of it. In a submenu the command becomes a teal header in the top row from x 181, and the chosen entry's help prints under the label page's INFORMATION (at (10, 182)) in the system font, left-aligned from x 16 on the system box's four lines. BATTLE MODE is not drawn while the menu is open. These places were measured from retail footage (PSX longplay); the menu pages behind the commands are not retail's yet.
+
+**Measuring against footage.** Video 2's capture (854 by 480) shows the 320 by 240 screen from x 64 at 2.3125 columns a pixel, and from row 13 at 1.99 rows a line. The intro video (640 by 360) shows it from x 80 and row 12.5 at 1.5 a line. Positions from retail code fix the offset: the HUD's HP label (line 11) and the memory card screen's SAVE bar (line 34). An earlier offset of 18 read everything about 2.5 lines high; the menu layouts measured with it have been put back on their code positions.
+
+**Item menu.** ITEMS opens retail's item menu (MENU3.PRG; `ItemMenu`), drawn over black on the 320 by 240 screen:
+- the crystal backdrop, MENU/MENUBG.BIN: a 256-colour palette (512 bytes), then the 8-bit picture, 192 by 240, packed as words (a control word writes its low half's count of zero words, then copies its high half's count of words; 0x1780 words of input). It stands from x 64 and fades in over eight frames;
+- MENU (the HUD page through the palette at (848, 223), 36 by 10 from (64, 64)) at x 276, sliding down to y 6;
+- the category strip: the HUD page's icons, 16 by 16 from (120 + 16 i, 128), for WEAPONS to MISC at x 48 to 144 and OPTIONS ("!") at x 32; the chosen one through the palette at (976, 223), the rest through (992, 223). The arrows from (0, 48) and (16, 48) stand either side (palette (896, 223), wobbling outward on a 12-frame cycle). MENU3 slides the strip to y 16;
+- STATUS: the Square button (16 by 16 at (16, 128), palette (944, 223)) and the word in the HUD capitals, over ten olive lines, (64, 56, 32) to (16, 16, 8), sliding in from the left;
+- the ITEMS header and the category's title (MENU3.PRG's string table at 0x6BB8: WEAPONS to MISC and OPTIONS, then EQUIP and SETUP with their help) as teal rows from x 180, the title with what the bag carries over its limit; then OPTIONS' EQUIP and SETUP from x 194, or the category's things from x 169 with their icons, eight at a time. A row's bar starts on the line its text's cell does, 12 high, as MENUD and MCMAN draw theirs;
+- Ashley: a copy of her field rig, weapon drawn, in her battle stance, in plain light (0x80), in a world of her own. The camera (MAINMENU.PRG) projects at H 512 about (160, 112) with the view's x scaled by 9/8, and looks from 0xB00 round, four times the model's camera distance away (SHP 0x6E: 204 for Ashley), at a point half its camera height up (SHP 0x56: 217) and k/256 of the distance aside, k easing from 256 to 128 over ten frames, which stands her left of the middle. Retail draws her about 0.92 the size this gives our rig (measured; the cause is not known), so the copy is scaled by that.
+- An equipment icon (in the item menu, EQUIP and the gadget bag) carries its material's letter at its top right in orange: the label page's W, L, B, I, H, S and D (Wood to Damascus) from (216, 200), placed 13 right of the row's start and 3 above it (measured from footage); a weapon shows its blade's, and an accessory none.
+- Left and right (or L1 and R1) change the category; up and down choose a row. EQUIP opens the slots. Circle on a thing opens its actions down the left, the last on line 162, each with its help (MENU/ITEMHELP.BIN's words, the help the entry after): a MISC thing's USE, DISCARD, DISCARD ALL and SORT (667, 671, 673, 675); a blade's, grip's or gem's SEARCH, DISCARD and SORT (669, 671, 675). SEARCH finds the weapon a set's part belongs to; for a loose thing it stands greyed (MENU1's grey-blue) with "This item is not part of a set, and thus cannot be searched." (677) under CAUTION, as the footage shows for a loose gem. DISCARD refuses what is worn (664) or part of a set (665) under CAUTION. USE leaves the menu, and the system box announces its effect (menu table entry 27 with the name of the action the item maps to, such as "Recover 100 HP"). A category lists the starting sets' parts and loose things alike. Shields' and armour's actions were not seen.
+- **SETUP** (MENU/MENU12.BIN, laid out as ITEMHELP.BIN is: SETUP, then each command and its help, the sub-pages' words and the refusals) stands over the backdrop alone, without Ashley, the strip or STATUS: its header bar at (180, 18) and the commands ASSEMBLE WEAPONS, ATTACH GEMS, DISASSEMBLE, RENAME, REPAIR and COMBINE as rows from x 194, 16 apart from y 34. ASSEMBLE, REPAIR and COMBINE need a workshop: elsewhere they stand greyed, with "This command can only be used at a workshop." (50) under CAUTION, and refuse with the invalid sound. ATTACH GEMS and DISASSEMBLE put their word under SETUP as a second header over WEAPONS and SHIELDS (28 to 31, 37, 38); those open the weapons or shields under one header ("ATTACH: Weapon", 32; "DISASSEMBLE: Weapon", 41), with their icons from x 169. For ATTACH GEMS a weapon that takes no gem stands greyed, "Gems cannot be attached to this weapon." (59), the others saying how many (58, "…weapon: 1."), both under CAUTION; a chosen one lists the gems to set in it. DISASSEMBLE asks YES or NO (39, 40 when it is in her hand). RENAME lists the weapons and takes the new name typed. At a workshop ASSEMBLE, REPAIR and COMBINE still open the pages drawn as text (footage shows them only greyed).
+- Effects of spells, special attacks and Break Arts are announced the same way (entries 23, 24 and 25).
+- A spell's first cast to the end masters it (BATTLE.PRG 0x8007B63C sets the action's unlocked byte): entry 30, "Mastered the spell", opens under CHECK as the action ends and stays 120 frames. The save keeps which spells are mastered.
+- **Items** lists what Ashley carries; Circle uses a consumable.
+  - Each consumable (323 to 356) maps to an action, through MAINMENU.PRG's byte table at 0x80102214 (the file loads at 0x800F9800).
+  - The executable's action table (52-byte records from 0x8004B9DC) gives the action's two effect words. Each holds the effect (bits 0 to 6), how its amount is reckoned (16 to 21) and a factor (22 to 26).
+  - Effects 0x3e, 0x3f and 0x42 restore hit points and magic points and lower RISK. Reckoning 15 is five times the factor, give or take 5; 16 and 17 are the points missing; 26 is all of RISK.
+  - The curing and strengthening effects need statuses and stats the battle does not keep yet.
+- **Items** has three tabs, switched with L1 and R1:
+  - Items, for the things she carries;
+  - Weapons, the assembled weapons she carries;
+  - Armour, her armour and accessories;
+  - in a workshop (a room whose area-map marker has flag 8: zones 42 to 47, map 0), Workshop.
+
+  In a workshop, Square on a weapon takes it apart. The one in her hand comes apart only on a second Square, as retail asks first (MENU12's string 40), and leaves her bare-handed: battle set 10 (OBJ/00_BTA.SEQ and its Break Arts 00BTAB0n), blunt, with no weapon strength, until she takes up another. The save keeps it. The Workshop tab lists her loose blades; Circle picks one, then a grip that fits it, and they make a weapon named for its blade. A grip's category (byte 3) names its family, and each blade category takes one family: guards and hilts (1) for daggers, swords and great swords; grips (2) for axes and maces, great axes and heavy maces; poles (3) for polearms; bolts (4) for crossbows. Staves are given grips (2) by inference; no assembled staff is found. The Gems tab sets loose gems in weapons, up to the grip's gem slots (byte 4), and Square takes the last one back out; a weapon's gems add their class and affinity bonuses to its blade's. A gem record (0x1C bytes; chests hold one at loot offset 0x1F4) is its id, a word, a special effect (byte 4: the gems whose help text gives a chance against an attack or a status), three bytes not settled, then bonuses against the eight classes (from 8) and the eight affinities (from 0x10: none, air, fire, earth, water, light, dark), matched against the game's own descriptions (Undine Jasper: water +15, fire −5; Haeralis: +15 against humans). The special effects, shields' gems and the materials each workshop can work are not applied yet.
+
+  The Repair tab (MENU/MENUC.PRG) lists each weapon's blade, and the shields and armour, with their DP and PP. Circle puts a piece back to its most DP for a hundredth of the DP restored in its PP, to no less than none.
+
+  Each workshop works only some materials. Its kind is byte 0x30 of the room's sub-section 10 (0 for a room that is none), and MENU/MENUC.PRG's table at 0x8010BB30 holds a bit per material for each kind. Combine marks the pieces it cannot work and refuses them, as retail greys them out.
+
+  The Gems tab takes shields too: a shield's gem slots are its record's byte 12, and its gems add their class and affinity values and their effects while it is worn.
+
+  Select on a weapon in a workshop renames it (up to 18 letters; typed, Enter keeps it), as the workshop's Rename does; the save keeps the name.
+
+  The Combine tab fuses two loose blades, as MENU/MENUC.PRG does (loaded at 0x80102800; blades at 0x8010b2b4), with the tables in MENU/BLADE.SYD (three offsets: a 96 × 96 table of the blade a pair makes by their ids; a 5 × 10 × 5 × 10 table of its material, by each blade's material less three and its category; and a 16-byte record per blade: model, category, damage type, cost, strength, intelligence, agility and range). The new blade takes its kind's stats plus its material's (the executable's material records at 0x8004EDCC, 30 bytes each, bytes 0x18, 0x1A and 0x1C), DP and PP the mean of the two, and mixed class (first six) and affinity (first seven) values (0x8010ae38): a value either blade holds that is the pair's highest, or else lowest, stays; the rest are their sum times a weight in tenths, by where each blade's own highest lies (MENUC 0x8010BB84 and 0x8010BBA8; 4, 6 or 8 tenths for one material, 3, 5 or 7 for two), clamped to ±100. Every kind's model is converted in each metal at installation. Shields (MENU/SHIELD.SYD; 0x8010b598) and armour (ARMOR.SYD; 0x8010b80c) combine alike by their index within the kind (the item id less 126): a 17 × 17 or 65 × 65 (from index 16) table of the result, a material table (8 × 8 by material for shields; 8 × 4 × 8 × 4 by material and category less two for armour), and an 8-byte record per index (model, category, a shield's gem slots, strength, intelligence, agility); their types 1 to 3 mix by the sum times 8 or 6 tenths for one material, 6 or 4 for two, the larger when both pieces' strongest type agrees (0x8010b150).
+
+  Taking up a weapon sets her weapon category (and with it her battle set and Break Arts), its strength and agility (blade and grip together), damage type, RISK cost, range, wear, type, class and affinity values, and the model in her hand. Every category's battle set (`OBJ/00_BTn.SEQ`) and arts are installed with her, and every blade she can come by is converted in its material. Putting on armour sets the helm on her head, body armour on her body, leggings on her legs, an arm piece on her right arm or else her left, and an accessory or a shield (items 127 to 142) on its own. A shield counts in her defence and agility while her weapon is drawn; a two-handed weapon (great sword, great axe, staff, heavy mace, polearm or crossbow) takes no shield, and taking one up sets the shield aside. A shield is a weapon model (its record's byte 2 in the inventory layout, 3 in a character's: OBJ/60.WEP to 6F.WEP) in its material, held on the rig's shield mount (bone mount 0xf1) and shown while the weapon is drawn; characters' shields are drawn too. A character's shield record (0xc4 bytes) keeps its material at 0xc0, after its three gem slots. What she has on carries from room to room and into the save.
+- **Status** shows hit and magic points, RISK, strength, intelligence and agility, and each limb's hit points and condition: DYING below 2, BAD below a quarter, AVERAGE below three quarters, GOOD below full, else EXCELLENT.
+- **Data** opens MENU7.PRG's page over the crystal backdrop: its command as the header from x 180, SAVE and LOAD (MCMAN.BIN's words 0 and 2) as rows from x 194, and the play time in the HUD's lettering, "PLAY    TIME" (MENU7 0x21C) at (224, 188) and hours, minutes, seconds and hundredths at (224, 200) (the sixtieths times five thirds; retail adds a little noise to them). SAVE works only on a magic circle and otherwise sounds the refusal; LOAD loads a game and resumes it, and backing out returns to the page.
+- **Battle Abilities** is MENU2.PRG's page over the field, laid out as the command list's submenu: its command as the teal header, CHAIN ABILITIES and DEFENSE ABILITIES (MENU2's string table at 0x1E90, entries 0 and 3), then NEXT at x 206 on the next row in the HUD's lettering with the kill points to the next ability ending at x 302 ("20PT": the executable's 22 requirements at 0x8004FE5C, less the kills counted since Ashley had battle abilities), and the chosen kind's help (entries 1 and 4, or 2 and 5 while she has none of that kind). Circle on a kind still opens the abilities set to each button, drawn as text. Learning one in an event shows no message of ours: the script prints its own. **Options** opens the same settings window as the title's Settings.
+- **Magic** lists the spells Ashley knows, with their MP; Circle casts one.
+  - Unlock (effect 39) is cast in the field: it breaks the magic seal (lock 2) on the door, or the chest facing her, on the tile in front of Ashley. A seal whose lock also names a key leaves the key's lock.
+  - The action table's spells are actions 54 to 140, each with:
+    - a name and MP cost;
+    - a range and shape (bytes 4 to 7), and an area (8 to 10);
+    - two effect words: effect, prerequisite, hit function, reckoning, factor, damage type and affinity.
+  - **Learning.** Reading a grimoire (items 386 to 456, through the same item-to-action table as consumables) uses it up and teaches its spell, which the system box names as the menu closes (menu table entry 23, `Spell: "Heal"` in footage). A levelled spell (106 to 133) read again teaches its next level, up to the fourth.
+  - **Targets.** A spell that heals is cast on Ashley; one that harms, on the nearest enemy within its range (32 units a step).
+  - **Aiming.** A spell, or a thing used from MISC, is aimed first: the sphere opens on what it can take, each whole, "TARGET" down the right (the HUD's ASCII "#TARGET", BATTLE.PRG 0x8006987D) and the target lit all over; the readout is the text table's entry 20 with the target's name and its "HP n/n%" with the spell's chance (21), or an item's chance alone (23, "Ashley Riot 100%"), then "TARGET: Single" with a spell's affinity and the target's class (footage: Heal's "Ashley Riot HP 59/100%", "TARGET: Single LIT/Human"; an Elixir of Queens' "TARGET: Single"). A spell that heals takes Ashley; one that harms, the enemies within its range, nearest first, left and right between them. Circle casts or uses it; Cross puts the sphere away with nothing spent. The sphere is the action's own range (its record's bytes 4 to 6, 32 units a step: 224 for Heal, 320 for the items), and for a spell the "HP" is what it would restore or take before its variation (Heal on Ashley at 116 of 250 reads 59, and she is at 175 after it). A spell on the whole target reckons with its record's limb (byte 0x32, which BATTLE.PRG keeps at the actor's +0x36; Ashley's is 3, her body). A grimoire is cast as the spell it teaches (footage, Ep. 2 29:50: Grimoire Guerir aims as Heal, spends its MP and is mastered), learned and used up on Circle; where it cannot be cast it is learned at once.
+  - **Casting** (0x8007138C, ended by 0x80078748). Once the camera has its view, Ashley plays the wind-up (85, or 87; an item too), the action is requested in casting mode 1 (an item), 2 (a spell) or 3 (a special attack or art), E000's entry 56 sparkles about the caster while the mode lasts (its emitter 43, 44 or 45 by the mode), and the system box names it (`Spell: "Heal"`, `Item Effect: "HP-up"`). The casting lasts until that scene message has been shown out (120 ticks once typed; 2.9 seconds on screen in the footage), then the mode clears, the sparkles die away, she releases (88, or 89) and the spell's effect plays; what it does lands once its effect has run, the camera goes back, and a first cast says it is mastered. An item takes effect as its casting ends. An enemy's spell is cast the same way, on the enemy. The HUD and the map are put away from the casting until the effect has run.
+  - **To hit:** agility, each scaled by RISK, the target's taken from the caster's, plus 130 less the cost, give or take 5.
+  - **Damage:** the caster's intelligence (with weapon and accessory), scaled by a quarter of the weapon's affinity term plus 100, and by the factor. From that comes the defence: the target's intelligence above 20 scaled by its limb's type and affinity defences, plus its armour's in the same way, over 100 plus half its RISK. Plus 1 to 5.
+  - **Healing:** the same attack on Ashley's own intelligence.
+  - Status spells and areas are not kept yet.
+- **Break Arts** lists the arts Ashley knows, with their HP cost; Circle uses one.
+  - The arts are actions 184 to 223: art n of weapon category c is 184 + (c − 1) × 4 + n.
+  - **Learning.** A kill by Ashley's own attack, art or chain ability counts towards her weapon category's arts, once flag 0x82 reaches 10. The executable's table at 0x8004fde4 gives each category's four kill thresholds, and reaching one teaches the next art.
+  - **Using.** An art needs the weapon drawn and more hit points than its cost, which it takes. It strikes the nearest enemy in Ashley's sphere.
+  - **Animation.** The wind-up is battle animation 91 (or 93). The release is the art's own set, `OBJ/00BTcB0n.SEQ`, whose three slots are the low, level and high pitches.
+  - **Damage.** The hit is her attack's damage, scaled by the art's factor: a tenth each, over 100.
+- **Map** (MENU/MENU5.PRG) draws the rooms Ashley has had the run of, in the area she is in, in perspective over MENU/MAPBG.BIN (a 256-colour palette, then a 320 by 240 8-bit picture, shown at five eighths as the map slides in from the left, 64 a frame).
+  - The area's vertices are scaled by 4 and moved so the chosen room's middle (x and z halfway across, its lowest y) is the origin; L1 and R1 step through the visited rooms by the name records' previous and next (u16s after each 32-byte name), and the map eases there by an eighth a frame (at least 8 units).
+  - The eye stands 768 from the origin (R2 with up and down: 512 to 1024, 16 a frame) at a yaw and pitch (L2 with the pad, 64 a frame; the pitch 0 to 1024, at first 568, the yaw 2048 less the field camera's), points projected at 512 about (144, 136) plus the pad's pan (4 a frame, 96 across, 80 up and down); Start sets the view back on Ashley's room, Select hides the legend. A room with a point at a depth under 256 or past 8188 is left out.
+  - Colours fade with depth as the GTE's depth cue (SetFogNear(768): whole to 768, black by five times it). Floors are (0, 0x40, 0x80), the chosen room's (0, 0x80, 0x40); an outline edge (0, 0x80, 0xFF) drawn four times half over a pixel each way, then whole (the chosen room's (0, 0xFF, 0x80)); thin lines (0, 0x40, 0x80), the chosen room's (0, 0xFF, 0x80), half over. Nearer things are drawn over farther.
+  - In the chosen room each marker is a cross of three pixels each way: a door (0xC0, 0xC0, 0xC0); an exit (0, 0xC0, 0xC0) under its icon, its area named at the right from y 188 up (the string table at 0x5E30, an area not yet visited by its last entry), joined by a line bent towards x 170; a save point, workshop or container (0xA0, 0xA0, 0) under their icons in turn (32 frames each, from the HUD page through (848, 223)), and Ashley's pulsing mark (16 by 16 at (64, 128) through (976, 223)) on her room's anchor. The way she came in blinks pink.
+  - The legend at the top left: the L1, R1, L2, R2 and Circle buttons at (8, 15), (64, 15), (8, 33), (8, 52), (8, 70), their words (MENU5's ASCII at 0x478: BACK, NEXT, ROTATION, ZOOM, MENU) lit where they can be used, on olive bands; the compass at (62, 184) from the second HUD page (spokes, the four letters on their marks, the needle) turned by the yaw; the room's name rising from y 224 to 160 at x 60. The area's name stands on a header bar at (180, 34). Circle (MENU) lists the areas she has been to beneath it, from y 50 at x 194, and Circle there shows the chosen one's map, sliding it in; Cross and Triangle go back to the command list. Door locks' icons and names, and the areas whose map is jammed, are not drawn yet.
+  - Each area's map is SMALL/SCENnnn.ARM, by the scene id in room sub-section 10 (section B) at 0x50. It holds:
+    - a room count;
+    - a 12-byte record per room: visited, data size, zone, and map index counting from 1;
+    - the rooms' map data;
+    - a 36-byte name record per room.
+  - A room's map data is six counted lists: vertices (four s16), floor triangles and quads, outline edges, lines, and markers. A marker has a vertex, a label, flags (0 door, 1 anchor, 2 save point, 4 exit, 8 workshop, 0x10 container) and a lock.
+  - The area names are MENU5.PRG's string table at 0x5bfc, by scene id.
+- **Quick Manual** lists the 14 topics of SMALL/HELP01.HF0 to HELP14.HF0, each by its opening sentence run on to its full stop, less "This section explains" (the retail topic names are pictures); Circle opens one, up and down scroll its text, and Triangle or Cross goes back. A file opens with four u32s, then a table of u16 line offsets in halfwords from the table at 0x10, whose first entry is also the line count. Its lines are retail strings; the first opens with a two-byte value and repeats the opening sentence. Its pictures and rules are drawn over the text (see Quick Manual pictures).
+- **Score** shows the share of the 52 treasure chests opened, of the 361 rooms visited, and the Break Arts learned.
+- The door Ashley came in by blinks pink on her room's map (on 16 frames, off 16), as MENU/MENU5.PRG draws it. A door record's byte 8 is its marker on the room's area map, and that marker's byte 1 is the marker of the way in on the next room's; opcode b1 sets the blinking marker itself. A room entered other than by a door has none.
+- Retail names no room as Ashley comes into it (PSX longplay footage shows none), so neither does the field.
+- **Simple map.** While Ashley is in hand, the bottom right shows the room's own map (room sub-section 14: an area map in SMALL/SCENnnn.ARM's layout without the names, the room first and at the origin, its neighbours around it), as BATTLE.PRG 0x8008AC78 and 0x80098F8C draw it:
+  - the map turns to the camera (0x800 less its yaw about the vertical), tips 50 degrees toward the viewer (cosine 2633/4096, sine 3138/4096), stands 256 units in front of the eye, and is projected at H 512 about (264, 196), clipped to (216, 156), 96 by 64;
+  - Ashley's room has its floor half-transparent in (0, 127, 63) and its lines in (0, 95, 47); every room she has had the run of has its outline in (0, 127, 255). The rooms are drawn last first, each its lines, outline and floor. A floor quad's corners run round its edge (the GPU gets them as 0, 1, 3, 2);
+  - her room's markers are crosses of a pixel each way: a door grey, an exit (0, 127, 255), and the door she came in by (flag 0x10, set as the room loads) pink and blinking every 16 frames. A marker whose lock is shut (state flag 0x33F plus its lock) is the HUD page's lock, 8 by 8 at (216, 152), drawn at (−3, −4);
+  - the frame, (215, 155) to (313, 220), adds a quarter of its colour: a green gradient round its corners, or with the weapon drawn a red pulsing over 16 frames;
+  - shown, it slides in from the right over eight frames, 16 units a frame; hidden, it goes back two steps a frame. Menus, the target sphere, first-person view and events hide it. A room started on its own (`StartZone`) has the HUD on, as a resumed game does.
+- On the map, L1 and R1 turn the picture a quarter turn, and R2 and L2 zoom in and out (one, two or four times), closing in on the room Ashley stands in. Retail turns its map freely in 3D; this is a flat approximation.
+- Square moves the map on to the next area Ashley has been in (one with a room she has had the run of), and back round to her own; the heading names the area shown.
+
+## Crates and blocks
+
+- **Records.** The MPD actor list's records of a type other than 0 (40 bytes each) are crates and blocks. Each holds:
+  - a state flag (u16 at 4, low ten bits) whose value must lie from byte 6 to byte 7 for it to stand there;
+  - its tile (bytes 10 and 11);
+  - a byte at 12, whose bit 0 is the floor level and whose high nibble is how many crates up it stands;
+  - a facing quadrant (13);
+  - a model word (14). The kind is in its top four bits: 0 and 1 the textured crate, 2 and 4 to 6 plain blocks. Kind 1 breaks after the number of moves in bits 8 to 11. With the facing, the word gives a material that turns kinds 0 and 1 to one of 24 orientations (quarter turns about x, y and z, four bytes an entry in BATTLE.PRG's table at 0x800E9030).
+- **Models.** They are BATTLE.PRG's three object models (pointers at 0x800E8FB4, chosen by kind through the bytes at 0x800E919C).
+  - Each is a 16-byte header, then an SHP-like body with its part offsets at 0x30: vertices of four s16, then pre-lit polygons.
+  - A triangle is 0x18 bytes: indices, a texel and three colours, then two texels. A quad is 0x20 bytes: four indices, four colours and four texels.
+  - The models span 264 units and are drawn at half size, so a crate fills its tile.
+  - Their texture is the zone page at (384, 0), each kind in its own 64 by 32 cell (kind 6 shares kind 5's), through the zone palette at (768 + 16 × kind, 227).
+- **Floor.** A crate's top is floor: the highest one sets its tile's height.
+- **Pushing.** Cross at a crate (kinds 0 to 3) in front of Ashley, its base no more than 128 below her and 64 above, pushes it one tile on. The tile beyond must be free and no higher than its base, and she steps after it (animation 79 to 82 by the height).
+- **Rolling and sliding.** The push (BATTLE.PRG 0x800a3ec0) takes the direction (0 −z, 1 −x, 2 +z, 3 +x) and goes by kind through the table at 0x80069460. Kinds 0 and 1 roll: their orientation becomes the entry for that direction in the table at 0x800E8FD0 (four bytes an orientation), and they move a whole tile (0x80). Kind 2 moves a tile without turning. Kind 3 moves 0x20 at a step, and here slides on over level, free tiles until something stops it; the stop rule was inferred, not read. The field turns kinds 0 and 1 by their orientation rather than baking it into the model.
+- **Carrying.** A block (kinds 4 to 6) is lifted onto her head (71 to 74), and she walks while she carries it. Cross again sets it down in front of her, on whatever stands there (76).
+- **Motion.** A pushed crate moves to its new tile over fourteen event frames, turning to its new orientation, and a rolling one rises on its edge as it goes; the path is an approximation. BATTLE.PRG's crate motion (around 0x800b1100) steps a moving crate by per-frame offset tables from 0x800E91EC; one motion tips it over on an arc and, at its fourteenth frame, gives it its new orientation (0x800a0104, the routine that also places crates as the room loads).
+
+## Saving
+
+Saving and loading go through retail's memory card screens (`MemoryCardMenu`, the file menu that MENU7.PRG, the container's MENUD.PRG and TITLE.PRG share). They open in four places:
+
+- The menu's Data page opens them to save on a magic circle (SAVE) or to load (LOAD), under a DATA header. It first says "Accessing MEMORY CARDs..." while it looks for this game's save, for about 8.2 seconds in footage (Episode 3 at 17:14; 246 of the menu's 30 Hz steps, as a container's opening takes).
+- The container's OK, or Cross at its first menu, opens them to save under its CONTAINER header, because the container's contents are kept on the memory card.
+- After the game over, the GAME OVER picture goes and they open to load. A loaded game resumes in a new field, and leaving goes to the title.
+- The title's Continue darkens the title and opens them to load, on the menus' crystal (TITLE.PRG has the same picture as MENU/MENUBG.BIN). A loaded game resumes, and leaving returns to the title loop. The title's cursor starts on Continue when a card holds a save.
+
+Loading is as saving, with these differences:
+
+- It shows LOAD instead of SAVE.
+- The cursor starts on the newest save.
+- An empty file shows NO DATA and a dim "Empty", stays dark, and cannot be chosen.
+- A card with no save says "No save data found." and goes back to the slots at a button.
+- It asks nothing before loading.
+- Its sweep and flash are yellow-green, not pink. "Loading..." takes 120 frames, then "Game loaded.".
+- Then the screen fades to black over 30 frames. Leaving the screens fades the same way.
+
+- **Cards.** The two MEMORY CARD slots are two folders under `user://saves`, `card1` and `card2`. Each holds five files, `file1.json` to `file5.json`, which is as many as a card has room for at three blocks each. The checks use `user://contract_saves` and empty it first.
+- **What a file holds.** The room, Ashley's tile and facing, the 1024 flags, the inventory and the container's store, her points, her weapon and armour, and the camera's yaw and distance. The file list also shows:
+  - the save's location number (a save point's, or a container's from 0x40);
+  - MAP%;
+  - the game's save count and the clear count;
+  - the time played, in frames;
+  - HP and MP with their maximums.
+
+  A generation one past the newest file's marks which file the title's Continue resumes. The format is this build's own, not the memory card's. Continue also still finds the single `game.json` from before the cards.
+- **Content.** The screens' content comes from the disc:
+  - Text: MENU/MCMAN.BIN, a table of u16 offsets (in halfwords) to strings. Entries 0 to 41 are the words and messages. A save location's name is entry location + 41: 1 is Breakroom, and 64 on are the containers' places.
+  - Pictures: MENU/SPMCIMG.BIN, 448 by 256 texels at 8 bits. Its 64-wide columns 1 to 4 use the first 256-colour palette of MENU/MCDATA.BIN and the rest use the second. Column 0 holds NEW DATA, USED, the container's chest, ERROR and NO DATA. Location n − 1, for 0 to 47, is the 64 by 32 cell at column 1 + (n & 8) / 8 + 2 · ((n >> 4) & 3), row n & 7. Locations from 48 show the chest.
+  - Location numbers: a room's location number is the index of its first pair in the executable's 512 (zone, map) pairs at 0x8004F0CC.
+  - MAP%: the visited rooms whose bit is set in BATTLE.PRG's sixteen-word mask at 0x800E8508 (361 bits), times 100 / 361. Location 54 counts as seen with 55.
+- **Layout and flow** (retail units, 320 by 240):
+  1. SAVE slides in from the right to x 180 at y 34 (140 by 12, teal). The two slots follow to x 194 at y 50 and 66 (126 wide), and "Select a MEMORY CARD slot." appears.
+  2. A bar fades from bright at one end to dark at the other: a chosen element is bright at its left, the others at their right. A bar turns from blue to teal as it becomes a header.
+  3. The chosen slot moves out to x 180 and turns teal, and the other leaves. Slot 2 then rises to y 50. "Checking MEMORY CARD..." shows while the card is read.
+  4. The files are 256 by 32 at x 64, from y 72, three shown, 40 apart, scrolling through the five. Each has:
+     - its picture to the left of the bar, at full brightness while chosen and half otherwise;
+     - NO. and its number above that, at x − 22 and x − 9;
+     - the place at (x + 6, y + 4);
+     - MAP:, SAVE: and CLEAR: at x 172, 217 and 267 on that line;
+     - HP at 88, MP at 158 and TIME at 240 thirteen lines lower.
+
+     A gauge is a 66 by 5 bar, filled in sixty-fourths. Its far end has the stat's colour, and its near end goes yellow the fuller it is. The value is in the large digits and the maximum in the small ones after a dot. An empty file says "New save data" and shows NEW DATA.
+  5. A file that holds a save asks "Overwrite the file?". YES and NO slide in from the left to x 0 at y 18 and 34, with NO chosen first.
+  6. Saving shows "Saving..." while a pink sweep crosses the chosen row: 48 columns rise to its front and 16 fall ahead of it, added to the screen. Then the row flashes for 16 frames and "Game saved." stays for 150 frames or until a button.
+  7. The message box is black from y 187, with three darkening lines above it. CAUTION is at (10, 181) and the message at (16, 192). The cursor pulses brighter every 16 frames.
+- **Timing.** The card check takes 60 frames and the write 180. Retail's real cards took about 2 and 10 seconds.
+
+## Event conditions
+
+A room's event conditions start events during play. They are in the MPD section at bytes 8 and 12.
+- **Records.** The section opens with up to 16 u16 offsets, ending at 0xFFFF. Each record is:
+  - a trigger mask;
+  - a u16 event. The top bit marks one of the room's own events, and the rest is an `EVENT/nnnn.EVT` number;
+  - tests until 0xFF. 0xFE negates the test after it.
+- **The room's own events** are EVT-format scripts in the MPD section at bytes 24 and 28, reached through a u16 offset table.
+- **Tests** (bytes after the opcode):
+  - 1 Ashley on a tile, 2 in a tile rectangle;
+  - 3 a flag against a value, and 15 a flag against a flag, compared by the high nibble (≤, ≥, ==, !=, <, >);
+  - 4 an actor present;
+  - 5 living characters of a class (4 is hostile), and 7 an actor's hit-point percentage. Either can instead store its value in a flag, and then holds;
+  - 9 Ashley standing still;
+  - 16 an actor marked by its room record (byte 0x24).
+- **When they are tested.** Type 0x20 is tested every frame of play, 0x08 when an enemy falls, and 0x10 when the puzzle timer runs out.
+- **MAP003.**
+  - Each soldier's fall plays a local event (with flags 40 and 41 as guards), and both falling plays a third.
+  - With no hostile character left and Ashley still, EVENT 0003 plays. It heals her, sheathes her weapon and walks her to zone 4, room 0.
+
+## Event characters
+
+- An event's actor-creation opcode names a character id. Its model is `OBJ/<id>.SHP`, and the id is also the actor's script id.
+- A script refers to an actor by slot (high nibble 1) or by script id (high nibble 0). An id that no actor holds falls back to slot 1, as in retail.
+- Event animation set entries match a model id. BATTLE.PRG holds a model-alias table (at 0x800E8960): models 0x85 to 0x8A also take 0x81's entries, and 0x3B takes 0x3A's. The converter reads it from the disc.
+- A chained event file (an EVT the room's event starts, or a local event) keeps the animation sets the event that started it left in its slots, and the slot it selected, as it keeps its sound banks: EVT 0013 animates Callo and Sydney from the cellar's sets until it loads its own.
+- Opcode 3A loads an event animation set; load kinds 0 and 1 both queue `OBJ/Ennn.ESQ`, in different load modes. Set 1 is `OBJ/E001.ESQ`: a count, the character ids, a flag per entry, and offsets from 0x28 to one SEQ per character.
+- Animations are numbered through each SEQ's slot table. Opcode 22 picks bank 1 (the selected event set) or bank 0 (the character's base set).
+- 35 starts an animation part-way in, and 32 queues one to start when the current one reaches its last frame.
+- An event clip's script shows (32, 33) and hides (34, 35) the held weapon on its frames while the event plays; once Ashley is the player's again the draw state alone decides, as battle clips carry no such operations.
+- An event clip loops when its animation script starts it over (operation 1, BATTLE.PRG 0x800ADDA4, which clears the clip's frame and rewinds its script; a walk's script ends with it) and otherwise holds its last frame; operation 29 holds it.
+- 25 and 27 are the tile forms of 26 and 28: the target is the tile centre on its floor. With both speeds 0, 25 teleports.
+- 2f deletes actors through the shared field's `actor.remove`. A reference that resolves to slot 1 deletes nothing, as in retail. Creating a slot again replaces the actor that held it.
+- 3f draws (1) or sheathes (0) an actor's weapon, or toggles it (2). For other characters, drawn means hostile and sheathed means passive. EVT 0002 ends with both soldiers and Ashley drawing, so the battle starts as control is handed over.
+- 5c sets a character's weapon model: `OBJ/<n>.WEP` in material 0, mounted on its weapon bone (0xf0) and shown while drawn. A model of 0 takes the weapon away, 0xfe gives back the character's own weapon (and shield), and 0xff leaves it as it is. Byte 5 does the same for the shield on bone 0xf1; no event loads one. The installer converts every model an event names. A model an event hands over lasts until the room changes; retail keeps it until 0xfe.
+- 58 is the HUD switch (BATTLE.PRG 0x8007bd8c): `58 00` hides the HUD while a scene plays and `58 01` brings it back. The setting carries from room to room and is saved. The field engine clears it as it starts (0x800CA9C0), so a new game starts without the HUD until EVT 0002 turns it on.
+- 1f writes an actor's tile (x, level, z) into three flags, which the script then tests.
+- 5a is the puzzle timer. A first byte of 0 stops it. Otherwise mode byte 0 counts up from zero, and 1 counts down from hours, minutes and seconds (bytes 4 to 6; 30 seconds, 20, 15, a minute, two and a half). Which mode byte counts which way is inferred from the rooms' operands, since the retail mode table is not resident in the field. The timer counts sixtieths of a second, two each frame of play, and writes hundredths, seconds, minutes and hours into flags 0xa0 to 0xa3 for scripts to test. A countdown that reaches zero stops and tests the room's conditions of type 0x10. A countdown reads at (128, 200) as minutes, seconds and hundredths ("00:02:30") in the HUD's letters, as BATTLE.PRG's timer routine prints it (an hour or more reads 59:59:99). It counts two sixtieths a frame of 30 Hz play, and only in play. Count-ups start in boss rooms alongside 59 (below); they run unseen. Byte 2, the retail display style, is not read.
+- 2a walks an actor along a route to a map point (see the path search under Battle); a wait on mask 1 waits for it to arrive. The retail walker's pace was not read; the route is walked at walking pace.
+- 2d turns an actor to face a tile's centre, at a speed in frames a turn (0 at once, 0xff the default).
+- 2e sets an actor's scale (x, y, z in 4096ths, eased over byte 9 frames; BATTLE.PRG 0x800AABD0 keeps it at +0x2C, its step at +0x44 and frames left at +0x5C8, whose status waits see it). Retail draws with it: 0x800B28A8 scales the model's matrix by it and its root offset with it, about the actor's place, and the size box (0x800B00B0) takes it too. EVT 0082's vision checks it against the footage: its running man (character 171) close up at 0.625, its killers at 1.5, the father at 0.9375 and then 1.25 all show at retail's sizes. (An earlier reading that it changed only the size box was made while every character was drawn 12.5% too big.)
+- 57 restores an actor's hit and magic points; b3 marks an actor defeated (out of the battle) or undoes it.
+- Flag 0xac holds whether Ashley's weapon was drawn when the event began; EVT 0003 branches on it. An event started from play also gets 0xaf, the octant the gameplay camera was turned to (its yaw / 512 & 7), and 0xb0, whether it stood at the far distance (BATTLE.PRG 0x80073718). MAP022 picks how it frames Ashley by 0xaf, so the shot comes from the side play saw her from (footage: octant 3, the eye behind her right shoulder with the far door to her right).
+- 5f defines user easing curves 4 to 7. Its byte is the slot (top two bits), a base shape (the next two) and a signed power (the low four). The fraction, or for a negative power its complement mirrored, is squared that many times before the shape.
+- e8 anchors the camera to an actor, whose position then carries both camera points. Releasing it (0x2000) folds its last offset into the points.
+- de stops both camera points where they are.
+- e2 rolls the view about its axis to an angle (4096 a turn; byte 3's high nibble the way round, 0 negative, 2 positive, else the shorter; its low nibble an easing over byte 4 frames). The view turns clockwise by it: the chapel's overhead shot (MAP005, 1408 easing to 1680) shows the fallen figure lying corner to corner across the screen.
+- 96 stops the current music. 8f fades it out and starts another slot's at a volume.
+- 6e waits while the screen is fading.
+- bf is an echo preset: 0 resets the echo; any other value draws the frame again over itself, blended half and half, two pixels low and slightly bright. It reads this frame, not the previous one: MAP011's knight rising before the camera stays solid in the footage (Episode 3, 7:45), where a trail left the room showing through him.
+- 1e makes an actor collapse where it stands, playing its fall (70) unless the byte is 0.
+- 89 loads the zone's music, which is the disc's own sequence.
+- A script with no section of its own (no code) has an empty event.
+- 51 does arithmetic between two flags (packed as in 41). The operations are add, subtract, multiply, divide, remainder, and, or, copy, difference and swap.
+- 52 sets a flag (a full 16-bit index) to whether an item is carried, or how many of a stackable one. Items are not kept yet, so only item 0, which always counts, sets 1.
+- 55 takes every character but Ashley out of the battle while an event runs (0), or returns them.
+- 13 opens a text box anchored to an actor. It is placed above the actor's head on screen, or below it if there is no room, inside the screen.
+- 1c lets the player choose one of the boxes in its mask, ordered from the top. Up and down move the cursor, with the chosen box (balloon and text) at full brightness and drawn over the others, which are at half (as the lever's "Pull lever" and "Leave it" swap places in front in the footage), and any face or shoulder button takes it. Flag 16 gets its place, from 1; the cursor starts at flag 17's.
+- 2c turns an actor to face another's tile, like 2d.
+- 66 swaps two geometry groups' state, which carries whether each is hidden.
+- 5d a n sets an actor's idle sway: a count climbs to twice n and falls back, and half of it turns the body about y (BATTLE.PRG's root-bone pass near 0x800b2a40); 0 stops it.
+- 3e sets a mode (+0x17fd), a draw offset (+0x6f4 to 0x6f6, signed, added to the actor's position while it is drawn; 0x6f7 a depth bias) and a colour (+0x6f8; 0x8009f940). The colour is used only by the actor renderer's second pass (0x800b36f8). The actor's own draw keeps the room's light map, or 31's colour, so 3e does not tint it (MAP001's knights stand dark against the windows).
+- df sets camera momentum (0x800BE36C): bit 0 for the look-at, bit 1 for the eye, each cleared of any it carried (de clears it too). As a move ends with it on, the channel keeps its last frame's motion (0x800BCA8C); at rest nothing drifts, but the next move starts from a point still drifting by it and eases onto its own path by curve 1 (sin, 0x800BFEBC) over its frames. A snap leaves it as it is.
+- 23 sets an actor's flags (0x800a087C): bit 0 is kept inverted as its hidden bit at +8, bits 1 and 2 as they are, and bit 6 as +8 bit 15. Bit 6 (+8 bit 15) draws its shadow (0x800B390C calls 0x800B4B14 only with it set). Bit 2 lets the actor run its frame: with it clear the actor update (0x800AF064) skips its animation and motion step, so it holds its pose (MAP017's knights stand still through "Now, go!" under 67 and turn to go once 71 is set). The actor renderer (0x800af544) draws an actor only with +8 bit 0 clear and bit 1 set, so flags with bits 0 and 1 both set. Scripts hide actors leaving a scene with 1 or 69 (MAP005's Hardin and Sydney). Its second byte, with its bit 1 clear, shows (bit 0) or hides the weapon in the actor's hand (and with bit 3 clear, by bit 2, its shield; 0x800B770C hands them on as bits 11 and 12 to the weapon and shield objects). A room's fighters hold theirs hidden through a scene until a script shows them (evt0011 shows the Dullahan's with 5; MAP011's Zombie Fighter rises empty-handed); in play they follow the drawn state; it is handed on as bit 11 of the flags, which the weapon pass reads. The opening's knight draws the rapier this way as he pulls it from the corpse, until the loose prop takes its place.
+- 31 gives an actor a fixed colour (+0x58, and +0x5ac bit 0x100); otherwise its colour is the room's light map where it stands (0x800b3744). Both are then raised by four times the signed bytes at +0x6f0 to 0x6f2 and clamped (0x800b3780).
+- f1 n sets the game's frame step (2 or 4: at 4 it draws at 15 Hz and moves twice as far a frame); the pace is the same, so the field keeps its rate.
+- a9 n shakes the controller (0xFF stops it); the patterns (a table at 0x800f4bc0) were not read, so every one is a short shake here.
+- b7 0x11 keeps the room off the map: it clears the visited mark (0x800f19a0) that would set the room's bit in the visited mask (0x8005ffd8).
+- **Skipping.** Start skips a Start-skippable section, as BATTLE.PRG's 0x800bfbb8 does. `0d f` opens one, `0e n` closes it by jumping n bytes on, over the fix-up that follows it, and `0f` ends the fix-up; the fix-up runs only when the section is skipped and sets what the scene would have left. Every wait inside a section takes a skip: the main flow drops what it waited on and goes on at the fix-up, and any other flow waiting there ends. Skipping closes the text boxes and, unless bit 0 of f is set, stops the music. b7 2 skips as Start would.
+- b7 10 runs BATTLE.PRG's built-in scene reset (130 bytes of script at 0x800E9B5C, ending in 48, which returns to the opcode after the caller's, saved at 0x800f4c64): it puts Ashley's state, light, scale and gaze back, releases sound and music slots 1 and 2 and returns the camera. Each call is translated with its own copy of the routine, placed after the script, its 48 a jump back.
+- b7 0a n sets the gameplay camera's pitch from BATTLE.PRG's halfword presets at 0x800E9C00 (0x8007ce74 keeps only -0x300 and -0x80; anything else is the usual -0x180). b7 0 n loads a character's model ahead of use, which installed content does not wait for.
+- b7 5 n sets (n not 0) or clears bit 0 of every actor's flags but Ashley's (BATTLE.PRG 0x800baf6c); with bit 1 it draws the actor, so b7 5 0 hides the other characters.
+- 59 n is MENUF.PRG's screens and the end of a fight (BATTLE.PRG 0x800B92F4); the flow waits for it. State flag 0xb6 names the screen: 0 CONGRATULATIONS, 1 and 2 a time attack's start and end, 4 to 6 the cube puzzles'. n of 10 to 12 sets 0xb6 to 6, 4 or 5; 13 sets it to 1; 14 turns 1 into 2. Then (but for 13) the screen 0xb6 names opens if flag 0xab is 3 or more, then the loot window and the Break Art and ability check; 15 goes straight to the loot. All but 13 and 15 clear 0xb6 after. Only CONGRATULATIONS is presented (see Results); the loot and what was learned already come with each kill here.
+- 67 blocks a tile (blocking class 5) or clears it; blocked tiles have no floor to stand on, and routes avoid them.
+- 6c sets the fade for the next room change: black, white, a wipe (shown as black), or none, and its speed.
+- 71 makes an actor vanish (1) or reappear (2); its alternate drawing mode (0) is not shown.
+- 72 draws or sheathes Ashley's weapon with a battle-set animation, but only if it was out as the event began.
+- 1b sets a number for a later message to print: a flag read as u8, s8, or with the next flag as u16 or s16. Messages print it where their 0xfd (hex) or 0xfe (decimal) control names its slot.
+- b2 writes the distance between two actors, over a unit, into a flag (255 at most), and the bearing from the first to the second (256 a turn) into the next. b6 writes the distance in whole tiles.
+- b7 9 hands the camera straight back to the gameplay view. b7 3 and 4 report an unlocked action in flag 0xb1 (always 0, as abilities are not kept yet).
+
+## Overlays, sky and rain
+
+- A room without its panorama is drawn over a sky dome (BATTLE.PRG 0x8008EC48). Room sub-section 10 opens with five colour words, the zenith, the upper ring, the horizon, the lower ring and the nadir (0x8008E95C copies them; five equal colours fill the screen with one instead). The dome is 34 Gouraud corners at 0x80068C1C, a sphere of radius 409 with rings at heights ±204, turned by the camera and laid on the screen without perspective (0x8009820C): a pixel sees the direction whose view-space x and y are its offset from the centre over 409. It is drawn behind everything; the cellar (MAP006) has a navy zenith over black.
+
+- `74 n` loads the room's sky image (variant n from room sub-section 15; the disc has one sky a room) and `76` releases it: the sky is drawn while loaded.
+- `7a 1` holds the ambient sound (SLUS 0x800913bc with −1 keeps the playing one aside) and `7a 0` brings it back. `78 n` stops (n ≠ 0) or restarts (0) the weather's drift: BATTLE.PRG 0x80090EEC wanders it only while the byte at 0x800F1DCB is clear.
+
+**Overlays**
+- `installation/OverlayConversion.cs` converts full-screen overlays (GIM files): the opening's distant view and location card (`ENKEI.GIM`), and staff credits.
+- An overlay id maps to its file through the field engine's table at BATTLE.PRG 0x82E08 (sector << 8 | sector count).
+- A GIM is u16 data:
+  - per layer: (rows << 8 | columns), a word of strip and palette-block counts, a type, the extra layer count, then a grid of tile entries;
+  - after the layers: palettes, then 64-word pixel strips 15 rows high, 17 per VRAM column.
+- A tile entry is (page column + 2) << 8 | strip row << 2 | quarter, for a 64×15 tile. Type 0 layers are 4-bit with their own 16 colours; types 1 and 2 are 8-bit.
+- `EventOverlay` draws the layers about the 320×240 screen centre with the event's position, scale (0x20 = 1) and brightness (0x80 = full), easing between values.
+- Opcode 17's draw mode (b1 & 3) picks the layer's renderer (BATTLE.PRG's table at 0x800EC25C): 0 draws over the frame, 1 adds and 3 adds a quarter. A layer at brightness 0 is not drawn, except in mode 2. With no GIM loaded, 17 does nothing.
+- A layer's scale byte (17, and 18's target) holds the scale in its low seven bits (32 is 1; the drawer, 0x800CBBCC, masks the stored halfword to 14 bits). Its top bit puts the layer at the back of the room's ordering table instead of the screen's (0x800CCB48), so the room is drawn over it: MAP062 opens on the town through its window at 0xB0 (1.5 and behind), easing to 0.66 as the camera draws back. The field shows such a layer on a canvas layer it takes as its background.
+- Mode 1 (0x800CC128) adds the layer only while its brightness is below 128 (with two screen-wide bars of 128 less it); at 128 it is drawn over the frame as mode 0 is, so MAP062's close-up of Joshua covers the portrait it fades in over.
+- In every mode the layer's grid is drawn whole, so its cells without a tile take its fill (colour 0 of its palette): the title (MAP008, mode 0) and the epigraph stand on black over the whole screen.
+- **Mode 2 is the staff credits' wipe** (0x800CC204). The image is drawn whole, at full brightness, on the 320×240 screen, row by row between a left and a right edge; rows without an image tile take the layer's fill colour (none for the credits, so the faded screen shows). The layer's scale is the wipe's progress: from 0 to 1 (0x1000) the image is wiped on, from 1 to 2 off, each row by its own width. The widths are made as the layer is set up (0x800C8550): 320 plus an eighth of the sine of an angle that walks by random steps toward random targets, so the edge is ragged. A brightness of 0 wipes from the left, any other from the right.
+- Effects and rain are drawn over a layer laid in front of the room: the opening's distant view of the manor (overlay 13) has effect 206's fires and the rain over it, as retail shows. While such a layer shows, the field draws them through a second camera that follows its own and sees only their render layer, and adds that view over the picture (their blending is additive, so adding them is the same as drawing them there).
+- Each prologue scene ends by setting up its credit (overlay 1 after the manor's hall: "Art Direction, Character Design") and wiping it on; the next scene wipes it off. The picture stays loaded across the room change until a script frees it (19), so the credit shows over the black between the rooms, as the footage shows.
+
+**Echo**
+- `e1` switches on the frame-buffer echo, which draws the frame again over itself; `e1 00` ends it two frames later.
+- The echo is scaled about the centre (`e4`, 0x20 = 1), tinted (`e5`, 0x80 neutral) and offset (`e6`, in screen pixels). Each eases over its frames, or is set at once with 0.
+- It is blended with the semi-transparency mode set by `e7`.
+- Retail reads the previous frame (the other display buffer), echo and all, so its echoes accumulate into a trail: `e7 00` with `e1 01` alone is a motion blur, as in the cellar. `EventEcho` copies each drawn frame on the GPU and the next frame's echo reads it.
+
+**Sky**
+- The room's sky is `BG/<map>OP01A.TIM`, laid out by its `.FAR` file: a column and row count, then 24-byte cells (source rectangle and four corner colours).
+- BATTLE.PRG's drawer (0x8009147C) lays the cells on a grid of 32 by 32, each stretching its source rectangle (a negative width or height mirrors it) over its square, and skips empty ones; the grid repeats every 1024 pixels of scroll and turns with the camera's roll. The converter composes the grid, corner shading baked in, and the field draws it behind the room as an engine background layer.
+- Its top row stands on the 240-line screen at the camera's pitch (4096 a turn, upward positive, as the look-at at 0x8007A850 measures it) times the parallax over 4096, less the event's offset: `7b x y` sets the offset and `7e a b` the parallax for yaw and pitch, signed bytes of 128 (0x8008EAE4; 4096 by default). Across, x is the camera's yaw (4096 a turn) times the yaw parallax over 4096, less 7b's x, and a screen pixel p shows the strip's column (p − x) modulo its width (the drawer lays columns from −512 to 512 and picks each cell by its column modulo the layout's): MAP007's sun then stands once, near the middle of the level shot, as in retail. This matches MAP002's manor and MAP007's upward and level shots (the level one about 30 pixels high).
+- `73 1` draws the panorama and `73 0` the sky dome instead (the flag at 0x800F1DC9 that 0x8008EC48 tests); MAP001 shows the panorama only for the middle of the scene.
+
+**Rain**
+- A room's weather is its sub-section 10: the type at +0x34, then ranges for the wind direction (+0x36, +0x38), intensity (+0x3C, +0x3E) and fall angle (+0x42, +0x44), the drift rates (+0x3A, +0x40, +0x46: masks 0xF to 0x7F of frames between steps) and the rain rectangle (+0x48 to +0x4E: x, z, width, depth in map units). The installer exports it as the room's `weather`.
+- Rain falls in 3D, only over that rectangle, so not inside the room's buildings. A drop starts 2048 to 2560 units up at a random place in the rectangle and moves each frame by the wind (speed clamp(intensity × 6, 12, 90) × 1.75 along the direction and angle, 4096 a turn); it is drawn as a faint streak and starts again below the map's zero plane. There are intensity × 8 drops, at least 4 and at most one per four tiles of the rectangle (128 at most). Type 4 is embers, rising.
+- Opcode 77 sets the weather type, intensity (0–15), wind direction (b2 × 16) and fall angle (b3 × 4 + 512), reached over b4 frames.
+- While the weather drifts, each value steps by one within the room's range at its rate, turning back three times in eight.
+- Rain splashes are not drawn.
+
+## Music and sound
+
+Music and sound effects play live through the game's own sound driver, as on the console. The driver's code is the verified executable's (`SLUS_010.40`); the resident banks, music sequences, instrument banks and sound banks are the disc's own files, read by the executable's tables. `runtime/SoundDriver.cs` runs the driver in the shared engine's PlayStation audio sandbox (`NativePs1AudioSandbox`) and streams its output:
+- a small R3000A interpreter runs only the driver's code;
+- the sandbox answers its timer, event and SPU-transfer calls;
+- its SPU register writes drive a sound DSP.
+
+**Driver set-up.** The field boots it as the game boots its sound: `InitSound`, the resident instrument banks WAVE0000 and WAVE0005 (plus WAVE0200 at its fixed address), and the resident effect blob `EFFECT00`. It is ticked at its 240 Hz root-counter rate for as many 44.1 kHz frames as the output takes (or, with no audio device, as time passes). Music starts with command 0x10 (0x80011FB4) after its instrument bank is loaded into sound RAM, stops with 0x11 (0x80011FDC, as the field's release does) and takes its volume from 0xc1 (0x800128A0); fades step that volume each frame. Sounds play with 0x800121F0 (a program in a bank kept in RAM) or 0x8001217C (a resident one) on their group's voices.
+
+**Music.** A zone's music id is byte 24 of its ZND header; zone 1 uses id 16. The executable's tables give the sequence (`_musicLBAs`, here `MUSIC016.DAT`) and the instrument bank (`_soundFileMap` → `WAVE0069.DAT`). The driver starts it with command 0x10. Opcode 92 plays the music the zone loaded into slot 3.
+
+**Music slots.** There are four slots:
+- the zone's music is in slot 3;
+- `90 id slot` loads `MUSICnnn` into a slot;
+- `9f` plays a slot at full volume, and `92` plays it at a given volume;
+- `93 vol time` fades the playing music linearly over `time` event frames;
+- `97` waits for that fade, then stops the music;
+- slots outlast room changes.
+
+**Releasing.** `87 s` releases an event sound bank slot; releasing the selected one stops the event sounds (SLUS 0x800460c0, StopSfx on their voices). `91 s` releases a music slot, which stops its music at once (0x80045440 by way of 0x80044df4).
+
+**Stopping and fading sounds.** The opcodes call the game's own sound routines with the group's voice set (BATTLE.PRG's masks at 0x800E9B34: 0x1, 0x7e, 0x200, 0xff000, 0xf00000), and the field makes the same driver calls. `83` stops every sound (SLUS 0x80045DC0, driver command 0xf1). `84 g id` (0x80045D64) stops one: for groups 3 and 4 (the selected event bank) StopSfx (0x80012288) is given the sound's program in the bank, for groups 1 and 2 its id; id 0 stops the group's voices. `82 g id vol frames` (0x80045BFC) fades one sound the same way, by driver routine 0x8001264C (sound, 0, frames, volume). Releasing the selected bank (`87`, 0x800460C0) calls StopSfx with -2 and then with group 3's voices.
+
+**Event sounds.**
+- Opcode 85 loads an SE file into a bank slot and 88 selects a slot. Because they can sit in any thread, the bank in effect follows the script's address order.
+- An SE file is a count, then offsets to AKAO sound programs, one per sound id.
+- Opcode 80 group 3 plays from the selected bank; group 2 plays resident ambience such as the rain loop (id 21); group 1 plays a resident sound once, such as footsteps (ids 0x3f to 0x42 and 0x65, 0x66 come in pairs). The group is the driver's voice set: BATTLE.PRG's masks at 0x800E9B34 are 0x1, 0x7e, 0x200 and 0xff000, and the executable's player (0x80045754) gives group 1 the next of voices 1 to 6 in turn.
+- Each sound plays at the pan its play command gives (0x80 is centre). Ambience loops until stopped, as its program does.
+- The field applies the script's volume; opcode 82 fades a playing sound, whatever its pan.
+
+**Character sounds.**
+- `54 a a n` plays a resident sound of the actor's family: the first sound of its animation set's family (BATTLE.PRG's bytes at 0x800E9090, by the set in actor +0x5b1) plus n, as a group-1 sound. Only Ashley's scripts use it; her set is 0, which starts at 0.
+- `81 a a n` plays sound n from the actor's own bank, its model's sound section (SHP offset 0x128, from 0xF8): a count, then offsets from the section's start, as in an SE file (BATTLE.PRG 0x800ae4fc). n = 4 picks one of 4 to 7 at random; n = 8 takes another path that is not followed.
+- A character id names the sound's owner; for a slot, the sounds are kept for every character the room or the event brings in. They are keyed `c<character>_<n>_p128`, and play on voice 0, panned by where the actor stands on screen, at full volume whatever the distance.
+
+**Music loop.** The sequences loop themselves; the driver plays them for as long as they run.
+
+## Speech balloons
+
+Field text uses the retail comic-style balloons (box types 1, 5 and 7).
+
+**Fill and ink**
+- The fill is the 64×64 paper tile at the top-left of SYSTEM.DAT's UI page (VRAM (448, 256)). Its palette at (992, 220) is uploaded with the font section's third table to (960, 66).
+- The text is font colour 0, a dark ink ramp at (832, 222) in the font's first table.
+- Code 157 is the semicolon and 158 the colon (the system box's "TARGET:" and `Trap: "Gust"`, ITEMHELP's "Class:"; retail footage shows the colon).
+- The font sheet holds the 189 glyphs twice, nine 12-pixel rows apart: an upright set, and below it hand-lettered italic capitals, which the balloons and the HUD print in. The glyph renderer adds 189 times the set number (0x800F4CB9) to the code; the lettered set's advances follow the upright set's (all 6) in BATTLE.PRG's table at 0x83010.
+
+**Layout**
+- The text is centred down its box: its tallest page's lines, 13 pixels each, sit in the middle of the box's height.
+- Lines break only at `e8`: the field never wraps a line, which may run on to the balloon's edge ("Torch the chambers" in MAP003 does).
+- `fa n` moves the pen n pixels across (here, spaces of six, then one-pixel hair spaces, U+200A, for the rest); `fb 04` centres the message's lines across the box (the shouts and the credits); other `fb` values pace the printing.
+
+**Shapes** (field engine table at BATTLE.PRG 0x82D88)
+- A header: total vertices, tail parts, outline vertices, body polygons.
+- One entry per tail part: attach start, attach end, vertex count, polygon count.
+- Vertices across the box in 0–255; a tail's vertices are signed offsets from its attach vertex.
+- Polygons as four vertex indices, with 0xFF for a triangle.
+
+**Box flags**
+- Bits: type (0–3), open speed (4–5), flip (6–7: bit 0 mirrors y, bit 1 mirrors x), shape (8–11), tail part (12–15).
+- Types 1 and 5 use shapes 0 and 2.
+- Shapes 0 to 8 are the field engine's. Shapes 9 to 15 are the running script's own: its header's third halfword locates a block whose halfwords 1 to 7 give each shape's offset in it (0 for none), and BATTLE.PRG 0x800BEFC8 copies them into the table as the script loads. The jagged shouts are such shapes (shape 15 in EVT 0004 to 0006, 0014, 0015 and others). A box whose shape is empty has no balloon (0x800CCE54).
+
+**Drawing** (`EventBalloon`)
+- Body and tail polygons are filled with the paper, repeating every 64 screen pixels.
+- A grey (48) outline detours through the tail.
+- A black shadow sits 2 pixels down and right.
+- The balloon opens by scaling from its centre over {10, 20, 10, 8} frames by speed; `1d` sets another time for the box, and a balloon already up takes it at once, keeping how far it has gone: MAP010's last line closes its box and gives it one frame, so the balloon is gone with the cut back to play (Episode 3, 6:23). The text appears once it is open.
+
+**Button waits.** `5e mask frames` waits until a button in the mask is newly pressed, or the frames run out (0 waits only for a button). The mask bits, from bit 0, are L2, R2, L1, R1, triangle, circle, cross and square; only circle and cross are bound so far.
+
+## Head tracking
+
+Opcodes 34 (a point, x and z), 39 (a point, x, y and z) and 38 (another actor; 0x2000 ends it) turn an actor's head toward their target (BATTLE.PRG 0x8009fc60), clamped to ±800, by a speed a frame (0 at once). A bone record's byte 6 is its body part (1 the head; 0xF0 and 0xF1 the weapon and shield mounts). The retail engine applies tracking only while an actor plays a base idle (1) or walk (13). Here a modifier on the rig turns the head bone about its own y axis after the animation poses it; the turn eases back to straight ahead in other animations.
+
+## The ending
+
+- `b7 1` ends the game: the ending follows (ENDING/ENDING.PRG in retail).
+- Its eleven illustrations (ENDING/ILLUST06.BIN to ILLUST16.BIN) are compressed TIMs. The stream's commands: 0x00 to 0x7B copy that many plus one literal bytes; 0x7C repeats the back-reference just made; 0x7D count value writes value count plus one times; 0x7E count a b writes the pair; 0x7F ends; 0x80 and up, with the next byte, copy (bits 4 to 6) plus three bytes from (the low twelve bits) plus one back.
+- The credits are a script in ENDING.PRG from 0x5C00: a heading follows a 0x03 byte and a name a 0x02; 0x01 n moves the next line down (its second value before a line is the step), and 0x1F inside text is a spacing control. The script runs to the copyright lines.
+- `scenes/ending` rolls the credits up over the illustrations, which fade from one to the next, then returns to the title. Retail's timing, layout, fonts and music were not read: the roll is 24 pixels a second on the 320 by 240 display and the illustrations share its time evenly.
+
+## Visual effects
+
+`installation/EffectConversion.cs` converts each EFFECT/Ennn.P (290 files) with its textures and palette; `scenes/field/FieldEffect.cs` plays it.
+
+- **Which effect.** Byte 1 of an action's 52-byte record (the executable's table at 0x8004B9DC) is its visual effect: support spells 1 to 43, attack spells 44 to 87, monster specials 88 to 130, Break Arts 131 to 170, other actions to 202; 203 to 302 are started by events and the battle. A spell plays its effect as it is released, an art as it strikes, and an item as it is used. A blow flashes resident small effect 1 at the struck limb, a miss 0x27 (BATTLE.PRG 0x8006c84c; 0x26 for its other outcomes). Chain and defense abilities flash one too: E000, which BATTLE.PRG keeps at 0x800EC4BC, whose effect n starts at script address 3 n; the ability's byte 1 is its number, and 23, 25, 40, 41 and 44 to 53 are drawn on the defender. Events start one with `a0 n a a` (0x8007be20: from the point (0, 0, 0), at the actor), which only loads it (0x800cf0e8 copies the request and sets the manager loading, then ready): nothing plays until `a1 n` starts part n (0x800cef74, its script at 3 n), each part once (its bit in the mask at 0x800f521c is cleared), and the effect stays ready between parts; `a2 0` waits until every effect has ended (the manager's state at 0x800cf48c; `a2 5`, ready, never waits for installed effects), `a5` clears every effect (0x800cf1a8) but leaves the request loaded, so a later `a1` still starts its other parts (the Dullahan's summoning, EVT0011, clears part 0 and starts part 1, the orbs over the darkened room, at once), and `a3` does nothing outside a skip.
+- **Files.** Effect n is En.P, En_1.FBC (palette rows from VRAM y 241, x 768) and En_k.FBT (64 halfwords by 256 rows at VRAM x 512 + 64 k, y 256), beside the resident E000_0.FBT at x 512 and its palette row 240. An 8-bit page spans two FBT files, so the installer cuts each texture record out of an emulated VRAM into one atlas per effect; a colour of 0 is transparent. Effects whose PLG file is not empty (119) also run code of their own: renderers, which their timelines start (track 4: a frame, a lifetime, the renderer, an emitter record and a parameter).
+- **The .P file** is a chain of blocks, each opening with a word: its length (with the word) in the low halfword and its type in the high; type 0 ends it. Offsets in a block count from after the word.
+  - 1 textures: a frame-table count, the records' offset and the tables' offsets. A frame is a run of parts (a count and a first record). A 24-byte record holds a CLUT word (bit 15 draws it semi-transparent), a texture-page word (blend in bits 5 and 6: half and half, add, subtract, add a quarter; depth in 7 and 8), u, v, w, h, and four corner offsets in world units (top left, top right, bottom left, bottom right).
+  - 2 sprite programs: words whose top nibble is 0 show a frame (bits 0 to 15) for a time (16 to 23, in sixtieths; the 30 Hz tick takes two off), 1 offset it, 2 loop, 3 stop.
+  - 3 timelines: tracks of a type, an event count and the events. 1 fires an emitter (frame, repeat, depth, emitter, scale) once a tick, repeat times; 3 starts a child instance per target; 12 holds actions (5 starts an anchor's path, 6 pauses the clock, 13 has the gameplay camera close on anchor a as it would on Ashley, 14 gives it back); 6, 7 and 9 shift the palette of the source, each target or the room (r, g, b with 128 none) for a duration, added to the original colours as palette operation 4 and restored after. 2 plays a sound (frame, id, bank, pan, anchor): bank 1 is the effect's own, block 12, an event-bank layout of AKAO programs that SLUS 0x80046168 registers and the field plays like event sounds; bank 0 (the common battle bank) and bank 2 (block 13, a sequence the effect plays as music) are not played. 4 starts a PLG renderer, 5 rumbles the pad (by an envelope's first value, when the caster, a target or anyone is the player, by its last two bits), 8 (bystanders' shifts), and 10 are not played. 13 shakes the camera (0x800D1EF0): on each channel its mask names (across, up, along the view, roll) an envelope from block 11 (piecewise-straight (duration, value) byte pairs), a gain and a phase speed and jitter, each a value or a curve; each tick the channel's offset is sin(phase) × envelope × gain / 256 map units and the phase steps by the speed plus a random jitter. The push along the view and the roll are not followed.
+  - 4 curves (bytes, 128 a whole, 1-based); 5 emitters (204 bytes); 8 the script; 9 the header (gravity and drag ranges with their curves, part and anchor counts, timeline remaps); 10 anchors (56 bytes).
+- **The script** (BATTLE.PRG's interpreter at 0x800D51D8, 49 operations, its table at 0x800EC3F4) runs one instance per part (part n at address 3 n) and per child, each tick until it yields: jumps, children, variables, anchors, the timeline, the particle tick and the end. The battle's casting mode (0x800F522C) reaches it through four: 8 branches when the mode is 0 (events request with none), 15 sets variable 3 to the casting sparkle's emitter for it (0, 43, 44, 45; 0x800EC32C), 35 lets the source actor go on to its release and 36 clears the mode.
+- **Waits on music** (9a, 0x800BA7BC): the scene waits until the playing music's bar (the executable's 0x80011F90: the halfword at +124 of the active music configuration, at 0x80037820) reaches the signed halfword; without music it goes on. MAP008's title waits for bar 31 after the flare.
+- **Emitters** (0x800D2ADC) place each particle at an origin (the world, an anchor, its parent particle or the target; a parent kept relative to its anchor, as a local emitter's particles are, stands at that anchor plus its position, which put E232's sparks and smoke at MAP010's origin corner rather than on the dying soldier) plus a spawn shape (ellipsoid, box, cone, cylinder, disc, square, polygon), moving off at its speed in a cone about the base angles (the z axis turned by RotMatrix's Rx·Ry·Rz, 0x800D3E60), radially, or toward an entity, with ranges read through the curves at the firing's emission count. Particles keep 20.12 fixed point; each tick their velocity is damped by drag over mass and gains force and gravity, force grows by acceleration and toward a homing point, and they die at the end of their lifetime or, at -1, when their program stops, firing their death emitter.
+- **Renderers.** EFFECT/EFFPURGE.BIN (loaded at 0x800F9800, as the PLG files are) lists each effect's renderers: a halfword per effect at 0x800FCE3C gives its first, and the next its end, in a table of entry points at 0x800FD15C (0 for none). The PLG code is a few templates compiled with different constants, so the installer names each entry's template by the shape of its code: its words from the entry to its return, with jump targets and immediates masked, hashed. The player draws each template from its emitter record, read through the curves at the renderer's age:
+  - rings: three rows that grow outward and upward by the record's speeds and accelerations (0x4c, 0x64) from its extent (0x24), tilted by its angle (0x34), the middle row at its inner fraction (0x30), turning by a random step (0xa4) each tick; closed (16 columns all round) or open (9 over an arc, 0x40). A row's brightness is its component of one of eight standard colours (byte 0xc7; the table is read from the PLG). The texture runs round the ring, repeats every 4 columns, runs along its rows (transposed) or covers each quad (tiled), by template.
+  - grids: 9 by 9 points spaced by growing spacings and rippled by sines, textured straight from a VRAM page (page, palette row and depth from bytes 0xca, 0xcb and 0xc7) through a scrolling window; the installer decodes each page a grid reads.
+  - surfaces: a hemisphere of 5 rings by 16 (mirrored, 9 rings), and rotating surfaces, a twisting tube of 5 rings; their radius and height step from ring to ring, and each ring's brightness is the transparency curve spread down them.
+  - meshes: a tetrahedron, each face split in four, its corners and edge midpoints scaled apart, turning.
+  - trails (5 or 9 samples, up to 8): splines from start points by the spawn shape to end points about the target, through control points off the line, followed over a random number of steps with an easing speed, leaving a ribbon that fades by the transparency curve; the spline is cubic through its four points at t = -1, 0, 1 and 2 (0x800D1390).
+  - strands (lightning, textured or as lines): up to 8 splines re-picked every so many ticks, their control points every tick, drawn through 8 jittered places.
+  Ribbon widths are in screen pixels of retail's 240 lines. Renderers' tick-event emitters fire from their centre.
+- **Bones.** Effects, scripts and the rigs' definitions number a model's bones by their records' order in the SHP. The installed rigs keep each bone's name (`b` and that number) but glTF reorders a skeleton depth first, so the field finds a bone by its name (`EventActor.SkeletonBone`): effect anchors, camera bone targets, attachments, weapon mounts and head turning. The wyvern's breath comes from its jaw (bone 30) this way. Bones 0x40 to 0x4F are the held weapon's own (its model's bone by the low nibble; BATTLE.PRG 0x800A1E4C), so the Dullahan's summoning sparks from its sword's tip (anchors on bone 64, 370 units along the blade).
+- **Anchors** (0x800D0B30): an anchor sits on an entity (flag 2) and turns with it: with the entity's bone, or with 0x4000 by the actor's facing alone (0x800D0D08 composes the attachment with the anchor's own frame); a local emitter's particles (flag 17) are placed in that turned frame, so on a soldier lying on his back (E232, MAP010) they rise from his body as retail's do; chosen by bits 3 and 4: 0 the fixed actor, the actor-table slot in the record's byte 2 (0x800D004C), 1 and 2 the effect's entities at +0xD40 and +0xD28; its bone is the entity's (flag 4) or the record's byte 3. Taking the fixed actor for the effect's source put the Dullahan's summoning (effect 221, its anchors on slot 2) at the room's origin. An event's request (0x8007BDC4) has the point (0, 0, 0) for its source, the actor it names for its one target, and every other character in the actor table as its bystanders (the list timeline type 8 shifts). An anchor's own translation (flag 1) runs from its start to its end values by curve 0 over 128 and is composed with its entity's frame (0x80011ADC), so on a bone it turns and scales with the bone.
+- **Scale.** A particle's scale is the firing event's (6 bits), else its emitter's own (flags 26 to 31), else its parent's, else 4.
+- **Palette shifts** (timeline types 6, 7, 9; 0x800D5FF8) call the routine opcode 70 calls (0x8007B29C) with the event's operation (byte 7), the fade value as it is (halfword 2; see **Fades**) and the change r, g, b less 128 in 5-bit steps; the data restores the colours with its own later events. Type 8 shifts the request's bystanders, every other character (0x800D61AC). A script's effect shifts the actor it was requested on as its source.
+- **Drawing.** Each part of a particle's frame is a camera-facing quad of its record's corners times its scale over 4, coloured by its colour curves at its age plus one (doubled less one, 128 a whole) and blended as the record says. With flag 16 the quad turns on screen toward where the particle will be 128 ticks on. An anchor's path, once a timeline starts it, runs from its actor to its target over its limit plus one ticks: straight (linear, eased, or along its path curve) or, for a spline, through a control point off the middle by its control radius and jitter (the retail control points' construction was not read). A sprite is depth-tested at its middle, brought 128 units toward the camera (by its radius alone, tiny sparkles inside a body, as on MAP010's dying soldier, were hidden by it where retail shows them), as the PSX sorts it by its middle against each polygon's mean depth. Its layer mode (0x800D6E44: bits 8 to 11 of the particle's word at +0x60, from the firing event's depth, else its sprite program frame's layer, byte +0x43) moves its ordering-table slot (a quarter of its depth) 8 or 16 nearer (1, 2) or farther (3, 4); 5 puts it in the table's last slot (0x7FE) and 6 to 8 in slots before the table's first (−15, −13, −11). Those last four are drawn behind the whole room: the footage shows the courtyard's lightning (effect 213, mode 6 and 5 glows) behind the manor. Added and subtracted sprites blend in the main view in linear light; the PSX blends in the display's own space, so a sum there is somewhat brighter than retail (a second view composited in display space matched it but cost a whole second render and lagged the frame). A particle's colour curves (0x800D74B0) are read at its colour phase plus one: the phase starts from the emitter's byte 0xC7 (BATTLE.PRG copies bytes 0xC4 to 0xC7, the three curve ids and the phase, to the particle's +0x74) and steps each tick as a byte. Effect atlases keep each texel's STP bit in the alpha (255 set, 254 clear); every atlas checked has it set throughout.
+
+## Not converted yet
+
+- **Visuals:**
+  - the sky panorama's roll, and the sign of the camera yaw that scrolls it (a level shot does not tell them apart);
+  - the light map's second set of records (sub-section 4), which characters do not use;
+  - whether retail draws the lone green-tipped triangles some rooms carry (z009_m11 has one in group 0 on the floor and one in group 9, 512 units up); they are drawn here;
+  - palette transforms' mode 2 and light sets (70), and 3e's second-pass colour and draw offset;
+  - base-animation remapping (walk and idle);
+  - the SEQ movement track (the second translation pointer, which moves the actor by a quarter of each delta);
+  - room characters made from template 0x7f, which retail creates through the player's creation path;
+  - weapon trails (aa), lens warping (ed), echoes from the previous frame (ba), scanlines (f3), and a geometry group field (7d) whose effect was not found;
+  - the animations monsters play for their special attacks (they use the spell wind-up here), and the effects' bespoke PLG code (Bloody Sin's camera, one renderer in effect 128), their common battle sounds and their sequences;
+  - a sound's pan slide (9c) and the echo's draw depth (b9);
+  - the music snapshot (98), and b7's other operations: 8, 0x0b (a camera channel's move) and 0x0f (a screen effect's setting).
+- **Gameplay:**
+  - crates' exact motion paths (BATTLE.PRG's offset tables);
+  - other actors riding platforms, and the platforms' drop shadows (BATTLE.PRG draws one under each);
+  - battle: the enemies' own AI routines;
+- **Sound:**
+  - reverb presets (opcode A8).
