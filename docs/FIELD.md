@@ -175,7 +175,11 @@ The room sub-section after the geometry is the collision map.
 
 **Threads**
 - The retail script runs up to four threads. Opcode F5 forks a thread, F4 joins or kills one, and F6 ends the current thread.
-- Each thread becomes its own flow. The presentation starts it on a `thread.start` command and completes a `thread.join` once its flow has ended.
+- Each thread becomes its own flow. The presentation starts it on a `thread.start` command (a thread started again starts over) and completes a `thread.join` once its flow has ended.
+
+**Runtime**
+- A room's flows are compiled once, when its event first starts, onto `scenes/field/EventWorld.cs`: the 1024 state flags, the switch byte (46, 47), the loop counters (4a) and the requested skip. Conditions, effects, waits and commands are bound to those fields then; the engine's `FlowRuntime` runs them with no JSON in its loop.
+- The field presents each command with a receipt from the runtime and completes the receipt when what the command waits on is done. The event clock advances once per 30 Hz event frame.
 
 **Batches and waits**
 - Within a flow, each run of opcodes that does not wait is one automatic edge. An opcode that waits ends its batch with one awaited command.
@@ -659,7 +663,7 @@ A room's event conditions start events during play. They are in the MPD section 
 - f1 n sets the game's frame step (2 or 4: at 4 it draws at 15 Hz and moves twice as far a frame); the pace is the same, so the field keeps its rate.
 - a9 n shakes the controller (0xFF stops it); the patterns (a table at 0x800f4bc0) were not read, so every one is a short shake here.
 - b7 0x11 keeps the room off the map: it clears the visited mark (0x800f19a0) that would set the room's bit in the visited mask (0x8005ffd8).
-- **Skipping.** Start skips a Start-skippable section, as BATTLE.PRG's 0x800bfbb8 does. `0d f` opens one, `0e n` closes it by jumping n bytes on, over the fix-up that follows it, and `0f` ends the fix-up; the fix-up runs only when the section is skipped and sets what the scene would have left. Every wait inside a section takes a skip: the main flow drops what it waited on and goes on at the fix-up, and any other flow waiting there ends. Skipping closes the text boxes and, unless bit 0 of f is set, stops the music. b7 2 skips as Start would.
+- **Skipping.** Start skips a Start-skippable section, as BATTLE.PRG's 0x800bfbb8 does. `0d f` opens one, `0e n` closes it by jumping n bytes on, over the fix-up that follows it, and `0f` ends the fix-up; the fix-up runs only when the section is skipped and sets what the scene would have left. Every wait inside a section names it, and each flow that waits in a section has an interrupt for it: on Start the flows waiting in the main flow's section let go of their waits, the main flow goes on at the fix-up, and any other flow ends. A frame wait presents nothing itself, so in a script with sections a marker beside it says which section it is in. Skipping closes the text boxes and, unless bit 0 of f is set, stops the music. b7 2 skips as Start would.
 - b7 10 runs BATTLE.PRG's built-in scene reset (130 bytes of script at 0x800E9B5C, ending in 48, which returns to the opcode after the caller's, saved at 0x800f4c64): it puts Ashley's state, light, scale and gaze back, releases sound and music slots 1 and 2 and returns the camera. Each call is translated with its own copy of the routine, placed after the script, its 48 a jump back.
 - b7 0a n sets the gameplay camera's pitch from BATTLE.PRG's halfword presets at 0x800E9C00 (0x8007ce74 keeps only -0x300 and -0x80; anything else is the usual -0x180). b7 0 n loads a character's model ahead of use, which installed content does not wait for.
 - b7 5 n sets (n not 0) or clears bit 0 of every actor's flags but Ashley's (BATTLE.PRG 0x800baf6c); with bit 1 it draws the actor, so b7 5 0 hides the other characters.

@@ -8,7 +8,7 @@ Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wo
 
 The title runs as on the retail disc: the publisher and developer logos, the opening movie (its music continues under the title), and the title screen. The menu wheel has the retail New Game, Continue, Vibration (On/Off) and Sound (Stereo/Mono), plus an added Settings item between Sound and New Game. Settings opens the shared engine's display and graphics panel and a master volume slider. Its word is composed at install time from the disc's own menu lettering. The title loops back through the intro after leaving or idling. New Game and Continue go no further yet; they show a notice and return to the title. Menu sound effects are not converted yet.
 
-The title flow (which screen is current and the title settings) is a game catalog, `scenes/title/title_flow.json`, executed by the engine's `WorldEventRuntime`. `TitleSequence` presents each screen with the retail frame timing. See [docs/TITLE.md](docs/TITLE.md).
+`TitleSequence` owns the title's screens and settings and presents each screen with the retail frame timing. See [docs/TITLE.md](docs/TITLE.md).
 
 ## Build
 
