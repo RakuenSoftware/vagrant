@@ -165,6 +165,16 @@ void fragment() {
     public const float PixelAspect = 2.3125f * 3 / 4 / 1.99f;
 
     /// <summary>
+    /// The lines of retail's 320 by 240 screen that the television shows. The field projects about line 112
+    /// (BATTLE.PRG 0x8007A60C sets the GTE's screen offset to 160, 112) and its display shows 224 lines from the
+    /// top of the frame (0x800761A8 sets both display environments' screen to 256 by 224 at line 8), so lines 0 to
+    /// 223 are seen, 112 each side of the projection centre, and lines 224 to 239 never are. The window shows the
+    /// same: the camera's vertical field of view spans these lines, and what is laid out on the screen is scaled to
+    /// them, its top at the window's top.
+    /// </summary>
+    public const int VisibleLines = 224;
+
+    /// <summary>
     /// Where the 320 by 240 screen lies in a window of <paramref name="size"/>: its scale (window pixels to a screen
     /// pixel, across and down, the across <see cref="PixelAspect"/> of the down), and how far right of the window's
     /// left edge a part laid out on the screen's left (0), middle (1) or right (2) stands. The screen fits the
@@ -173,14 +183,14 @@ void fragment() {
     public static (Vector2 Unit, Vector2 Offset) Pin(Vector2 size, int side)
     {
         var unit = Unit(size);
-        var spare = size - new Vector2(320, 240) * unit;
+        var spare = size - new Vector2(320, VisibleLines) * unit;
         return (unit, new Vector2(spare.X * side / 2, spare.Y / 2));
     }
 
     /// <summary>Window pixels to a screen pixel, across and down, for a window of <paramref name="size"/>.</summary>
     public static Vector2 Unit(Vector2 size)
     {
-        float scale = Math.Min(size.X / (320 * PixelAspect), size.Y / 240);
+        float scale = Math.Min(size.X / (320 * PixelAspect), size.Y / VisibleLines);
         return new Vector2(scale * PixelAspect, scale);
     }
 
@@ -692,7 +702,7 @@ void fragment() {
                 Field.CameraEye = EventActor.RetailSpace * Gameplay.Eye;
                 Field.CameraTarget = EventActor.RetailSpace * Gameplay.LookAt;
                 Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-                Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(120f / EventCamera.DefaultProjection));
+                Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / EventCamera.DefaultProjection));
             }
             LoadInventory();
             Battle = new FieldBattle(this, Screen);
@@ -896,14 +906,19 @@ void fragment() {
         _skippable = false;
         _skipRequested = false;
         Skips++;
-        // Only a main flow waiting inside a section skips it; then so do the threads waiting in the same section.
-        int section = Active(0) ? _sections[0].Section : -1;
-        if (section < 0) return;
-        _world.Skip = section;
+        // Every flow waiting inside a section lets go: each section's flows are interrupted in turn.
+        var sections = new SortedSet<int>();
         for (int slot = 0; slot < _flows.Length; slot++)
-            if (_sections[slot].Section == section && Active(slot)) events.Invalidate(slot);
-        Drive(events.Drain);
-        _world.Skip = -1;
+            if (_sections[slot].Section >= 0 && Active(slot)) sections.Add(_sections[slot].Section);
+        foreach (int section in sections)
+        {
+            _world.Skip = section;
+            for (int slot = 0; slot < _flows.Length; slot++)
+                if (_sections[slot].Section == section && Active(slot)) events.Invalidate(slot);
+            Drive(events.Drain);
+            _world.Skip = -1;
+            if (Failure.Length != 0) return;
+        }
     }
 
     /// <summary>Presents a flow's command; one that cannot be presented stops the field.</summary>
@@ -955,7 +970,8 @@ void fragment() {
                 // A thread started again starts over, dropping what it waited on.
                 int slot = Array.IndexOf(_flows, args["event"].AsString());
                 if (slot < 0) return Error.DoesNotExist;
-                if (slot == id.Slot) _restarts.Add(slot);
+                // One that starts itself goes no further than this batch, and starts over once the frame's flows have run.
+                if (slot == id.Slot) { _events!.Suspend(slot); _restarts.Add(slot); }
                 else
                 {
                     _events!.Cancel(slot);
@@ -5035,7 +5051,7 @@ void fragment() {
         // Into the 320 by 240 screen, which stands centred in the window at the window's height (or width).
         var size = GetViewport().GetVisibleRect().Size;
         var scale = Unit(size);
-        var origin = (size - new Vector2(320, 240) * scale) / 2;
+        var origin = (size - new Vector2(320, VisibleLines) * scale) / 2;
         Vector2 Screen(Vector3 point) => (Field.Camera.UnprojectPosition(point) - origin) / scale;
         int width = geometry["width"].AsInt32(), height = geometry["height"].AsInt32();
         var top = Screen(head);
@@ -5301,7 +5317,7 @@ void fragment() {
     /// </summary>
     private static MeshInstance3D Dome(Godot.Collections.Array bands)
     {
-        var shader = new Shader { Code = "shader_type spatial; render_mode unshaded,depth_draw_never,cull_disabled,fog_disabled; uniform vec3 bands[5]; void vertex(){POSITION=vec4(VERTEX.xy,CLIP_SPACE_FAR,1.0);} void fragment(){vec2 p=(SCREEN_UV-0.5)*vec2(240.0*VIEWPORT_SIZE.x/VIEWPORT_SIZE.y,240.0)/409.0; vec3 view=vec3(p.x,-p.y,-sqrt(max(0.0,1.0-dot(p,p)))); float up=normalize(mat3(INV_VIEW_MATRIX)*view).y; const float ring=204.0/457.0; vec3 c; if(up>ring){c=mix(bands[1],bands[0],(up-ring)/(1.0-ring));} else if(up>0.0){c=mix(bands[2],bands[1],up/ring);} else if(up>-ring){c=mix(bands[2],bands[3],-up/ring);} else {c=mix(bands[3],bands[4],(-up-ring)/(1.0-ring));} ALBEDO=c;}" };
+        var shader = new Shader { Code = "shader_type spatial; render_mode unshaded,depth_draw_never,cull_disabled,fog_disabled; uniform vec3 bands[5]; void vertex(){POSITION=vec4(VERTEX.xy,CLIP_SPACE_FAR,1.0);} void fragment(){vec2 p=(SCREEN_UV-0.5)*vec2(224.0*VIEWPORT_SIZE.x/VIEWPORT_SIZE.y,224.0)/409.0; vec3 view=vec3(p.x,-p.y,-sqrt(max(0.0,1.0-dot(p,p)))); float up=normalize(mat3(INV_VIEW_MATRIX)*view).y; const float ring=204.0/457.0; vec3 c; if(up>ring){c=mix(bands[1],bands[0],(up-ring)/(1.0-ring));} else if(up>0.0){c=mix(bands[2],bands[1],up/ring);} else if(up>-ring){c=mix(bands[2],bands[3],-up/ring);} else {c=mix(bands[3],bands[4],(-up-ring)/(1.0-ring));} ALBEDO=c;}" };
         var material = new ShaderMaterial { Shader = shader, RenderPriority = -128 };
         var colours = new Vector3[5];
         for (int i = 0; i < 5; i++)
@@ -5351,10 +5367,10 @@ void fragment() {
                 Field.CameraEye = EventActor.RetailSpace * eye;
                 Field.CameraTarget = EventActor.RetailSpace * (eye + ahead * 256);
             }
-            // Retail's screen is 240 lines high at its projection distance; a window wider than 4:3 sees more to the
+            // Retail's screen shows 224 lines about the projection centre; a window wider than 4:3 sees more to the
             // sides rather than less above and below.
             Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-            Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(120f / Gameplay.Projection));
+            Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / Gameplay.Projection));
             Field.Camera.Near = 64 / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.Far = 32768 / Installation.MapConversion.UnitsPerMetre;
             // The event camera stands with the gameplay one while she plays, so an event that eases from it or hands
@@ -5372,7 +5388,7 @@ void fragment() {
         Field.CameraEye = EventActor.RetailSpace * EventCamera.EyePosition;
         Field.CameraTarget = EventActor.RetailSpace * EventCamera.LookAtPosition;
         Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-        Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(120f / EventCamera.Projection));
+        Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / EventCamera.Projection));
         Field.Camera.Near = Math.Max(0.01f, EventCamera.Near / Installation.MapConversion.UnitsPerMetre);
         // Retail's "far" (ec) is no clip: it is the depth at which room polygons turn to their half-size far
         // textures (BATTLE.PRG 0x80098194 patches it, over 8, into the renderer at 0x80097590 and 0x800978F8), so the

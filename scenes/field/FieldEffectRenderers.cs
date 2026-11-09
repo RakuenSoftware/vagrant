@@ -495,13 +495,13 @@ public sealed partial class FieldEffect
         return p[0] * w0 + p[1] * w1 + p[2] * w2 + p[3] * w3;
     }
 
-    /// <summary>A ribbon along points, facing the camera, of a half width in screen pixels (of retail's 240 lines).</summary>
+    /// <summary>A ribbon along points, facing the camera, of a half width in screen pixels (of retail's 224 seen lines).</summary>
     private void Ribbon(Renderer r, Camera3D? camera, IList<Vector3> retailPoints, IList<float> halfWidths, IList<float> texture, IList<Color> colours, int mode, bool textured = true)
     {
         if (camera == null || retailPoints.Count < 2 || textured && r.Record < 0) return;
         var points = new Vector3[retailPoints.Count];
         for (int i = 0; i < points.Length; i++) points[i] = EventActor.RetailSpace * retailPoints[i];
-        float pixel(Vector3 p) => 2 * Mathf.Max(0.01f, camera.GlobalPosition.DistanceTo(p)) * Mathf.Tan(Mathf.DegToRad(camera.Fov) / 2) / 240;
+        float pixel(Vector3 p) => 2 * Mathf.Max(0.01f, camera.GlobalPosition.DistanceTo(p)) * Mathf.Tan(Mathf.DegToRad(camera.Fov) / 2) / FieldView.VisibleLines;
         var view = camera.GlobalBasis.Z;
         Vector3 Side(int i)
         {
