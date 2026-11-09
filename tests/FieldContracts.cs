@@ -148,7 +148,7 @@ public partial class FieldContracts : Node
                     if (_view.StartAt != null) break;
                 }
             }
-            foreach (var (flag, value) in _startFlags) _view.Flags[flag.ToString()] = value;
+            foreach (var (flag, value) in _startFlags) _view.Flags[flag] = value;
             AddChild(_view);
             return;
         }

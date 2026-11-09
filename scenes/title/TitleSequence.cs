@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using Godot;
 using Wol.Engine;
 using Wol.Engine.Display;
-using Wol.Engine.Events;
 using Wol.Games.Vagrant.Runtime;
 using GArray = Godot.Collections.Array;
 using GDictionary = Godot.Collections.Dictionary;
@@ -12,8 +11,7 @@ using GDictionary = Godot.Collections.Dictionary;
 namespace Wol.Games.Vagrant.Scenes.Title;
 
 /// <summary>
-/// Presentation adapter for the title sequence. The shared engine's world-event runtime owns which
-/// screen is current (title_flow.json); this node presents that screen with the retail timing:
+/// The title sequence. It owns which screen is current, and presents each with the retail timing:
 /// publisher and developer logos, the opening movie, and the title screen with its menu.
 /// Time is counted in 60 Hz display frames, as the retail title counts vertical blanks.
 /// </summary>
@@ -39,8 +37,9 @@ public partial class TitleSequence : Control
     };
 
     private RetailContent _content = null!;
-    private WorldEventRuntime _flow = null!;
-    private GDictionary _state = new();
+    /// <summary>The title's screens, in the order the sequence first reaches them.</summary>
+    private enum Stage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract }
+    private Stage _stage;
     private IEnumerator<int>? _presentation;
     private int _wait;
     private long _frame;
@@ -77,12 +76,14 @@ public partial class TitleSequence : Control
     private DisplaySettings _display = null!;
     private SettingsDialog _settings = null!;
 
-    /// <summary>The flow node currently presented (publisher, developer, intro, menu, new_game, continue, attract).</summary>
-    public string Screen => _state.GetValueOrDefault("flows", new GDictionary()).AsGodotDictionary()
-        .GetValueOrDefault("title", new GDictionary()).AsGodotDictionary().GetValueOrDefault("node", "").ToString();
-    public GDictionary World => _state["world"].AsGodotDictionary();
-    public bool MonoSound => World["settings"].AsGodotDictionary()["mono_sound"].AsBool();
-    public bool Vibration => World["settings"].AsGodotDictionary()["vibration"].AsBool();
+    /// <summary>The screen currently presented (publisher, developer, intro, menu, new_game, field, continue, attract).</summary>
+    public string Screen => _stage switch
+    {
+        Stage.Publisher => "publisher", Stage.Developer => "developer", Stage.Intro => "intro", Stage.Menu => "menu",
+        Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
+    };
+    public bool MonoSound { get; private set; }
+    public bool Vibration { get; private set; } = true;
     public int SelectedItem { get; private set; }
     public bool SettingsOpen => _settings.Visible;
     public AcceptDialog SettingsDialog => _settings;
@@ -154,16 +155,8 @@ public partial class TitleSequence : Control
         cardsLayer.AddChild(_cards);
         _cards.Configure(_content, null);
 
-        var flow = Json.ParseString(FileAccess.GetFileAsString("res://scenes/title/title_flow.json")).AsGodotDictionary();
-        _flow = new WorldEventRuntime(flow["events"].AsGodotArray());
-        if (_flow.Errors.Count > 0)
-        {
-            Fail("The title flow is invalid: " + string.Join("; ", _flow.Errors));
-            return;
-        }
-        _state = _flow.InitialState(flow["world"].AsGodotDictionary());
         _audio.Mono = MonoSound;
-        Dispatch("title.boot");
+        Enter(Stage.Publisher);
     }
 
     public override void _ExitTree()
@@ -183,33 +176,35 @@ public partial class TitleSequence : Control
         _notice.Show();
     }
 
-    /// <summary>Delivers an action to the shared flow runtime and presents the resulting node.</summary>
-    private void Dispatch(string action, GDictionary? facts = null)
+    /// <summary>Moves to a screen and starts presenting it.</summary>
+    private void Enter(Stage stage)
     {
-        string before = Screen;
-        var result = _flow.Dispatch(_state, action, facts);
-        if (!result["ok"].AsBool())
+        _stage = stage;
+        _presentation = stage switch
         {
-            Fail($"Title flow rejected {action}: {result["error"]}");
-            return;
-        }
-        _state = result["state"].AsGodotDictionary();
-        _audio.Mono = MonoSound;
-        if (Screen == before && action.StartsWith("settings.", StringComparison.Ordinal)) return;
-        _presentation = Screen switch
-        {
-            "publisher" => Logo(_content.Publisher, _content.PublisherOrigin, false),
-            "developer" => Logo(_content.Developer, _content.DeveloperOrigin, true),
-            "intro" => Intro(),
-            "menu" => TitleScreen(),
-            "new_game" => Leave("", false),
-            "field" => StartField(),
-            "continue" => LoadScreens(),
-            "attract" => Leave("", false),
-            _ => null,
+            Stage.Publisher => Logo(_content.Publisher, _content.PublisherOrigin, false),
+            Stage.Developer => Logo(_content.Developer, _content.DeveloperOrigin, true),
+            Stage.Intro => Intro(),
+            Stage.Menu => TitleScreen(),
+            Stage.NewGame => Leave("", false),
+            Stage.Field => StartField(),
+            Stage.Continue => LoadScreens(),
+            _ => Leave("", false),
         };
-        if (_presentation == null) Fail("The title flow reached an unknown screen: " + Screen);
         _wait = 0;
+    }
+
+    /// <summary>The current screen has finished: the logos lead to the movie, the movie to the title screen, and leaving it back to the movie (or on to the field for New Game).</summary>
+    private void Finished()
+    {
+        Enter(_stage switch
+        {
+            Stage.Publisher => Stage.Developer,
+            Stage.Developer => Stage.Intro,
+            Stage.Intro => Stage.Menu,
+            Stage.NewGame => Stage.Field,
+            _ => Stage.Intro,
+        });
     }
 
     public override void _PhysicsProcess(double delta)
@@ -279,7 +274,7 @@ public partial class TitleSequence : Control
             TakePressed();
         }
         _logo.Hide();
-        Dispatch("presentation.finished");
+        Finished();
     }
 
     private IEnumerator<int> Intro()
@@ -302,7 +297,7 @@ public partial class TitleSequence : Control
         // The picture ends here; the music continues under the title screen.
         _video.Stop();
         _video.Hide();
-        Dispatch("presentation.finished");
+        Finished();
     }
 
     /// <summary>One menu update and the frame it is displayed on.</summary>
@@ -375,9 +370,9 @@ public partial class TitleSequence : Control
                 {
                     TitleMenu.Vibration => Submenu(TitleMenu.Vibration, above, below, TitleMenu.VibrationOn, TitleMenu.VibrationOff,
                         Vibration ? TitleMenu.VibrationOn : TitleMenu.VibrationOff,
-                        option => Dispatch("settings.vibration", new GDictionary { ["enabled"] = option == TitleMenu.VibrationOn })),
+                        option => Vibration = option == TitleMenu.VibrationOn),
                     TitleMenu.Sound => Submenu(TitleMenu.Sound, above, below, TitleMenu.Stereo, TitleMenu.Mono, MonoSound ? TitleMenu.Mono : TitleMenu.Stereo,
-                        option => Dispatch("settings.sound", new GDictionary { ["mono"] = option == TitleMenu.Mono })),
+                        option => _audio.Mono = MonoSound = option == TitleMenu.Mono),
                     _ => Settings(),
                 };
                 foreach (int frame in submenu) yield return frame;
@@ -407,7 +402,7 @@ public partial class TitleSequence : Control
             foreach (int frame in DrawMenu()) yield return frame;
         }
         if (choice != "timeout" && MusicPlaying) StopMusic();
-        Dispatch("title.choice", new GDictionary { ["choice"] = choice });
+        Enter(choice switch { "new_game" => Stage.NewGame, "continue" => Stage.Continue, _ => Stage.Attract });
     }
 
     /// <summary>The Vibration and Sound option pickers: the heading rises and its two options appear below it.</summary>
@@ -545,7 +540,7 @@ public partial class TitleSequence : Control
             while (resume.MoveNext()) yield return resume.Current;
             yield break;
         }
-        Dispatch("presentation.finished");
+        Finished();
     }
 
     private IEnumerator<int> Continue(Godot.Collections.Dictionary save)
@@ -588,6 +583,6 @@ public partial class TitleSequence : Control
             }
             _notice.Hide();
         }
-        Dispatch("presentation.finished");
+        Finished();
     }
 }

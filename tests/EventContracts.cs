@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
-using Wol.Engine.Events;
 using Wol.Engine.Install;
 using Wol.Games.Vagrant.Installation;
 
@@ -47,8 +46,9 @@ public partial class EventContracts : Node
                 if (name == dump) GD.Print("EVENT_DUMP " + result.ToJsonString());
                 if (find.Length > 0 && System.Text.RegularExpressions.Regex.Unescape(result.ToJsonString()).Contains(find, StringComparison.OrdinalIgnoreCase)) GD.Print($"EVENT: \"{find}\" is in {name}");
                 var events = Json.ParseString(json).AsGodotArray();
-                var runtime = new WorldEventRuntime(events);
-                if (runtime.Errors.Count > 0) throw new InvalidOperationException($"{name}: {string.Join("; ", runtime.Errors.Take(3))}");
+                // Every flow compiles onto the field's event world, as the field compiles it when the event starts.
+                var (_, _, invalid) = new Wol.Games.Vagrant.Scenes.Field.EventWorld().Compile(events);
+                if (invalid.Length != 0) throw new InvalidOperationException($"{name}: {invalid}");
                 if (result["untranslated"]!.AsArray().Count > 0) unusable.Add($"{name} (untranslated {result["untranslated"]![0]})");
                 foreach (var entry in result["unpresented"]!.AsArray())
                 {

@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using Godot;
 using Wol.Engine;
 using Wol.Engine.Display;
-using Wol.Engine.Events;
+using Wol.Engine.Flow;
 using Wol.Engine.World;
 using Wol.Games.Vagrant.Runtime;
 using GArray = Godot.Collections.Array;
@@ -20,7 +20,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// The room event's flows run in the shared flow runtime on the retail 30 Hz event clock; this view presents their
 /// commands: the event camera, actors, text boxes, fades and threads.
 /// </summary>
-public partial class FieldView : Node3D, IScenePresentation
+public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<EventCommand>
 {
     /// <summary>The room the view opens in (zone, map index); New Game begins in zone 1, map 0.</summary>
     [Export] public int StartZone { get; set; } = 1;
@@ -64,16 +64,24 @@ public partial class FieldView : Node3D, IScenePresentation
     /// <summary>The installed content.</summary>
     public RetailContent Content => _content;
     private FieldMenu _menu = null!;
-    private WorldEventRuntime? _events;
-    private GDictionary _state = new();
+    private FlowRuntime<EventWorld, EventCommand>? _events;
+    /// <summary>The flags, switch and counters the scripts run against, and the bindings they compile onto.</summary>
+    private readonly EventWorld _world = new();
+    /// <summary>Each installed event file's compiled flows and their ids (the main flow first), compiled once.</summary>
+    private readonly Dictionary<string, (FlowProgram<EventWorld, EventCommand>[] Programs, string[] Ids)> _programs = new();
+    /// <summary>The running event's flow ids, by slot.</summary>
+    private string[] _flows = [];
     private string _mainEvent = "";
-    private readonly HashSet<string> _presented = new();
-    private readonly List<string> _completions = new();
+    /// <summary>Per flow, the presentation batch it last issued and the skippable section that batch waits in (or -1).</summary>
+    private (long Sequence, int Section)[] _sections = [];
+    /// <summary>Threads that started themselves again (f5 on their own number), restarted once the frame's flows have run.</summary>
+    private readonly List<int> _restarts = new();
+    private readonly List<PresentationReceipt> _completions = new();
     private readonly Dictionary<int, GDictionary> _boxes = new();
     private readonly Dictionary<int, EventBalloon> _balloons = new();
     private GDictionary? _balloonShapes;
     private Texture2D? _paper;
-    private readonly List<(string Id, Func<bool> Done)> _waits = new();
+    private readonly List<(PresentationReceipt Id, Func<bool> Done)> _waits = new();
     private bool _oddFrame;
     private ColorRect _screen = null!;
     private bool _fadeWhite;
@@ -232,21 +240,11 @@ void fragment() {
     private (int X, int Z, float Facing) _arrival = (4, 2, 2048);
     /// <summary>A door's half-tile nudge: 64 units along x when arriving facing ±z, along z facing ±x.</summary>
     private bool _arrivalHalf;
-    /// <summary>The retail state flags (1024 unsigned bytes), carried across events and rooms.</summary>
     /// <summary>
-    /// The 1024 retail state flags. They have one home: the event runtime's world state, which story commands change
-    /// and event conditions test; the field reads and writes the same table. Before any event has run they are here.
+    /// The 1024 retail state flags (unsigned bytes), carried across events and rooms. They have one home, the event
+    /// world, which story commands change and event conditions test; the field reads and writes the same table.
     /// </summary>
-    public GDictionary Flags =>
-        _state.TryGetValue("world", out var world) && world.AsGodotDictionary().TryGetValue("flags", out var flags) ? flags.AsGodotDictionary() : _flags;
-    private readonly GDictionary _flags = NewFlags();
-
-    private static GDictionary NewFlags()
-    {
-        var flags = new GDictionary();
-        for (int i = 0; i < 1024; i++) flags[i.ToString()] = 0;
-        return flags;
-    }
+    public int[] Flags => _world.Flags;
     private GDictionary? _pendingTransition;
 
     /// <summary>
@@ -493,7 +491,7 @@ void fragment() {
         PlayFrames = save.GetValueOrDefault("frames", 0).AsInt64();
         SaveCount = save.GetValueOrDefault("save_count", 0).AsInt32();
         var flags = save["flags"].AsGodotArray();
-        for (int i = 0; i < flags.Count && i < 1024; i++) Flags[i.ToString()] = flags[i].AsInt32();
+        for (int i = 0; i < flags.Count && i < EventWorld.FlagCount; i++) Flags[i] = flags[i].AsInt32();
         _inventoryLoaded = true;
         foreach (var (id, count) in save["items"].AsGodotDictionary()) Items[int.Parse(id.AsString())] = count.AsInt32();
         foreach (var record in save["equipment"].AsGodotArray()) Equipment.Add(record);
@@ -591,7 +589,6 @@ void fragment() {
             _waits.Clear();
             _afterLid = null;
             _completions.Clear();
-            _presented.Clear();
             _floorLight = null;
             _skyVisible = true;
             _skyOffset = Vector2.Zero;
@@ -667,12 +664,12 @@ void fragment() {
             Field.DialogueFont = _content.BitmapFont("dialogue_font");
             Field.DialoguePixelAspect = PixelAspect;
             Field.Camera.Fov = 50;
-            Field.PresentCommand(new GDictionary { ["type"] = "camera.script", ["args"] = new GDictionary { ["enabled"] = true } });
+            Field.SetCameraScriptMode(true);
             _focus = Field.Bounds.GetCenter();
             Distance = Field.Bounds.Size.Length() * 0.8f;
             PlaceCamera();
             GetNode<DisplaySettings>("/root/DisplaySettings").ApplyGraphics();
-            Field.CommandCompleted += (id, facts) => _completions.Add(id);
+            for (int i = 0; i < 8; i++) Field.PrepareDialogueWaits("box" + i);
             // Ashley is the player's actor in slot 0 (model and script id 0); she is in every room before its event starts,
             // out of sight until the event shows her or hands control back.
             if (Spawn(new GDictionary { ["actor"] = "slot:0", ["character"] = 0, ["tile"] = new GArray { _arrival.X, _arrival.Z } }) != Error.Ok) return;
@@ -757,18 +754,26 @@ void fragment() {
     }
 
     /// <summary>Whether no event is running or pending, so the player would have control.</summary>
-    public bool Settled => _events != null && FlowNode(_mainEvent) == null && _pendingChain.Length == 0 && _pendingTransition == null && _door == null && (EventCamera.IdleMask & 0xff) == 0xff;
+    public bool Settled => _events != null && !Active(0) && _pendingChain.Length == 0 && _pendingTransition == null && _door == null && (EventCamera.IdleMask & 0xff) == 0xff;
 
     /// <summary>What the event is waiting on: the view's own waits and the open dialogue boxes, for diagnosis.</summary>
-    public string WaitingOn => $"waits [{string.Join(", ", _waits.ConvertAll(w => w.Id))}] dialogues [{string.Join(", ", Field.Dialogues.Keys)}] choice {(_choice != null)} completions {_completions.Count}";
+    public string WaitingOn => $"waits [{string.Join(", ", _waits.ConvertAll(w => $"{_flows[w.Id.Slot]}.{w.Id.Command}"))}] dialogues [{string.Join(", ", Field.Dialogues.Keys)}] choice {(_choice != null)} completions {_completions.Count}";
 
-    /// <summary>The flow node the main event is at; empty before it starts, "complete" once it has ended.</summary>
-    public string EventNode => _events == null ? "" : FlowNode(_mainEvent) ?? "complete";
+    /// <summary>Where the main event is: its instruction; empty before it starts, "complete" once it has ended.</summary>
+    public string EventNode => _events == null ? "" : Active(0) ? "i" + _events.Instruction(0) : "complete";
 
-    private string? FlowNode(string flow)
+    /// <summary>Whether the running event's flow in <paramref name="slot"/> has started and not yet ended.</summary>
+    private bool Active(int slot) =>
+        _events != null && slot >= 0 && slot < _flows.Length && _events.Status(slot) is not (FlowStatus.Idle or FlowStatus.Complete or FlowStatus.Cancelled or FlowStatus.Faulted);
+
+    /// <summary>Runs the event runtime; a script that breaks stops the field with its error.</summary>
+    private void Drive(Action step)
     {
-        var record = _state.GetValueOrDefault("flows", new GDictionary()).AsGodotDictionary().GetValueOrDefault(flow, new GDictionary()).AsGodotDictionary();
-        return record.GetValueOrDefault("status", "").AsString() == "active" ? record.GetValueOrDefault("node", "").AsString() : null;
+        try { step(); }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException or KeyNotFoundException or InvalidCastException or IndexOutOfRangeException or NullReferenceException)
+        {
+            Fail("The room event stopped: " + error.Message);
+        }
     }
 
     /// <summary>Takes control from the player and plays an event, as a room's condition does.</summary>
@@ -798,21 +803,33 @@ void fragment() {
         // Flag 0xac tells the event whether Ashley's weapon was drawn as it began; from play, 0xaf the octant the
         // gameplay camera was turned to and 0xb0 whether it stood far (BATTLE.PRG 0x80073718). MAP022 frames
         // Ashley from the side play saw her from (footage, Ep. 2 13:20: octant 3, the eye behind her right shoulder).
-        Flags["172"] = Battle?.Drawn == true ? 1 : 0;
+        Flags[172] = Battle?.Drawn == true ? 1 : 0;
         if (Controlled)
         {
-            Flags["175"] = (int)(Gameplay.Yaw / 512) & 7;
-            Flags["176"] = Gameplay.TargetDistance == GameplayCamera.Near ? 0 : 1;
+            Flags[175] = (int)(Gameplay.Yaw / 512) & 7;
+            Flags[176] = Gameplay.TargetDistance == GameplayCamera.Near ? 0 : 1;
         }
         _returnSuppressed = false;
         _skippable = _skipRequested = false;
         Controlled = false;
         EventCamera.ResetCurves();
         Events.Add(_mainEvent);
-        _events = new WorldEventRuntime(events);
-        if (_events.Errors.Count > 0) { Fail("The room event is invalid: " + string.Join("; ", _events.Errors)); return; }
-        _state = _events.InitialState(new GDictionary { ["flags"] = Flags, ["loops"] = new GDictionary(), ["switch"] = 0 });
-        Apply(_events.Dispatch(_state, "start_" + _mainEvent));
+        if (!_programs.TryGetValue(eventName, out var compiled))
+        {
+            var (programs, ids, error) = _world.Compile(events);
+            if (error.Length != 0) { Fail("The room event is invalid: " + error); return; }
+            _programs[eventName] = compiled = (programs, ids);
+        }
+        // The previous event's waits and completions belong to its runtime, which this one replaces.
+        _waits.Clear();
+        _completions.Clear();
+        _restarts.Clear();
+        _world.BeginScript();
+        _flows = compiled.Ids;
+        _sections = new (long, int)[_flows.Length];
+        Array.Fill(_sections, (-1L, -1));
+        _events = new FlowRuntime<EventWorld, EventCommand>(_world, compiled.Programs, this);
+        Drive(() => { _events.StartAction("start_" + _mainEvent); _events.Drain(); });
     }
 
     private DirectionalLight3D? _characterLight;
@@ -875,27 +892,38 @@ void fragment() {
     /// </summary>
     public void Skip()
     {
-        if (_events == null || !_skippable) return;
+        if (_events is not { } events || !_skippable) return;
         _skippable = false;
         _skipRequested = false;
         Skips++;
-        Apply(_events.Dispatch(_state, "event.skip"));
+        // Only a main flow waiting inside a section skips it; then so do the threads waiting in the same section.
+        int section = Active(0) ? _sections[0].Section : -1;
+        if (section < 0) return;
+        _world.Skip = section;
+        for (int slot = 0; slot < _flows.Length; slot++)
+            if (_sections[slot].Section == section && Active(slot)) events.Invalidate(slot);
+        Drive(events.Drain);
+        _world.Skip = -1;
     }
 
-    private void Apply(GDictionary result)
+    /// <summary>Presents a flow's command; one that cannot be presented stops the field.</summary>
+    public void Present(in PresentationReceipt receipt, in EventCommand command)
     {
-        if (!result["ok"].AsBool()) { Fail("The room event stopped: " + result["error"]); return; }
-        _state = result["state"].AsGodotDictionary();
-        // Presenting a command can dispatch to the runtime and replace the outbox, so it is walked from a copy of its list.
-        foreach (var value in new GArray(_state["outbox"].AsGodotArray()))
-        {
-            var command = value.AsGodotDictionary();
-            string id = command["id"].AsString();
-            if (command["type"].AsString() == "wait" || !_presented.Add(id)) continue;
-            var error = Present(command);
-            if (error != Error.Ok) { Fail($"The room event's {command["type"]} could not be presented ({error})."); return; }
-            if (Failure.Length != 0) return;
-        }
+        if (Failure.Length != 0) return;
+        ref var section = ref _sections[receipt.Slot];
+        if (section.Sequence != receipt.Sequence) section = (receipt.Sequence, -1);
+        if (command.Args.TryGetValue("skip", out var skip)) section.Section = skip.AsInt32();
+        var error = Present(receipt, command.Type, command.Args, command.Awaited);
+        if (error != Error.Ok && Failure.Length == 0) Fail($"The room event's {command.Type} could not be presented ({error}).");
+    }
+
+    /// <summary>A flow let go of what it waited on (a skip, or the flow ending): the wait is dropped.</summary>
+    public void Cancel(in PresentationReceipt receipt)
+    {
+        var id = receipt;
+        _waits.RemoveAll(wait => wait.Id == id);
+        _completions.Remove(id);
+        Field.CancelDialogueWait(receipt);
     }
 
     private static Vector3 Retail(GArray point) => new(point[0].AsSingle(), point[1].AsSingle(), point[2].AsSingle());
@@ -918,22 +946,31 @@ void fragment() {
     }
 
     /// <summary>Presents one translated command. Retail positions are map units (x right, y down, z forward).</summary>
-    private Error Present(GDictionary command)
+    private Error Present(PresentationReceipt id, string type, GDictionary args, bool awaited)
     {
-        var args = command["args"].AsGodotDictionary();
-        bool awaited = command["await"].AsBool();
-        string id = command["id"].AsString(), type = command["type"].AsString();
         switch (type)
         {
             case "thread.start":
-                Apply(_events!.Dispatch(_state, "start_" + args["event"].AsString()));
-                return Error.Ok;
-            case "thread.join":
             {
-                string flow = args["event"].AsString();
-                _waits.Add((id, () => FlowNode(flow) == null));
+                // A thread started again starts over, dropping what it waited on.
+                int slot = Array.IndexOf(_flows, args["event"].AsString());
+                if (slot < 0) return Error.DoesNotExist;
+                if (slot == id.Slot) _restarts.Add(slot);
+                else
+                {
+                    _events!.Cancel(slot);
+                    _events.Start(slot);
+                }
                 return Error.Ok;
             }
+            case "thread.join":
+            {
+                int slot = Array.IndexOf(_flows, args["event"].AsString());
+                _waits.Add((id, () => !Active(slot)));
+                return Error.Ok;
+            }
+            case "event.section":
+                return Error.Ok;
             case "thread.stop":
                 return Error.Ok;
             case "actor.spawn":
@@ -1084,7 +1121,7 @@ void fragment() {
                     if (actor.Id == "slot:1") continue;
                     Actors.Remove(actor.Id);
                     foreach (var other in Actors.Values) if (other.Parent == actor) other.Parent = null;
-                    var removed = Field.PresentCommand(new GDictionary { ["type"] = "actor.remove", ["args"] = new GDictionary { ["actor"] = actor.Id } });
+                    var removed = Field.RemoveActor(actor.Id);
                     if (removed != Error.Ok) return removed;
                 }
                 return Error.Ok;
@@ -1188,7 +1225,7 @@ void fragment() {
                 var empty = args["message"].AsGodotDictionary();
                 if (!awaited && empty["text"].AsString().Length == 0 && empty.GetValueOrDefault("tokens", new GArray()).AsGodotArray().Count == 0)
                 {
-                    Field.PresentCommand(new GDictionary { ["type"] = "dialogue.close", ["args"] = new GDictionary { ["actor"] = "box" + box } });
+                    Field.CloseDialogue("box" + box);
                     return Error.Ok;
                 }
                 var geometry = _boxes.GetValueOrDefault(box, new GDictionary { ["x"] = 16, ["y"] = 136, ["width"] = 288, ["height"] = 56, ["flags"] = 0 });
@@ -1241,19 +1278,22 @@ void fragment() {
                     tallest = Math.Max(tallest, text[start..end].TrimEnd('\n').Split('\n').Length);
                 }
                 int padding = Math.Max(2, (geometry["height"].AsInt32() - tallest * Installation.DialogueConversion.LineHeight) / 2);
-                var style = new GDictionary { ["x"] = geometry["x"], ["y"] = geometry["y"], ["width"] = geometry["width"], ["height_pixels"] = geometry["height"], ["text_padding_x"] = 5, ["text_padding_y"] = padding, ["align"] = centred ? "center" : "left", ["wrap"] = false };
-                var result = Field.PresentCommand(new GDictionary { ["type"] = "dialogue.open", ["args"] = new GDictionary { ["actor"] = "box" + box, ["message"] = new GDictionary { ["text"] = text, ["tokens"] = kept }, ["style"] = style, ["show_portrait"] = false, ["frameless"] = balloon } });
+                var style = new DialogueStyle(new Vector2(geometry["x"].AsInt32(), geometry["y"].AsInt32()), new Vector2(geometry["width"].AsInt32(), geometry["height"].AsInt32()),
+                    new Vector2(5, padding), Frameless: balloon, ShowPortrait: false, Wrap: false, Alignment: centred ? HorizontalAlignment.Center : HorizontalAlignment.Left);
+                var loaded = DialogueMessage.Load(new GDictionary { ["text"] = text, ["tokens"] = kept }, out var dialogue);
+                if (loaded != Error.Ok) return loaded;
+                var result = Field.OpenDialogue("box" + box, dialogue!, style);
                 if (result != Error.Ok) return result;
                 if (balloon) OpenBalloon(box, geometry, flags);
                 if (!awaited) return Error.Ok;
-                return Field.PresentCommand(new GDictionary { ["id"] = id, ["type"] = "dialogue.wait", ["args"] = new GDictionary { ["actor"] = "box" + box } });
+                return Field.WaitForDialogue("box" + box, id, (in PresentationReceipt receipt, in DialogueAnswer _) => _completions.Add(receipt));
             }
             case "text.close":
             {
                 int box = args["box"].AsInt32();
                 if (_scriptBox >= 0 && (box < 0 || box == _scriptBox)) { SystemBox.Text = ""; _scriptBox = -1; }
                 for (int i = 0; i < 8; i++)
-                    if (box < 0 || box == i) Field.PresentCommand(new GDictionary { ["type"] = "dialogue.close", ["args"] = new GDictionary { ["actor"] = "box" + i } });
+                    if (box < 0 || box == i) Field.CloseDialogue("box" + i);
                 return Error.Ok;
             }
             case "music.play":
@@ -1364,9 +1404,7 @@ void fragment() {
             {
                 // As retail's skip: the text boxes close, what the flows waited on is dropped, and the music stops
                 // unless the section kept it.
-                for (int i = 0; i < 8; i++) Field.PresentCommand(new GDictionary { ["type"] = "dialogue.close", ["args"] = new GDictionary { ["actor"] = "box" + i } });
-                var cancelled = _state.GetValueOrDefault("world", new GDictionary()).AsGodotDictionary().GetValueOrDefault("_event_cancelled", new GDictionary()).AsGodotDictionary();
-                _waits.RemoveAll(wait => cancelled.ContainsKey(wait.Id));
+                for (int i = 0; i < 8; i++) Field.CloseDialogue("box" + i);
                 if (args["stop_music"].AsBool() && MusicPlaying) { _musicFade?.Kill(); _driver.Stop(); }
                 return Error.Ok;
             }
@@ -1779,7 +1817,7 @@ void fragment() {
         int frames = geometry.ContainsKey("open_frames") ? geometry["open_frames"].AsInt32() : ((0x45A5 >> (((flags >> 4) & 3) * 4)) & 0xF) * 2;
         var rect = new Rect2(geometry["x"].AsSingle(), geometry["y"].AsSingle(), geometry["width"].AsSingle(), geometry["height"].AsSingle());
         balloon.Configure(outline, _paper, rect, flags, frames);
-        var panel = (Control)Field.Dialogues["box" + box]["panel"].AsGodotObject();
+        var panel = Field.Dialogues["box" + box].Panel;
         Field.DialogueLayer.AddChild(balloon);
         Field.DialogueLayer.MoveChild(balloon, panel.GetIndex());
         panel.Visible = false;
@@ -1794,7 +1832,7 @@ void fragment() {
             bool showing = Field.Dialogues.TryGetValue("box" + box, out var dialogue);
             if (!showing) balloon.Closing = true;
             balloon.Step();
-            if (showing && balloon.Open) ((Control)dialogue!["panel"].AsGodotObject()).Visible = true;
+            if (showing && balloon.Open) dialogue!.Panel.Visible = true;
             if (balloon.Closed) { _balloons.Remove(box); balloon.QueueFree(); }
         }
     }
@@ -2097,7 +2135,9 @@ void fragment() {
         var node = new Node3D { Name = "Actor_" + reference.Replace(':', '_') };
         Field.Geometry.AddChild(node);
         Field.Actors[reference] = node;
-        var result = Field.SetRig(reference, rig);
+        var result = Field.PrepareRigBank(reference, "base", rig);
+        if (result != Error.Ok) return result;
+        result = Field.ActivateRig(Field.RigBanks[(reference, "base")]);
         if (result != Error.Ok) return result;
         var actor = new EventActor(reference, character, node) { LoadSet = AddAnimationSet };
         // Drawn as the Settings choose: the disc's textures as they are, or enhanced.
@@ -2188,7 +2228,7 @@ void fragment() {
     /// </summary>
     private Error SpawnRoomActors()
     {
-        int Flag(int index) => Flags.GetValueOrDefault(index.ToString(), 0).AsInt32();
+        int Flag(int index) => Flags[index];
         _roomActorIndex.Clear();
         int memory = _enemyMemory.FindIndex(room => room.Zone == Zone && room.Map == Map);
         var remembered = memory >= 0 ? _enemyMemory[memory].States : new Dictionary<int, EnemyState>();
@@ -2670,7 +2710,7 @@ void fragment() {
                         script.Rotation = new Vector3I(Arg(6) & 0xFFF, Arg(8) & 0xFFF, Arg(10) & 0xFFF);
                         break;
                     case 9:
-                        Present(new GDictionary { ["type"] = "room.animation", ["id"] = "", ["await"] = false, ["args"] = new GDictionary { ["index"] = Arg(0), ["start"] = true } });
+                        Present(new PresentationReceipt(0, 0, 0, -1), "room.animation", new GDictionary { ["index"] = Arg(0), ["start"] = true }, false);
                         break;
                     case 6:
                         // A sound from the room's own bank (BATTLE.PRG 0x8009352c, on the room's voice 0x200).
@@ -3318,12 +3358,8 @@ void fragment() {
     public void PlaceCamera()
     {
         var eye = _focus + new Vector3(Mathf.Sin(Heading) * Mathf.Cos(Pitch), Mathf.Sin(Pitch), Mathf.Cos(Heading) * Mathf.Cos(Pitch)) * Distance;
-        foreach (var (component, point) in new[] { ("eye", eye), ("target", _focus) })
-            Field.PresentCommand(new GDictionary
-            {
-                ["type"] = "camera.snap",
-                ["args"] = new GDictionary { ["component"] = component, ["destination"] = new GDictionary { ["x"] = point.X, ["y"] = point.Y, ["z"] = point.Z } },
-            });
+        Field.SnapCamera(CameraPart.Eye, eye);
+        Field.SnapCamera(CameraPart.Target, _focus);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -3370,7 +3406,9 @@ void fragment() {
         if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepSway(); actor.StepLook(); } }
         // The event camera's roll (opcode e2, 4096 a turn): the view turns clockwise about its axis by it, after the
         // camera looks at its target.
-        Field!.CameraRoll = EventCamera.Active && !Controlled ? EventCamera.Roll * Mathf.Tau / 4096f : 0;
+        float roll = EventCamera.Active && !Controlled ? EventCamera.Roll * Mathf.Tau / 4096f : 0;
+        var rolled = new Quaternion(Vector3.Back, roll);
+        if (!Field!.CameraViewRotation.IsEqualApprox(rolled)) Field.SetCameraViewRotation(rolled);
         ApplyCamera();
         ShowRoomGroups();
         StepTextureFrames();
@@ -3440,19 +3478,23 @@ void fragment() {
         _fade = Mathf.Clamp(_fade + _fadeSpeed, 0, 1);
         foreach (var (id, done) in _waits.ToArray())
             if (done()) { _waits.Remove((id, done)); _completions.Add(id); }
-        foreach (string id in _completions.ToArray())
+        var events = _events!;
+        // A completion for a wait its flow has since let go of (a restart, a skip) no longer matches and is ignored.
+        foreach (var id in _completions) events.Complete(id);
+        _completions.Clear();
+        Drive(events.AdvanceTick);
+        if (Failure.Length != 0) return;
+        if (_restarts.Count > 0)
         {
-            _completions.Remove(id);
-            var completed = _events!.CompleteCommand(_state, id);
-            // A thread that starts itself again (f5 on its own number) drops what it was waiting on; a completion
-            // that arrives for it afterwards is stale.
-            if (!completed["ok"].AsBool() && completed["error"].AsString().Contains("already completed")) continue;
-            if (!completed["ok"].AsBool()) { Fail($"The room event stopped completing {id}: {completed["error"]}"); return; }
-            Apply(completed);
+            var restarts = _restarts.ToArray();
+            _restarts.Clear();
+            Drive(() =>
+            {
+                foreach (int slot in restarts) { events.Cancel(slot); events.Start(slot); }
+                events.Drain();
+            });
             if (Failure.Length != 0) return;
         }
-        Apply(_events!.AdvanceTicks(_state));
-        if (Failure.Length != 0) return;
         // What the frame's commands moved shows this frame, with the camera they cut to: placed only before them, a
         // character moved on a cut stood for a frame where it was, out of the new shot.
         foreach (var actor in Actors.Values) actor.Apply();
@@ -3475,7 +3517,7 @@ void fragment() {
             LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32());
             return;
         }
-        if (_pendingChain.Length != 0 && FlowNode(_mainEvent) == null)
+        if (_pendingChain.Length != 0 && !Active(0))
         {
             // A chained event file runs in the same room once the current event's main thread has ended.
             string chain = _pendingChain;
@@ -4504,7 +4546,7 @@ void fragment() {
     {
         if (Field == null) return;
         var rigs = new HashSet<StandardMaterial3D>();
-        foreach (var materials in Field.RigMaterials.Values) rigs.UnionWith(materials);
+        foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
         var light = dim ? new Color(0.5f, 0.54f, 1.06f) : new Color(2, 2, 2);
         foreach (var material in Field.Materials)
             if (!rigs.Contains(material)) material.AlbedoColor = light with { A = material.AlbedoColor.A };
@@ -4864,7 +4906,7 @@ void fragment() {
             var door = value.AsGodotDictionary();
             var at = door["tile"].AsGodotArray();
             if (at[0].AsInt32() != tile.X || at[1].AsInt32() != tile.Z) continue;
-            if (Flags.GetValueOrDefault(door["flag"].AsInt32().ToString(), 0).AsInt32() < door["flag_value"].AsInt32()) continue;
+            if (Flags[door["flag"].AsInt32()] < door["flag_value"].AsInt32()) continue;
             _door = door;
             Controlled = false;
             // The fade an event set for the next room change (6c), else black at 8 levels a frame; 3 is none.
@@ -4946,14 +4988,14 @@ void fragment() {
     {
         int B(int i) => bytes[i].AsInt32();
         int U16(int i) => B(i) | B(i + 1) << 8;
-        int FlagAt(int index) => Flags.GetValueOrDefault(index.ToString(), 0).AsInt32();
+        int FlagAt(int index) => Flags[index];
         string Reference(int value) => (value & 0x1000) != 0 ? "slot:" + (value & 0x1F) : FindById(value) ?? "slot:1";
         var ashleyTile = Player is { } a ? ((int)Mathf.Floor(a.Position.X / 128), (int)Mathf.Floor(a.Position.Z / 128)) : (-1, -1);
         bool Compare(int left, int right, int how) => (how & 0xF0) switch
         {
             0x00 => left <= right, 0x10 => left >= right, 0x20 => left == right, 0x30 => left != right, 0x40 => left < right, 0x50 => left > right, _ => false,
         };
-        void Store(int flag, int value) => Flags[flag.ToString()] = value & 0xFF;
+        void Store(int flag, int value) => Flags[flag] = value & 0xFF;
         switch (op)
         {
             case 1: return ashleyTile == (B(0), B(1));
@@ -5032,19 +5074,19 @@ void fragment() {
     }
 
     /// <summary>A retail state flag, as the view holds it.</summary>
-    private int FlagValue(int index) => Flags.GetValueOrDefault(index.ToString(), 0).AsInt32();
+    private int FlagValue(int index) => Flags[index];
 
     /// <summary>Sets a state flag (an unsigned byte), which the running event tests next.</summary>
-    private void SetFlag(int index, int value) => Flags[index.ToString()] = value & 0xFF;
+    private void SetFlag(int index, int value) => Flags[index] = value & 0xFF;
 
     /// <summary>A choice among text boxes (1c): its command, the boxes from the top, and the cursor.</summary>
-    private (string Id, List<int> Boxes, int Cursor)? _choice;
+    private (PresentationReceipt Id, List<int> Boxes, int Cursor)? _choice;
 
     /// <summary>
     /// Starts a choice among the boxes in <paramref name="mask"/>, ordered from the top of the screen; the cursor
     /// starts on the place flag 17 names (from 1), or the first.
     /// </summary>
-    private void BeginChoice(string id, int mask)
+    private void BeginChoice(PresentationReceipt id, int mask)
     {
         var boxes = new List<int>();
         for (int box = 0; box < 8; box++) if ((mask >> box & 1) != 0 && Field.Dialogues.ContainsKey("box" + box)) boxes.Add(box);
@@ -5069,7 +5111,7 @@ void fragment() {
                 SetFlag(16, cursor + 1);
                 foreach (int box in boxes)
                 {
-                    if (Field.Dialogues.TryGetValue("box" + box, out var open)) ((Control)open["panel"].AsGodotObject()).Modulate = Colors.White;
+                    if (Field.Dialogues.TryGetValue("box" + box, out var open)) open.Panel.Modulate = Colors.White;
                     if (_balloons.TryGetValue(box, out var balloon)) balloon.Modulate = Colors.White;
                 }
                 _choice = null;
@@ -5091,7 +5133,7 @@ void fragment() {
             _balloons.TryGetValue(boxes[i], out var balloon);
             if (balloon != null) balloon.Modulate = shade;
             if (!Field.Dialogues.TryGetValue("box" + boxes[i], out var open)) continue;
-            var panel = (Control)open["panel"].AsGodotObject();
+            var panel = open.Panel;
             panel.Modulate = shade;
             if (i != cursor) continue;
             if (balloon != null) Field.DialogueLayer.MoveChild(balloon, -1);
@@ -5117,14 +5159,14 @@ void fragment() {
         if (_dome != null) _dome.Visible = !_skyVisible || Field.BackgroundLayers.Count == 0;
         foreach (var layer in Field.BackgroundLayers)
         {
-            var material = (ShaderMaterial)layer["material"].AsGodotObject();
+            var material = layer.Material;
             var forward = -Field.Camera.GlobalBasis.Z;
             float level = new Vector2(forward.X, forward.Z).Length();
             if (level < 1e-6f || !_skyVisible) { material.SetShaderParameter("horizon", -100000f); continue; }
             float pitch = Mathf.Atan2(forward.Y, level) * 4096 / Mathf.Tau;
             float top = pitch * _skyParallax.Y / 4096 - _skyOffset.Y;
             // The shader stands the panorama's foot on its horizon.
-            material.SetShaderParameter("horizon", top + layer["definition"].AsGodotDictionary()["pixel_size"].AsGodotArray()[1].AsSingle());
+            material.SetShaderParameter("horizon", top + layer.PixelHeight);
             // Across (0x8008ECB4, 0x8009147C): x is the camera's yaw (4096 a turn) times the parallax over 4096, less
             // the event's offset, and a screen pixel p shows the strip's column (p - x) modulo its width.
             var retailForward = new Vector3(forward.X, -forward.Y, -forward.Z);
@@ -5286,7 +5328,7 @@ void fragment() {
         {
             _roomNear = reject;
             var rigs = new HashSet<StandardMaterial3D>();
-            foreach (var materials in Field.RigMaterials.Values) rigs.UnionWith(materials);
+            foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
             foreach (var material in Field.Materials)
             {
                 if (rigs.Contains(material)) continue;
