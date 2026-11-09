@@ -1900,7 +1900,7 @@ public sealed class FieldBattle
             var camera = _view.Field?.Camera;
             if (camera == null || !camera.IsInsideTree()) continue;
             float mine = camera.UnprojectPosition(EventActor.RetailSpace * enemy.Actor.Position).X, hers = camera.UnprojectPosition(EventActor.RetailSpace * Ashley.Actor.Position).X;
-            float apart = (mine - hers) / Math.Max(1, _view.GetViewport().GetVisibleRect().Size.Y / 240);
+            float apart = (mine - hers) / Math.Max(1, _view.GetViewport().GetVisibleRect().Size.Y / FieldView.VisibleLines);
             if (apart > 32) enemy.BalloonSide = 0;
             if (apart < -32) enemy.BalloonSide = 1;
             shown.Add((enemy.Actor.Position + new Vector3(0, -210, 0), kind, enemy.BalloonSide));

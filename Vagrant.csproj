@@ -11,5 +11,8 @@
     <Compile Remove="addons/wol_engine/.dependencies/**/*.cs" />
     <Compile Remove="addons/wol_engine/scripts/**/*.cs" />
     <Compile Remove="addons/wol_engine/tests/**/*.cs" />
+    <Compile Remove="addons/wol_engine/obj/**/*.cs" />
+    <Compile Remove="addons/wol_engine/bin/**/*.cs" />
   </ItemGroup>
+  <Import Project="addons/wol_engine/GodotApi.props" />
 </Project>

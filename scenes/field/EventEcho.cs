@@ -161,7 +161,7 @@ void fragment() {
         if (_stopping > 0 && --_stopping == 0) { Visible = false; _stopping = -1; }
         _material.SetShaderParameter("scale", new Vector2(_scale.Value.X, _scale.Value.Y));
         _material.SetShaderParameter("tint", _tint.Value / 128f);
-        _material.SetShaderParameter("offset", new Vector2(_offset.Value.X / 320f, _offset.Value.Y / 240f));
+        _material.SetShaderParameter("offset", new Vector2(_offset.Value.X / 320f, _offset.Value.Y / (float)FieldView.VisibleLines));
         _material.SetShaderParameter("mode", _mode);
     }
 }

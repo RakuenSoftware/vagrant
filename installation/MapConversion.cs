@@ -185,7 +185,7 @@ public sealed class MapConversion
             // The panorama is drawn at screen scale on the 320x240 display and wraps once per turn of the camera.
             backgrounds.Add(new JsonObject
             {
-                ["texture"] = "sky", ["reference_size"] = new JsonArray { 320, 240 }, ["pixel_size"] = new JsonArray { skyWidth, skyHeight },
+                ["texture"] = "sky", ["reference_size"] = new JsonArray { 320, 224 }, ["pixel_size"] = new JsonArray { skyWidth, skyHeight },
                 ["distance"] = 64, ["height"] = 640 / UnitsPerMetre, ["turns"] = 1,
             });
         }

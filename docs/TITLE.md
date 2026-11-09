@@ -25,13 +25,13 @@ The opening movie (`MOV/TITLE.STR`, 320×224 MDEC at 15 fps, with XA audio) is s
 
 ## Flow and presentation
 
-`scenes/title/title_flow.json` is the game's flow catalog, executed by the engine's `WorldEventRuntime`:
+`TitleSequence` owns which screen is current, as a typed stage, and the title options:
 
 - `publisher` → `developer` → `intro` → `menu`;
-- from `menu`, the `title.choice` action leads to `new_game`, `continue` or `attract` (idle timeout), each of which returns to `intro`;
-- the `settings.sound` and `settings.vibration` transitions record the title options in the flow's world state.
+- from `menu`, the player's choice leads to `new_game` (then `field`), `continue` or `attract` (idle timeout); Continue and the attract mode return to `intro`;
+- the Sound and Vibration pickers set the title's own options.
 
-`TitleSequence` is the presentation adapter. It counts 60 Hz display frames as the retail title counts vertical blanks:
+It counts 60 Hz display frames as the retail title counts vertical blanks:
 
 | Screen | Retail timing |
 |---|---|

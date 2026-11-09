@@ -188,10 +188,10 @@ public partial class EventOverlay : Control
     private static void DrawLayer(Control canvas, Layer l)
     {
         if (l.Texture == null || l.Brightness <= 0 && l.Mode != 2) return;
-        // The retail screen is 320x240; the overlay keeps its 4:3 frame centred in the window.
+        // The retail screen is 320x240, of which the top 224 lines are seen; the overlay keeps that frame centred in the window.
         var size = canvas.GetRect().Size;
         var unit = FieldView.Unit(size);
-        var origin = (size - new Vector2(320, 240) * unit) / 2;
+        var origin = (size - new Vector2(320, FieldView.VisibleLines) * unit) / 2;
         // A picture drawn over the room in a window wider (or taller) than 4:3 stands between black bars, as a
         // pre-rendered screen; one behind the room, or one added over it, leaves the room to show at the sides.
         if (l.Mode == 0 && canvas.Material == null && canvas.GetParent() is EventOverlay && (origin.X > 0 || origin.Y > 0))
@@ -244,7 +244,7 @@ public partial class EventOverlay : Control
         // and the epigraph stand on black over the whole screen.
         // A layer covering the whole retail screen (a credit card, the title) covers the whole window: its fill runs
         // out to the window's edges, so the room does not show beside it in a window wider than 4:3.
-        var screen = new Rect2(origin, new Vector2(320, 240) * unit);
+        var screen = new Rect2(origin, new Vector2(320, FieldView.VisibleLines) * unit);
         if (l.Fill is { } cells) canvas.DrawRect(area.Encloses(screen) ? new Rect2(Vector2.Zero, size) : area, new Color(cells.R * level, cells.G * level, cells.B * level));
         canvas.DrawTextureRect(l.Texture, area, false, new Color(level, level, level));
     }

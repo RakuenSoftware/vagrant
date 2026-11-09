@@ -242,6 +242,8 @@ public sealed class EventConversion
     /// <summary>Start-skippable sections: the 0d, its 0e, the fix-up that follows it, and whether skipping stops the music.</summary>
     private readonly List<(int Open, int Close, int FixUp, bool StopMusic)> _skips = new();
     private readonly HashSet<string> _started = new();
+    /// <summary>The skippable sections the flow being translated waits in.</summary>
+    private readonly SortedSet<int> _flowSkips = new();
     private readonly List<JsonObject> _effects = new();
     private readonly Queue<int> _blocks = new();
     private bool _blockDone;
@@ -272,6 +274,7 @@ public sealed class EventConversion
         _flow = flow;
         _nodes = new JsonObject();
         _started.Clear();
+        _flowSkips.Clear();
         _blocks.Clear();
         _blocks.Enqueue(entry);
         // The main flow carries the fix-ups that skipping jumps to.
@@ -285,7 +288,33 @@ public sealed class EventConversion
             _effects.Clear();
             TranslateBlock(start);
         }
-        _events.Add(new JsonObject { ["id"] = flow, ["start_action"] = "start_" + flow, ["entry"] = Node(entry), ["nodes"] = _nodes });
+        var flowEvent = new JsonObject { ["id"] = flow, ["start_action"] = "start_" + flow, ["entry"] = Node(entry), ["nodes"] = _nodes };
+        // Skipping a section interrupts the flows waiting in it: the main flow goes on at the section's fix-up, any
+        // other flow ends.
+        if (_flowSkips.Count > 0)
+        {
+            var interrupts = new JsonArray();
+            foreach (int k in _flowSkips)
+            {
+                var skip = _skips[k];
+                string to = "s" + Node(skip.FixUp)[1..];
+                if (flow == _id)
+                    _nodes[to] = new JsonObject { ["transitions"] = new JsonArray { new JsonObject
+                    {
+                        ["automatic"] = true,
+                        ["commands"] = new JsonArray { new JsonObject { ["type"] = "event.skipped", ["args"] = new JsonObject { ["stop_music"] = skip.StopMusic }, ["await"] = false } },
+                        ["to"] = Node(skip.FixUp),
+                    } } };
+                else
+                {
+                    to = "skipped";
+                    _nodes[to] = new JsonObject { ["transitions"] = new JsonArray { new JsonObject { ["automatic"] = true, ["end"] = "complete" } } };
+                }
+                interrupts.Add(new JsonObject { ["when"] = new JsonObject { ["path"] = new JsonArray { "skip" }, ["op"] = "eq", ["value"] = k }, ["to"] = to });
+            }
+            flowEvent["interrupts"] = interrupts;
+        }
+        _events.Add(flowEvent);
     }
 
     /// <summary>Translates from <paramref name="pc"/> until the flow ends, jumps or reaches another block.</summary>
@@ -416,6 +445,14 @@ public sealed class EventConversion
     /// <summary>Ends the current batch with an awaited command; the flow resumes at the next opcode when it completes.</summary>
     private void Await(int pc, string type, JsonObject args)
     {
+        // Inside a Start-skippable section the wait names the section, so that skipping finds the flows waiting in it.
+        // A source delay presents nothing, so in a script with sections its batch says which section (or none) it is in.
+        int section = -1;
+        for (int k = 0; k < _skips.Count; k++)
+            if (pc > _skips[k].Open && pc < _skips[k].Close) { section = k; _flowSkips.Add(k); break; }
+        if (section >= 0) args["skip"] = section;
+        if (type == "wait" && _skips.Count > 0)
+            _batch.Add(new JsonObject { ["type"] = "event.section", ["args"] = new JsonObject { ["skip"] = section }, ["await"] = false });
         _batch.Add(new JsonObject { ["type"] = type, ["args"] = args, ["await"] = true });
         string waiting = "w" + Node(pc)[1..], next = Node(pc + _lengths[_map[pc]]);
         _nodes[_node] = new JsonObject { ["transitions"] = new JsonArray { Edge(waiting) } };
@@ -428,21 +465,6 @@ public sealed class EventConversion
                 ["to"] = next,
             },
         };
-        // Inside a Start-skippable section, skipping drops the wait: the main flow goes on at the fix-up, any other
-        // flow ends.
-        foreach (var skip in _skips)
-        {
-            if (pc <= skip.Open || pc >= skip.Close) continue;
-            var edge = new JsonObject { ["action"] = "event.skip", ["cancel_wait"] = true };
-            if (_flow == _id)
-            {
-                edge["to"] = Node(skip.FixUp);
-                edge["commands"] = new JsonArray { new JsonObject { ["type"] = "event.skipped", ["args"] = new JsonObject { ["stop_music"] = skip.StopMusic }, ["await"] = false } };
-            }
-            else edge["end"] = "complete";
-            transitions.Add(edge);
-            break;
-        }
         _nodes[waiting] = new JsonObject { ["transitions"] = transitions };
         // The flow continues at the next opcode, unless another path has already translated it.
         if (!_started.Add(next)) _blockDone = true;

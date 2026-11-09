@@ -2317,7 +2317,7 @@ public sealed partial class FieldMenu : PanelContainer
         else if (_page == Score)
         {
             int chests = 0;
-            for (int i = 0; i < 64; i++) if (_view.Flags.GetValueOrDefault((0x3C0 + i).ToString(), 0).AsInt32() != 0) chests++;
+            for (int i = 0; i < 64; i++) if (_view.Flags[0x3C0 + i] != 0) chests++;
             lines.Add("Score");
             lines.Add($"  Treasure chests opened  {chests * 100 / 52}%");
             lines.Add($"  Map completion          {_view.Visited.Count * 100 / 361}%");

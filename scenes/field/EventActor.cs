@@ -281,7 +281,7 @@ public sealed class EventActor
                 {
                     float depth = -local[v].Z, divisor = Math.Max(depth, least);
                     // Retail's screen place (9/8 across), held as the GTE holds it.
-                    float x = Math.Clamp(projection * local[v].X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), y = Math.Clamp(projection * local[v].Y / divisor, -1024 - 120, 1023 - 120);
+                    float x = Math.Clamp(projection * local[v].X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), y = Math.Clamp(projection * local[v].Y / divisor, -1024 - 112, 1023 - 112);
                     screen[v] = new Vector2(x, y);
                     float shown = Math.Max(depth, nearClip);
                     placed[v] = camera.GlobalTransform * (new Vector3(x * 8 / 9 / projection * shown, y / projection * shown, -shown) / units);

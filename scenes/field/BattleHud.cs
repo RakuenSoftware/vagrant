@@ -221,7 +221,7 @@ public sealed partial class BattleHud : Control
         if (ChainCue == null || _cueAt is not { } head || _cueProject?.Invoke(head) is not { } point) return;
         var viewport = GetViewportRect().Size;
         var scale = FieldView.Unit(viewport);
-        var origin = (viewport - new Vector2(320, 240) * scale) / 2;
+        var origin = (viewport - new Vector2(320, FieldView.VisibleLines) * scale) / 2;
         var at = ((point - origin) / scale).Round();
         if (at.Y < 40) { float d = 40 - at.Y; at.Y = 40 + d; at.X += at.X + d < 288 ? d : -d; }
         DrawSetTransform(origin, 0, scale);
@@ -248,7 +248,7 @@ public sealed partial class BattleHud : Control
         if (_digits == null || _numberProject == null || _numbers.Count == 0) return;
         var viewport = GetViewportRect().Size;
         var scale = FieldView.Unit(viewport);
-        var origin = (viewport - new Vector2(320, 240) * scale) / 2;
+        var origin = (viewport - new Vector2(320, FieldView.VisibleLines) * scale) / 2;
         DrawSetTransform(origin, 0, scale);
         foreach (var (at, value, age) in _numbers)
         {
@@ -286,7 +286,7 @@ public sealed partial class BattleHud : Control
         if (_emotes == null || _project == null || _balloons.Count == 0) return;
         var viewport = GetViewportRect().Size;
         var scale = FieldView.Unit(viewport);
-        var origin = (viewport - new Vector2(320, 240) * scale) / 2;
+        var origin = (viewport - new Vector2(320, FieldView.VisibleLines) * scale) / 2;
         DrawSetTransform(origin, 0, scale);
         foreach (var (head, kind, side) in _balloons)
         {
