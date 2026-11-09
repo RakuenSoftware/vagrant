@@ -1,0 +1,68 @@
+# Title sequence
+
+## Installation
+
+The shared engine's `PlayStationDisc` (wol-engine `runtime/install/PlayStationDisc.cs`) opens the player's raw MODE2/2352 image: a BIN, or the single data track a CUE sheet names. `installation/RetailDisc.cs` is Vagrant Story's catalog for it:
+- the volume `SLUS-01040`;
+- the US boot line;
+- the retail US SHA-256 of every file the installer consumes.
+
+The engine verifies each file against the catalog before handing it over. Streamed files are hashed over raw sector bytes 16–2352, excluding the address header.
+
+`RetailInstallation` writes a complete `content/<generation>/` and only then atomically replaces `manifest.json`, so a rejected or failed install keeps the previous installation. `RetailContent` re-verifies every asset digest when it loads.
+
+`TitleConversion` reproduces the retail VRAM upload of the title overlay (`TITLE/TITLE.PRG`):
+
+- A run-length stream holds a 544×576 block. Its first 512 rows are uploaded at (480,0) and its last 64 rows at (0,448). Each u32 control word has two counts: the low half is zero pixel-pairs, the high half is literal pixel-pairs that follow.
+- From that VRAM image it exports:
+  - the 512×448 interlaced display area at (512,16);
+  - the two 160×64 menu panel pages;
+  - the ten 4-bit menu words (as palette indices);
+  - the ten glow sprites, using glow CLUT row 394.
+- From the overlay data itself it exports the publisher and developer logos, the 180×24 copyright image and the four menu palettes (word dark, word lit, glow blue, glow gold).
+
+The opening movie (`MOV/TITLE.STR`, 320×224 MDEC at 15 fps, with XA audio) is split by FFmpeg into Theora video and Vorbis audio. Its picture lasts 39.5 s, but its audio runs 74.8 s and continues as the title music.
+
+## Flow and presentation
+
+`scenes/title/title_flow.json` is the game's flow catalog, executed by the engine's `WorldEventRuntime`:
+
+- `publisher` → `developer` → `intro` → `menu`;
+- from `menu`, the `title.choice` action leads to `new_game`, `continue` or `attract` (idle timeout), each of which returns to `intro`;
+- the `settings.sound` and `settings.vibration` transitions record the title options in the flow's world state.
+
+`TitleSequence` is the presentation adapter. It counts 60 Hz display frames as the retail title counts vertical blanks:
+
+| Screen | Retail timing |
+|---|---|
+| Logos | 364 frames each, fading in and out over 32 frames. Holding any button cuts the developer logo short after its fade-in. Both logos appear only on the first title visit. |
+| Intro picture | 2293 frames, or until Circle or Start is pressed. The music continues and is stopped 4401 frames after the movie started. |
+| Copyright | Fades in over 17 steps of 2 frames. |
+| Menu panel | Fades in over 9 steps of 4 frames, each followed by a menu update. |
+| Menu updates | Run at 30 Hz. Holding a direction rotates the wheel: one rotation takes 10 updates. |
+| Idle timeout | 1000 frames without input, and at least 100 frames after the music stops. |
+| Leaving | A frozen frame darkened by a constant 8/255 subtraction every frame for 64 frames. |
+
+`TitleMenu` models the wheel:
+
+- **Slots:** words occupy 32-row slots on a 128-row drum (0 and 128 hidden, 32 above, 64 selected, 96 below). Each word's x position follows its drum row, which gives the wheel its slant. Words are clipped to x 176–336.
+- **Brightness:** each drawn row is lit by its absolute drum row: rows 32–63 ramp up, 64–95 are full, 96–127 ramp down. Full-brightness rows draw opaque; the others are additive.
+- **Colour:** the selected word's palette blends in sixteenths from dark to lit, and its additive glow is confined to the menu panel.
+- **Option pickers:** in Vibration and Sound the heading blends from lit to gold and rises one slot, and its two options appear below it. Up, Down or Select toggles between them, Circle or Start confirms and Cross cancels.
+
+## Added Settings item
+
+Settings follows Sound on the wheel, which therefore has five words; words resting off the drum (rows 0 and 128) are dropped before a rotation so that the fifth word never keeps travelling. Its lettering is composed at install time (`TitleConversion.ComposeSettings`):
+
+- The capital S and the small E, T, I and N are the disc's own glyphs.
+- The title has no small S or G, so these are the disc's capital S and G, area-reduced to small-capital height and set one column apart.
+
+It shares New Game's glow. Confirming Settings opens a dialog with the engine's `GraphicsSettings` panel (backed by the shared `DisplaySettings` autoload) and the game's master volume (`AudioSettings`). The title waits while the dialog is open, and waits again for the closing button to be released. Display preferences and volume persist in `user://settings.cfg`. Sound and Vibration reset to Stereo and On at every launch, as they do on the original at power-on.
+
+With HDR 2D active (the shared display owner enables it on Forward+), the window's buffer holds linear colour. The capture path in the title contracts therefore encodes captures to sRGB before saving them.
+
+## Not yet converted
+
+- Menu sound effects, which need the game's sound driver.
+- The attract demo. The idle timeout currently returns straight to the intro.
+- Memory card saves. Continue shows a notice instead of the load screen.

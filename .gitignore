@@ -1,0 +1,19 @@
+# The user's own disc images and anything extracted or converted from them.
+# Nothing from the retail disc is ever committed or shipped.
+/*.bin
+/*.cue
+/*.chd
+/*.iso
+/*.img
+/assets/local/
+
+# Godot, .NET and native build output
+.godot/
+.mono/
+bin/
+obj/
+*.import
+*.log
+
+# Local test captures and run output
+/test-results/

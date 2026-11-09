@@ -1,0 +1,378 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json.Nodes;
+using Godot;
+using Wol.Games.Vagrant.Installation;
+
+namespace Wol.Games.Vagrant.Runtime;
+
+/// <summary>
+/// Loads the content installed from the player's own disc. Without a verified installation
+/// nothing from Vagrant Story is available and the game stays on its installer screen.
+/// </summary>
+public partial class RetailContent : Node
+{
+    public const string DefaultRoot = "user://vagrant-story";
+
+    public string Root { get; private set; } = "";
+    /// <summary>Empty when a complete installation is loaded; otherwise the reason the game cannot start.</summary>
+    public string Failure { get; private set; } = "Vagrant Story has not been installed from your disc yet.";
+    public bool Installed => Failure.Length == 0;
+
+    public Texture2D Publisher { get; private set; } = null!;
+    public Texture2D Developer { get; private set; } = null!;
+    public Texture2D TitleBackground { get; private set; } = null!;
+    public Texture2D TitlePanel { get; private set; } = null!;
+    public Texture2D TitleCopyright { get; private set; } = null!;
+    public Image[] TitleWords { get; private set; } = Array.Empty<Image>();
+    public Texture2D[] TitleGlows { get; private set; } = Array.Empty<Texture2D>();
+    public Vector2I[] TitleGlowOrigins { get; private set; } = Array.Empty<Vector2I>();
+    public ushort[][] TitlePalettes { get; private set; } = Array.Empty<ushort[]>();
+    public Vector2I PublisherOrigin { get; private set; }
+    public Vector2I DeveloperOrigin { get; private set; }
+    public Vector2I CopyrightOrigin { get; private set; }
+    public Vector2I PanelOrigin { get; private set; }
+    public VideoStream IntroVideo { get; private set; } = null!;
+    public AudioStream IntroMusic { get; private set; } = null!;
+
+    public override void _Ready()
+    {
+        Root = DefaultRoot;
+        foreach (string argument in OS.GetCmdlineUserArgs())
+            if (argument.StartsWith("--install-root=", StringComparison.Ordinal)) Root = argument["--install-root=".Length..];
+        Reload();
+    }
+
+    public override void _ExitTree()
+    {
+        // Release managed references before Godot's exit-time leak check.
+        IntroMusic?.Dispose();
+        IntroVideo?.Dispose();
+        IntroMusic = null!;
+        IntroVideo = null!;
+        // Godot's collections free their native memory from their finalizers. Run every pending one now, while the
+        // engine is whole: one left to the finalizer thread can run during the engine's teardown and lock a mutex
+        // that is already gone, which crashed the process at exit after its work was done.
+        _field = null;
+        foreach (var rig in _rigs.Values) rig.Free();
+        _rigs.Clear();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+    }
+
+    public string GlobalRoot => ProjectSettings.GlobalizePath(Root);
+
+    private string _content = "";
+    private JsonObject _assets = new();
+
+    /// <summary>The installed assets already checked this session: each is verified once, when first read.</summary>
+    private readonly HashSet<string> _verified = new(StringComparer.Ordinal);
+
+    /// <summary>Resolves an installed asset, rejecting it unless its digest matches the manifest.</summary>
+    private string Asset(string name)
+    {
+        var entry = _assets[name] ?? throw new InvalidDataException($"The installation is missing {name}. Install from your disc again.");
+        string path = Path.Combine(_content, (string)entry["file"]!);
+        lock (_verified) if (_verified.Contains(name)) return path;
+        if (!File.Exists(path) || Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))) != (string)entry["sha256"]!)
+            throw new InvalidDataException($"The installed {name} is missing or damaged. Install from your disc again.");
+        lock (_verified) _verified.Add(name);
+        return path;
+    }
+
+    /// <summary>An installed image, or one decoded from the disc with the document that names it.</summary>
+    public Image LoadImage(string name)
+    {
+        if (!_assets.ContainsKey(name))
+            return Field.Image(name)?.Duplicate() as Image ?? throw new InvalidDataException($"The disc has no image {name}.");
+        return Image.LoadFromFile(Asset(name)) ?? throw new InvalidDataException($"The installed {name} could not be read.");
+    }
+
+    private Texture2D LoadTexture(string name) => ImageTexture.CreateFromImage(LoadImage(name));
+
+    /// <summary>Whether the installation holds an asset, or the disc has it to decode.</summary>
+    public bool Has(string name)
+    {
+        if (_assets.ContainsKey(name)) return true;
+        if (name.StartsWith("character_", StringComparison.Ordinal) || name.StartsWith("weapon_", StringComparison.Ordinal)) return Field.HasModel(name);
+        return Field.Data(name) != null;
+    }
+
+    /// <summary>A verified disc file the installation keeps as the disc holds it, by its disc path.</summary>
+    public byte[] Disc(string path) => File.ReadAllBytes(Asset("disc/" + path));
+
+    private bool OnDisc(string path) => _assets.ContainsKey("disc/" + path);
+
+    /// <summary>The picture retail shows while it loads ("NOW LOADING..."; see <see cref="TitleConversion.ExportLoading"/>).</summary>
+    public Texture2D LoadingImage() => LoadTexture("loading");
+
+    private Dictionary<long, string> _paths = new();
+    private string PathAt(long sector) => _paths.TryGetValue(sector, out var path) ? path : throw new InvalidDataException($"No file on the disc starts at sector {sector}.");
+
+    private FieldContent? _field;
+    /// <summary>The field's content, decoded from the disc files as the game asks for it.</summary>
+    public FieldContent Field => _field ??= new FieldContent(Disc, OnDisc, PathAt, _paths.Values, Cache(), name => _assets.ContainsKey(name) ? File.ReadAllBytes(Asset(name)) : null);
+
+    /// <summary>
+    /// Where the field keeps what it has converted from the disc between sessions: in the installation, under this
+    /// build's identity, so that a new build converts afresh. Older builds' folders are removed.
+    /// </summary>
+    private string? Cache()
+    {
+        if (_content.Length == 0) return null;
+        try
+        {
+            string root = Path.Combine(_content, "cache"), build = typeof(RetailContent).Assembly.ManifestModule.ModuleVersionId.ToString("N");
+            Directory.CreateDirectory(Path.Combine(root, build));
+            foreach (string old in Directory.GetDirectories(root)) if (Path.GetFileName(old) != build) Directory.Delete(old, true);
+            return Path.Combine(root, build);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>
+    /// Whether a room loads quickly: converted by the installation, with Ashley's rig, and each of its characters'
+    /// rigs already kept in the cache. Otherwise its first load converts them, and the loading picture shows.
+    /// </summary>
+    public bool Converted(int zone, int map)
+    {
+        string room = $"field_z{zone:d3}_m{map:d2}";
+        if (!_assets.ContainsKey(room) || !_assets.ContainsKey("rig_character_00") || Cache() is not { } cache) return false;
+        var document = JsonNode.Parse(File.ReadAllBytes(Asset(room)));
+        foreach (var actor in document?["room_actors"]?.AsArray() ?? new JsonArray())
+            if ((int)actor!["character"]! is var character && character != 0 && Directory.GetFiles(cache, $"character_{character:X2}_*.glb").Length == 0) return false;
+        return true;
+    }
+
+    /// <summary>A music id's sequence and instrument bank, as the disc holds them.</summary>
+    public (byte[] Sequence, byte[] Bank) Music(string name) =>
+        Field.Music(name) ?? throw new InvalidDataException($"The disc has no music {name}.");
+
+    /// <summary>Whether the disc has a sound, in the bank it plays from.</summary>
+    public bool HasSound(string name) => Field.Sound(name) != null;
+
+    /// <summary>A sound's bank (none for a resident one), id, pan and voice group.</summary>
+    public (string BankName, byte[]? Bank, int Id, int Pan, int Group) Sound(string name) =>
+        Field.Sound(name) ?? throw new InvalidDataException($"The disc has no sound {name}.");
+
+    /// <summary>A character's definition: bones, mounts, limbs and clip events (empty when the disc has no model).</summary>
+    public Godot.Collections.Dictionary Character(int character) =>
+        Field.Character($"character_{character:X2}") is { } built ? Parse(built.Definition.ToJsonString()) : new Godot.Collections.Dictionary();
+
+    /// <summary>The weapons' swing sounds, by category.</summary>
+    public int[] SwingSounds => Field.SwingSoundIds();
+
+    /// <summary>Boots the game's sound driver from the disc: the executable's code and the resident banks.</summary>
+    public void Boot(SoundDriver driver) =>
+        driver.Boot(Disc("SLUS_010.40"), Disc("SOUND/WAVE0000.DAT"), Disc("SOUND/WAVE0005.DAT"), Disc("SOUND/WAVE0200.DAT"), Disc("SE/EFFECT00.DAT"));
+
+    private static Godot.Collections.Dictionary Parse(string json)
+    {
+        var parsed = Json.ParseString(json);
+        if (parsed.VariantType != Variant.Type.Dictionary) throw new InvalidDataException("A decoded document could not be read.");
+        return parsed.AsGodotDictionary();
+    }
+
+    /// <summary>Loads an installed image as a texture.</summary>
+    public Texture2D Texture(string name) => LoadTexture(name);
+
+    /// <summary>Loads an installed JSON document, such as a translated room event.</summary>
+    public Godot.Collections.Dictionary Data(string name)
+    {
+        if (!_assets.ContainsKey(name)) return Parse((Field.Data(name) ?? throw new InvalidDataException($"The disc has no {name}.")).ToJsonString());
+        var parsed = Json.ParseString(File.ReadAllText(Asset(name)));
+        if (parsed.VariantType != Variant.Type.Dictionary) throw new InvalidDataException($"The installed {name} could not be read.");
+        return parsed.AsGodotDictionary();
+    }
+
+    /// <summary>An installed full-screen overlay's layer images, in layer order.</summary>
+    public (Texture2D Texture, Color? Fill)[] Overlay(int id)
+    {
+        var layers = Parse(Field.Overlay(id).ToJsonString())["layers"].AsGodotArray();
+        var result = new (Texture2D, Color?)[layers.Count];
+        for (int i = 0; i < layers.Count; i++)
+        {
+            var layer = layers[i].AsGodotDictionary();
+            // The layer's fill: colour 0 of its palette, none when that is 0 (as the GPU leaves such texels out).
+            int fill = layer.GetValueOrDefault("fill", 0).AsInt32();
+            result[i] = (LoadTexture(layer["image"].AsString()), fill == 0 ? null : TitleConversion.ToColor((ushort)fill, false) with { A = 1 });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// An installed retail font as a bitmap font, 12-pixel cells drawn at their native size: the balloons'
+    /// "dialogue_font" or the system box's "system_font".
+    /// </summary>
+    public FontFile BitmapFont(string asset)
+    {
+        var parsed = Json.ParseString(File.ReadAllText(Asset(asset)));
+        if (parsed.VariantType != Variant.Type.Dictionary) throw new InvalidDataException($"The installed font {asset} could not be read.");
+        var definition = parsed.AsGodotDictionary();
+        var image = LoadImage(definition["texture"].AsString());
+        int size = definition["size"].AsInt32();
+        float ascent = definition["ascent"].AsSingle();
+        var cache = new Vector2I(size, 0);
+        var font = new FontFile { FixedSize = size, Antialiasing = TextServer.FontAntialiasing.None };
+        font.SetTextureImage(0, cache, 0, image);
+        font.SetCacheAscent(0, size, ascent);
+        font.SetCacheDescent(0, size, definition["descent"].AsSingle());
+        foreach (KeyValuePair<Variant, Variant> entry in definition["glyphs"].AsGodotDictionary())
+        {
+            int character = int.Parse(entry.Key.AsString());
+            var glyph = entry.Value.AsGodotDictionary();
+            var rect = glyph["rect"].AsGodotArray();
+            var area = new Rect2(rect[0].AsSingle(), rect[1].AsSingle(), rect[2].AsSingle(), rect[3].AsSingle());
+            font.SetGlyphAdvance(0, size, character, new Vector2(glyph["advance"].AsSingle(), 0));
+            font.SetGlyphOffset(0, cache, character, new Vector2(0, -ascent));
+            font.SetGlyphSize(0, cache, character, area.Size);
+            font.SetGlyphUVRect(0, cache, character, area);
+            font.SetGlyphTextureIdx(0, cache, character, 0);
+        }
+        // A pixel of a message's horizontal offset.
+        font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
+        font.SetGlyphSize(0, cache, DialogueConversion.HairSpace, Vector2.Zero);
+        return font;
+    }
+
+    /// <summary>
+    /// Loads an installed character rig: a scene with one skinned mesh and one AnimationPlayer holding the character's clips.
+    /// Throws <see cref="InvalidDataException"/> when the rig is missing or damaged.
+    /// </summary>
+    /// <summary>Each rig built this session, kept as a template: later actors take a copy rather than parse it again.</summary>
+    private readonly Dictionary<string, Node3D> _rigs = new(StringComparer.Ordinal);
+
+    public Node3D Rig(string name)
+    {
+        if (!_rigs.TryGetValue(name, out var template)) _rigs[name] = template = BuildRig(name);
+        var copy = (Node3D)template.Duplicate();
+        // Each actor lights and tints its own materials: a copy takes its own mesh and materials (the vertex data
+        // stays shared until written).
+        foreach (var node in copy.FindChildren("*", "MeshInstance3D", true, false))
+        {
+            var instance = (MeshInstance3D)node;
+            if (instance.Mesh is not ArrayMesh shared) continue;
+            var mesh = (ArrayMesh)shared.Duplicate();
+            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+                if (mesh.SurfaceGetMaterial(surface) is Material material) mesh.SurfaceSetMaterial(surface, (Material)material.Duplicate());
+            instance.Mesh = mesh;
+        }
+        return copy;
+    }
+
+    private Node3D BuildRig(string name)
+    {
+        byte[] model = name.StartsWith("weapon_", StringComparison.Ordinal) ? Field.Weapon(name)
+            : Field.Character(name)?.Model ?? throw new InvalidDataException($"The disc has no model for {name}.");
+        using var document = new GltfDocument();
+        using var state = new GltfState();
+        if (document.AppendFromBuffer(model, "", state) != Error.Ok || document.GenerateScene(state) is not Node3D scene)
+            throw new InvalidDataException($"The installed {name} could not be read.");
+        // glTF keeps a mesh's vertex colours but not the material's use of them: a Gouraud-shaded model's colours
+        // (the dragons', the shaded props') multiply its texture, doubled, as the PSX's 0x80 leaves a texel as it is.
+        foreach (var node in scene.FindChildren("*", "MeshInstance3D", true, false))
+        {
+            if (((MeshInstance3D)node).Mesh is not ArrayMesh mesh) continue;
+            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+            {
+                if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material && (mesh.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatColor) != 0)
+                {
+                    material.VertexColorUseAsAlbedo = true;
+                    material.VertexColorIsSrgb = true;
+                    material.AlbedoColor = new Color(2, 2, 2, material.AlbedoColor.A);
+                }
+            }
+        }
+        return scene;
+    }
+
+    /// <summary>
+    /// Loads an installed field: its shared-engine document and the textures it names, keyed as the document refers to them.
+    /// Throws <see cref="InvalidDataException"/> when the field is missing or damaged.
+    /// </summary>
+    public (Godot.Collections.Dictionary Document, Godot.Collections.Dictionary Textures) Room(string name)
+    {
+        var document = Data(name);
+        var textures = new Godot.Collections.Dictionary();
+        foreach (KeyValuePair<Variant, Variant> texture in document.GetValueOrDefault("textures", new Godot.Collections.Dictionary()).AsGodotDictionary())
+        {
+            var image = LoadImage(texture.Value.AsString());
+            image.GenerateMipmaps();
+            textures[texture.Key] = ImageTexture.CreateFromImage(image);
+        }
+        return (document, textures);
+    }
+
+    public static Color ToColor(ushort value) => TitleConversion.ToColor(value, false);
+
+    /// <summary>Loads the active manifest, rejecting any asset whose digest no longer matches.</summary>
+    public void Reload()
+    {
+        _field = null;
+        foreach (var rig in _rigs.Values) rig.Free();
+        _rigs.Clear();
+        try
+        {
+            string root = GlobalRoot;
+            string manifestPath = Path.Combine(root, RetailInstallation.ManifestName);
+            if (!File.Exists(manifestPath)) throw new FileNotFoundException("Vagrant Story has not been installed from your disc yet.");
+            var manifest = JsonNode.Parse(File.ReadAllText(manifestPath))!.AsObject();
+            if ((int?)manifest["schema"] != RetailInstallation.Schema)
+                throw new InvalidDataException("The installed content is from another version of this game. Install from your disc again.");
+            _content = Path.Combine(root, (string)manifest["content_dir"]!);
+            _assets = manifest["assets"]!.AsObject();
+            // The rooms and Ashley's rig are as the installing build made them; another build makes its own, as the
+            // field needs them, rather than read what an older conversion made.
+            if ((string?)manifest["converter"] != typeof(RetailContent).Assembly.ManifestModule.ModuleVersionId.ToString("N"))
+                foreach (string name in new List<string>(System.Linq.Enumerable.Select(_assets, entry => entry.Key)))
+                    if (name.StartsWith("field_", StringComparison.Ordinal) || name.StartsWith("rig_", StringComparison.Ordinal)) _assets.Remove(name);
+            _paths = new();
+            foreach (var (path, sector) in JsonNode.Parse(File.ReadAllText(Asset("disc_sectors")))!.AsObject()) _paths[(long)sector!] = path;
+            Vector2I Point(JsonNode node) => new((int)node[0]!, (int)node[1]!);
+
+            var layout = JsonNode.Parse(File.ReadAllText(Asset("title_layout")))!;
+            Publisher = LoadTexture("publisher");
+            Developer = LoadTexture("developer");
+            TitleBackground = LoadTexture("title_background");
+            TitlePanel = LoadTexture("title_panel");
+            TitleCopyright = LoadTexture("title_copyright");
+            PublisherOrigin = Point(layout["publisher_origin"]!);
+            DeveloperOrigin = Point(layout["developer_origin"]!);
+            CopyrightOrigin = Point(layout["copyright_origin"]!);
+            PanelOrigin = Point(layout["panel_origin"]!);
+            var palettes = layout["palettes"]!.AsArray();
+            TitlePalettes = new ushort[palettes.Count][];
+            for (int i = 0; i < palettes.Count; i++)
+            {
+                var colours = palettes[i]!.AsArray();
+                TitlePalettes[i] = new ushort[colours.Count];
+                for (int j = 0; j < colours.Count; j++) TitlePalettes[i][j] = (ushort)(int)colours[j]!;
+            }
+            int words = layout["words"]!.AsArray().Count;
+            TitleWords = new Image[words];
+            TitleGlows = new Texture2D[words];
+            TitleGlowOrigins = new Vector2I[words];
+            for (int i = 0; i < words; i++)
+            {
+                TitleWords[i] = LoadImage($"title_word_{i}");
+                if (TitleWords[i].GetFormat() != Image.Format.L8) TitleWords[i].Convert(Image.Format.L8);
+                TitleGlows[i] = LoadTexture($"title_glow_{i}");
+                var glow = layout["glows"]![i]!;
+                TitleGlowOrigins[i] = new Vector2I((int)glow["x"]!, (int)glow["y"]!);
+            }
+            IntroVideo = new VideoStreamTheora { File = Asset("intro_video") };
+            IntroMusic = AudioStreamOggVorbis.LoadFromFile(Asset("intro_music"));
+            Failure = "";
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or NullReferenceException or InvalidOperationException or FormatException)
+        {
+            Failure = error.Message;
+        }
+    }
+}

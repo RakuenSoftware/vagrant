@@ -1,0 +1,15 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Wol.Games.Vagrant</RootNamespace>
+    <AssemblyName>Vagrant</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="addons/wol_engine/.godot/**/*.cs" />
+    <Compile Remove="addons/wol_engine/.dependencies/**/*.cs" />
+    <Compile Remove="addons/wol_engine/scripts/**/*.cs" />
+    <Compile Remove="addons/wol_engine/tests/**/*.cs" />
+  </ItemGroup>
+</Project>
