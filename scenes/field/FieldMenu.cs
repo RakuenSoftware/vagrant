@@ -796,6 +796,9 @@ public sealed partial class FieldMenu : PanelContainer
     public void Show(bool open)
     {
         Visible = open;
+        // A shortcut's page kept the field dark, as the shortcut menu had it.
+        if (_shortcut) _view.DimField(0);
+        _shortcut = false;
         _itemAction = -1;
         _actionRefusal = "";
         _setup = -1;
@@ -804,6 +807,81 @@ public sealed partial class FieldMenu : PanelContainer
         _page = -1;
         _note = "";
         Draw();
+    }
+
+    /// <summary>Whether a page was opened from the shortcut menu: it then has no command list behind it, nor MENU over it.</summary>
+    private bool _shortcut;
+    // The classes of magic on the shortcut menu's buttons: triangle, square, circle and cross (0 Warlock to 3 Enchanter).
+    private static readonly int[] ShortcutClasses = { 1, 2, 0, 3 };
+
+    /// <summary>
+    /// A shortcut command's name (the game's manual, "Shortcut Commands": ITEMS, DEFENSE, CHAIN and BREAK ARTS on the
+    /// direction pad, 0 to 3 as up, left, right and down; SHAMAN, SORCERER, WARLOCK and ENCHANTER on triangle, square,
+    /// circle and cross, 4 to 7): the menu's own name for it, a kind of ability or a class of magic by its first word.
+    /// A class Ashley has no spell of has none.
+    /// </summary>
+    public string ShortcutName(int command)
+    {
+        var names = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
+        string Name(int row) => row < names.Count ? names[row].AsGodotDictionary()["text"].AsString() : Rows[row].ToUpperInvariant();
+        if (command == 0) return Name(Items);
+        if (command == 3) return Name(Arts);
+        if (command is 1 or 2)
+        {
+            if (!_view.Content.Has("battle_abilities")) return command == 1 ? "DEFENSE" : "CHAIN";
+            var strings = _view.Content.Data("battle_abilities")["strings"].AsGodotArray();
+            int at = command == 1 ? 3 : 0;
+            return at < strings.Count ? strings[at].AsGodotDictionary()["text"].AsString().Split(' ')[0] : "";
+        }
+        if (!_view.Content.Has("magic_menu") || ClassSpells(ShortcutClasses[command - 4]).Count == 0) return "";
+        var classes = _view.Content.Data("magic_menu")["strings"].AsGodotArray();
+        int name = ShortcutClasses[command - 4] * 3;
+        return name < classes.Count ? classes[name].AsGodotDictionary()["text"].AsString().Split(' ')[0] : "";
+    }
+
+    /// <summary>Whether a shortcut command can be used now: Break Arts only in battle mode, the rest once Ashley has something there.</summary>
+    public bool ShortcutUsable(int command) => command switch
+    {
+        0 => true,
+        1 or 2 => Usable(Abilities),
+        3 => Usable(Arts) && _view.Battle?.Drawn == true,
+        _ => ShortcutName(command).Length != 0,
+    };
+
+    /// <summary>
+    /// Opens a shortcut command's page at once, with no command list behind it, so leaving the page closes the menu
+    /// (Episode 4 at 3:15 and 4:38). ITEMS opens the item menu on MISC, ready to use a thing; DEFENSE and CHAIN the two
+    /// kinds of battle ability, the pointer on theirs; BREAK ARTS its page; a class of magic its spells. Returns
+    /// false, opening nothing, for a command that cannot be used now.
+    /// </summary>
+    public bool OpenShortcut(int command)
+    {
+        if (!ShortcutUsable(command)) return false;
+        Show(true);
+        _shortcut = true;
+        _cursor = 0;
+        _topic = -1;
+        _area = 0;
+        _abilityKind = -1;
+        if (command == 0)
+        {
+            _page = Items;
+            _legacy = false;
+            _category = 6;
+            _items.Enter();
+            _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1");
+        }
+        else
+        {
+            if (command is 1 or 2) { _page = Abilities; _cursor = command == 1 ? 1 : 0; }
+            else if (command == 3) { _page = Arts; _artsCategory = Math.Max(1, _view.Battle?.Ashley?.Category ?? 1); _artsCategories = false; }
+            else { _page = Magic; _magicClass = ShortcutClasses[command - 4]; }
+            _view.Battle?.CoverHud(true, window: true, banner: true);
+            // The field stays as dark under the page as under the shortcut menu (Episode 4 at 3:16).
+            _view.DimField(FieldView.ShortcutDim);
+        }
+        Draw();
+        return true;
     }
 
     private bool Usable(int row) => row is Items or Status or Data or Options or Score || row == Manual && _view.Content.Has("manual") || row == Map && _view.Document.GetValueOrDefault("scene", -1).AsInt32() > 0 || row == Magic && _view.Spells.Count > 0 || row == Arts && _view.Arts.Count > 0 || row == Abilities && _view.Abilities.Count > 0;
@@ -1267,6 +1345,8 @@ public sealed partial class FieldMenu : PanelContainer
             return true;
         }
         int step = (pressed("ps_down") ? 1 : 0) - (pressed("ps_up") ? 1 : 0);
+        // A page opened from the shortcut menu has no command list to go back to.
+        if (_page < 0 && _shortcut) { Show(false); return false; }
         if (_page < 0)
         {
             // The command list's sounds (BATTLE.PRG's list): the cursor's change, Circle's select, Triangle's and Cross's leave.
@@ -2094,7 +2174,7 @@ public sealed partial class FieldMenu : PanelContainer
                 var names = new List<string>();
                 var kinds = new List<int>();
                 for (int c = 0; c < 4; c++) { names.Add(Text(c * 3)); kinds.Add(ClassSpells(c).Count == 0 ? 1 : 0); }
-                _list.Set(names, _cursor, header, Text(_cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1)), kinds: kinds);
+                _list.Set(names, _cursor, header, Text(_cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1)), kinds: kinds, titled: !_shortcut);
             }
             else
             {
@@ -2110,7 +2190,7 @@ public sealed partial class FieldMenu : PanelContainer
                 int chosen = spells.Count > 0 ? spells[_cursor] : 0, index = 0;
                 for (int i = 0; i < all.Count; i++) if (all[i].AsInt32() == chosen) index = i;
                 _list.Set(names, _cursor - top, header, spells.Count > 0 ? Text(first + index) : "", sub: (Text(_magicClass * 3), -1), kinds: kinds,
-                    cost: spells.Count > 0 ? ("MP", SpellCost(chosen).ToString()) : null);
+                    cost: spells.Count > 0 ? ("MP", SpellCost(chosen).ToString()) : null, titled: !_shortcut);
             }
         }
         else if (artsList)
@@ -2130,7 +2210,7 @@ public sealed partial class FieldMenu : PanelContainer
                 int held = _view.Battle?.Ashley?.Category ?? 0;
                 for (int c = top + 1; c <= Math.Min(10, top + 8); c++) { names.Add(Text((c - 1) * 3)); kinds.Add(CategoryArts(c).Count == 0 ? 1 : c == held ? 3 : 0); icons.Add(3 + c); }
                 bool none = CategoryArts(_cursor + 1).Count == 0;
-                _list.Set(names, _cursor - top, header, Text(_cursor * 3 + (none ? 2 : 1)), sub: (Text(30), -1), kinds: kinds, icons: icons, headerDimmed: _view.Battle?.Drawn != true);
+                _list.Set(names, _cursor - top, header, Text(_cursor * 3 + (none ? 2 : 1)), sub: (Text(30), -1), kinds: kinds, icons: icons, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
             }
             else
             {
@@ -2152,7 +2232,7 @@ public sealed partial class FieldMenu : PanelContainer
                 }
                 (string, string)? cost = onArt ? ("HP", actions.GetValueOrDefault(arts[_cursor].ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("cost", 0).AsInt32().ToString()) : null;
                 // BREAK ARTS is dimmed over the page out of battle mode only (Ep. 3 7:01 against 7:09).
-                _list.Set(names, _cursor, header, help, next, sub: (Text((_artsCategory - 1) * 3), 3 + _artsCategory), kinds: kinds, cost: cost, headerDimmed: _view.Battle?.Drawn != true);
+                _list.Set(names, _cursor, header, help, next, sub: (Text((_artsCategory - 1) * 3), 3 + _artsCategory), kinds: kinds, cost: cost, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
             }
         }
         else if (reclaimList)
@@ -2188,7 +2268,9 @@ public sealed partial class FieldMenu : PanelContainer
             // The points still wanted for the next reclaim (MENU2.PRG): its requirement less the points so far.
             int next = _view.AbilitiesReclaimed < needed.Count ? needed[_view.AbilitiesReclaimed].AsInt32() : 0;
             int points = Math.Max(0, next - _view.AbilityPoints);
-            _list.Set(new[] { Text(0), Text(3) }, _cursor, names.Count > Abilities ? names[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
+            // From the shortcut menu the two kinds stand alone, under BATTLE MODE: no header, title or points (Episode 4 at 3:15).
+            if (_shortcut) _list.Set(new[] { Text(0), Text(3) }, _cursor, null, Text(_cursor * 3 + (any ? 1 : 2)), titled: false);
+            else _list.Set(new[] { Text(0), Text(3) }, _cursor, names.Count > Abilities ? names[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
                 Text(_cursor * 3 + (any ? 1 : 2)), ("NEXT", $"{points}PT"));
         }
         _map.Visible = Visible && _page == Map;

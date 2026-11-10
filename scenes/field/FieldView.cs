@@ -3462,7 +3462,7 @@ void fragment() {
         PlaceSky();
         // The simple map shows while Ashley is in hand, the HUD is up and nothing pauses the field.
         // It is put away with the HUD while an action plays (footage: Heal's and the Elixir's casting).
-        _minimap.Set(Controlled && HudShown && !_menu.Open && Battle?.Paused != true && Battle?.Hud?.Acting != true && !_lookAround, Gameplay.Yaw, Battle?.Drawn == true);
+        _minimap.Set(Controlled && HudShown && !_menu.Open && _shortcutFrames < 0 && Battle?.Paused != true && Battle?.Hud?.Acting != true && !_lookAround, Gameplay.Yaw, Battle?.Drawn == true);
         var fade = (ShaderMaterial)_screen.Material;
         fade.SetShaderParameter("level", _displayOn ? _fade : 1);
         fade.SetShaderParameter("white", _fadeWhite && _displayOn);
@@ -3588,10 +3588,12 @@ void fragment() {
         // Triangle opens the menu, and time stands still while it is open.
         if (_menu.Open)
         {
-            if (!_menu.Step(button => _presses.Contains(button))) FreezeActors(false);
+            // A page may close the menu as it steps, as well as by saying so.
+            if (!_menu.Step(button => _presses.Contains(button)) || !_menu.Open) FreezeActors(false);
             _presses.Clear();
             return;
         }
+        if (StepShortcuts()) { _presses.Clear(); return; }
         if (_presses.Contains("ps_triangle") && Battle is { Busy: false } && !_control.Busy)
         {
             _presses.Clear();
@@ -4247,6 +4249,52 @@ void fragment() {
     /// <summary>The CONGRATULATIONS screen, once a boss's defeat has opened it.</summary>
     public ResultsScreen? Results => _results;
     private ColorRect _dim = null!;
+
+    /// <summary>How far the field darkens under the shortcut menu and its pages: to about two thirds (Episode 4 at 4:36).</summary>
+    public const float ShortcutDim = 0.5f;
+    /// <summary>Frames the shortcut menu has been held open, or -1 while it is not.</summary>
+    private int _shortcutFrames = -1;
+    private static readonly string[] ShortcutButtons = { "ps_up", "ps_left", "ps_right", "ps_down", "ps_triangle", "ps_square", "ps_circle", "ps_cross" };
+
+    /// <summary>
+    /// The shortcut menu (the game's manual, "Shortcut Commands"; Episode 4 at 4:36): while L2 is held in normal or
+    /// battle mode the field stands still and dims, the simple map is put away, and the HUD shows the direction pad's
+    /// commands and the face buttons' classes of magic; one of those buttons opens its page at once, and letting L2
+    /// go puts the menu away. Returns whether it is open.
+    /// </summary>
+    private bool StepShortcuts()
+    {
+        bool held = Input.IsActionPressed("ps_l2") && HudShown && !_lookAround && Battle is { Busy: false, Paused: false } && _control is { Busy: false };
+        if (!held)
+        {
+            if (_shortcutFrames < 0) return false;
+            _shortcutFrames = -1;
+            DimField(0);
+            Battle?.Hud?.Shortcuts(null, Array.Empty<bool>(), 0);
+            FreezeActors(false);
+            return false;
+        }
+        if (_shortcutFrames < 0) { _control!.Halt(); FreezeActors(true); }
+        _shortcutFrames++;
+        var names = new string[8];
+        var usable = new bool[8];
+        for (int i = 0; i < 8; i++) { names[i] = _menu.ShortcutName(i); usable[i] = _menu.ShortcutUsable(i); }
+        DimField(ShortcutDim);
+        Battle?.Hud?.Shortcuts(names, usable, _shortcutFrames / 2);
+        for (int i = 0; i < 8; i++)
+        {
+            if (!_presses.Contains(ShortcutButtons[i]) || names[i].Length == 0) continue;
+            if (!usable[i]) { MenuSound(MenuInvalid); break; }
+            // The page takes the menu's place; the field stays still under it.
+            _shortcutFrames = -1;
+            DimField(0);
+            Battle.Hud?.Shortcuts(null, Array.Empty<bool>(), 0);
+            MenuSound(MenuSelect);
+            _menu.OpenShortcut(i);
+            break;
+        }
+        return true;
+    }
     /// <summary>How dark the field stands behind the CONGRATULATIONS screen (retail lowers its palettes; measured from footage).</summary>
     private const float ResultsDim = 0.65f;
 

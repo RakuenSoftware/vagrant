@@ -44,6 +44,9 @@ public partial class FieldContracts : Node
     private int? _yaw;
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
     private bool _fight;
+    /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
+    private bool _shortcuts;
+    private int _shortcutStep;
     private string _lastNode = "";
     private int _controlAt;
     private int _nodeFrame;
@@ -98,6 +101,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -395,12 +399,48 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the HUD shows during the event: {_view.HudShown}");
         }
         if (_watchEvery > 0 && _frame % _watchEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture($"watch_{_frame:d5}");
+        if (_shortcuts && (_view.Controlled || _shortcutStep > 0) && _view.Battle is { } shortcutBattle)
+        {
+            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); shortcutBattle.Assign(_view.Abilities); }
+            switch (++_shortcutStep)
+            {
+                case 30: Input.ActionPress("ps_l2"); break;
+                case 34: Capture("shortcut_sliding"); break;
+                case 70: Capture("shortcut"); Tap("ps_right"); break;
+                case 100:
+                    if (!_view.MenuOpen) { Finish("the CHAIN shortcut opened nothing"); return; }
+                    Capture("shortcut_chain");
+                    Input.ActionRelease("ps_l2");
+                    Tap("ps_cross");
+                    break;
+                case 130:
+                    if (_view.MenuOpen) { Finish("leaving the CHAIN shortcut's page left the menu open"); return; }
+                    Input.ActionPress("ps_l2");
+                    break;
+                case 170: Tap("ps_up"); break;
+                case 200:
+                    if (!_view.MenuOpen) { Finish("the ITEMS shortcut opened nothing"); return; }
+                    Capture("shortcut_items");
+                    Input.ActionRelease("ps_l2");
+                    Tap("ps_cross");
+                    break;
+                case 230: if (_view.MenuOpen) Tap("ps_cross"); break;
+                case 260:
+                    Capture("shortcut_after");
+                    Finish(_view.MenuOpen ? "leaving the ITEMS shortcut's page left the menu open" : "");
+                    return;
+            }
+            return;
+        }
         if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
         {
             if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities); }
             if (brawl.GameOver) { Finish("Ashley fell in the room's fight"); return; }
             if (brawl.HostileCount() == 0) { Steer(Vector2.Zero); if (++_calm > 180) Finish(""); return; }
             _calm = 0;
+            // The sphere is held open long enough to be seen whole, and captured once it is.
+            if (!brawl.Paused) _sphereFrames = 0;
+            else if (++_sphereFrames < 40) { if (_sphereFrames == 36) Capture($"fight_sphere_{_frame:d5}"); return; }
             if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
             if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
             Fight(brawl, brawler, _frame);

@@ -390,6 +390,64 @@ public sealed partial class BattleHud : Control
         }
     }
 
+    /// <summary>
+    /// The shortcut menu L2 holds open (the game's manual, "Shortcut Commands"; Episode 4 at 4:36, measured from the
+    /// footage on the 320 by 240 screen): the direction pad (the label page's (184, 160), 31 by 30) at (72, 110) with
+    /// its four commands, and the four face buttons (16 by 16 from (0, 128): triangle, square, circle and cross, each
+    /// tinted its own colour) round (233, 125) with the classes of magic. A command up or right of its button is
+    /// lettered from five pixels past it, one left or below it ends three before it, with a dot between; one that
+    /// cannot be used now is grey, and a class Ashley has no spell of is not named. Each cluster slides in from its
+    /// side by the row steps, one a frame.
+    /// </summary>
+    private string[]? _shortcuts;
+    private bool[] _shortcutUsable = Array.Empty<bool>();
+    private int _shortcutFrames;
+    private static readonly Vector2[] ShortcutAt = { new(96, 109), new(70, 122), new(105, 122), new(80, 136), new(245, 109), new(213, 122), new(256, 122), new(222, 136) };
+    private static readonly Vector2[] ShortcutButtons = { new(225, 108), new(216, 117), new(235, 117), new(225, 127) };
+    private static readonly Color[] ShortcutTints = { new(0.7f, 1.5f, 0.9f), new(1.5f, 0.8f, 1.5f), new(1.7f, 0.7f, 0.7f), new(0.8f, 1.0f, 1.6f) };
+    private static readonly Color ShortcutGrey = Color.Color8(0x80, 0x80, 0x80);
+
+    /// <summary>
+    /// Shows the shortcut menu: its eight commands' names (up, left, right and down, then triangle, square, circle and
+    /// cross; empty for none), which of them can be used now, and the frames (30 Hz) it has been open. Null puts it away.
+    /// </summary>
+    public void Shortcuts(string[]? names, bool[] usable, int frames)
+    {
+        if (names == null && _shortcuts == null) return;
+        (_shortcuts, _shortcutUsable, _shortcutFrames) = (names, usable, frames);
+        QueueRedraw();
+    }
+
+    private void DrawShortcuts()
+    {
+        if (_shortcuts == null || _labels == null) return;
+        var unit = Unit;
+        float slide = RowSteps[Math.Clamp(11 - _shortcutFrames, 0, 15)];
+        DrawSetTransform(FieldView.Pin(Size, 1).Offset);
+        Sprite(_labels, new Rect2(184, 160, 31, 30), new Vector2(72 - slide, 110));
+        for (int b = 0; b < 4; b++) Sprite(_labels, new Rect2(16 * b, 128, 16, 16), ShortcutButtons[b] + new Vector2(slide, 0), ShortcutTints[b]);
+        for (int i = 0; i < 8 && i < _shortcuts.Length; i++)
+        {
+            string name = _shortcuts[i];
+            if (name.Length == 0) continue;
+            float dx = i < 4 ? -slide : slide;
+            var tint = i < _shortcutUsable.Length && _shortcutUsable[i] ? Colors.White : ShortcutGrey;
+            var at = ShortcutAt[i] + new Vector2(dx, 0);
+            // Up and right start at their place; left and down end at theirs.
+            if (i % 4 is 0 or 2)
+            {
+                DrawRect(new Rect2(new Vector2(at.X - 4, at.Y + 4) * unit, unit * 1.5f), tint);
+                Letter(this, _labels, _widths, _columns, _kerning, name, at, unit, tint);
+            }
+            else
+            {
+                float width = Letter(this, _labels, _widths, _columns, _kerning, name, new Vector2(-1000, 0), unit) + 1000;
+                Letter(this, _labels, _widths, _columns, _kerning, name, new Vector2(at.X - width, at.Y), unit, tint);
+                DrawRect(new Rect2(new Vector2(at.X + 2, at.Y + 4) * unit, unit * 1.5f), tint);
+            }
+        }
+    }
+
     private static int LimbState(int hp, int most) => hp < 2 ? 0 : 4 * hp < most ? 1 : 4 * hp < 3 * most ? 2 : hp < most ? 3 : 4;
 
     /// <summary>BATTLE MODE moves on the 30 Hz frame: it slides in a step a frame (its pulse held) and out again.</summary>
@@ -443,6 +501,7 @@ public sealed partial class BattleHud : Control
         Block(0, Hp, MaxHp);
         DrawSetTransform(FieldView.Pin(Size, 2).Offset);
         if (_parts != null || _leftParts != null) Parts();
+        DrawShortcuts();
         DrawSetTransform(FieldView.Pin(Size, 0).Offset);
         // The figure, tinted (the colour doubled: 0x80 leaves a texel as it is); not while targeting.
         for (int i = 4; i >= 0 && _parts == null && _leftParts == null && !FigureHidden; i--)
