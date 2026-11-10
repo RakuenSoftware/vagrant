@@ -402,7 +402,7 @@ void fragment() {
             ["version"] = 1, ["zone"] = Zone, ["map"] = Map,
             ["tile"] = new GArray { (int)Mathf.Floor(ashley.Position.X / 128), (int)Mathf.Floor(ashley.Position.Z / 128) }, ["facing"] = ashley.Facing,
             ["flags"] = flags, ["items"] = items, ["equipment"] = Equipment.Duplicate(true), ["stored"] = Stored.Duplicate(true), ["stored_items"] = StoredItemsRecord(),
-            ["hp"] = fighter.Hp, ["mp"] = fighter.Mp, ["abilities"] = new GArray(Array.ConvertAll(Abilities.ToArray(), a => (Variant)a)), ["spells"] = new GArray(Array.ConvertAll(Spells.ToArray(), a => (Variant)a)),
+            ["hp"] = fighter.Hp, ["mp"] = fighter.Mp, ["abilities"] = new GArray(Array.ConvertAll(Abilities.ToArray(), a => (Variant)a)), ["chain_buttons"] = new GArray(Array.ConvertAll(ChainButtons, a => (Variant)a)), ["defense_buttons"] = new GArray(Array.ConvertAll(DefenseButtons, a => (Variant)a)), ["spells"] = new GArray(Array.ConvertAll(Spells.ToArray(), a => (Variant)a)),
             ["visited"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(Visited, room => (Variant)(room.Zone * 256 + room.Map)))),
             ["arts"] = new GArray(Array.ConvertAll(Arts.ToArray(), a => (Variant)a)),
             ["score"] = new GDictionary
@@ -508,6 +508,14 @@ void fragment() {
         foreach (var record in save.GetValueOrDefault("stored", new GArray()).AsGodotArray()) Stored.Add(record);
         foreach (var (id, count) in save.GetValueOrDefault("stored_items", new GDictionary()).AsGodotDictionary()) StoredItems[int.Parse(id.AsString())] = count.AsInt32();
         foreach (var ability in save.GetValueOrDefault("abilities", new GArray()).AsGodotArray()) Abilities.Add(ability.AsInt32());
+        // A save from before the buttons were kept has none: the learned abilities fill them in order.
+        var chainButtons = save.GetValueOrDefault("chain_buttons", new GArray()).AsGodotArray();
+        var defenseButtons = save.GetValueOrDefault("defense_buttons", new GArray()).AsGodotArray();
+        for (int i = 0; i < 3; i++)
+        {
+            ChainButtons[i] = i < chainButtons.Count ? chainButtons[i].AsInt32() : 0;
+            DefenseButtons[i] = i < defenseButtons.Count ? defenseButtons[i].AsInt32() : 0;
+        }
         foreach (var spell in save.GetValueOrDefault("spells", new GArray()).AsGodotArray()) Spells.Add(spell.AsInt32());
         foreach (var art in save.GetValueOrDefault("arts", new GArray()).AsGodotArray()) Arts.Add(art.AsInt32());
         foreach (var spell in save.GetValueOrDefault("mastered", new GArray()).AsGodotArray()) Mastered.Add(spell.AsInt32());
@@ -734,7 +742,7 @@ void fragment() {
                 combatant.MaxMp += Gains[4];
                 if (_playerHp < 0) { combatant.Hp = combatant.MaxHp; combatant.Mp = combatant.MaxMp; }
             }
-            Battle.Assign(Abilities);
+            Battle.Assign(Abilities, ChainButtons, DefenseButtons);
             if (SpawnRoomActors() != Error.Ok) return;
             PlaceCrates();
             StartEvent("event_" + name);
@@ -1619,7 +1627,7 @@ void fragment() {
                     if (!known)
                     {
                         Abilities.Add(action);
-                        Battle?.Assign(Abilities);
+                        Battle?.Assign(Abilities, ChainButtons, DefenseButtons);
                     }
                     SetFlag(0xB1, known ? 0 : 1);
                 }
@@ -3683,6 +3691,8 @@ void fragment() {
     public readonly Dictionary<int, int> Items = new();
     /// <summary>The abilities Ashley has learned (actions), in the order learned.</summary>
     public readonly List<int> Abilities = new();
+    /// <summary>The chain and defense abilities on Circle, Triangle and Square (0 none), as the player set them; kept across rooms and in a save.</summary>
+    public readonly int[] ChainButtons = new int[3], DefenseButtons = new int[3];
     /// <summary>The rooms Ashley has had the run of (zone, map), as the map screen shows them.</summary>
     public readonly HashSet<(int Zone, int Map)> Visited = new();
 
@@ -4478,7 +4488,7 @@ void fragment() {
     {
         if (!Abilities.Contains(id)) Abilities.Add(id);
         AbilitiesReclaimed++;
-        Battle?.Assign(Abilities);
+        Battle?.Assign(Abilities, ChainButtons, DefenseButtons);
     }
 
     /// <summary>Casts a spell from the menu; returns a message, or empty once the spell is under way.</summary>

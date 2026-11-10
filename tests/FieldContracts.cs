@@ -46,6 +46,8 @@ public partial class FieldContracts : Node
     private bool _fight;
     /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
     private bool _shortcuts;
+    /// <summary>With <c>--status=N</c>, Ashley takes status effect N once she is the player's, for the HUD to show it.</summary>
+    private int _status = -1;
     private int _shortcutStep;
     private string _lastNode = "";
     private int _controlAt;
@@ -102,6 +104,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
             if (argument == "--shortcuts") _shortcuts = true;
+            if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -399,9 +402,15 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the HUD shows during the event: {_view.HudShown}");
         }
         if (_watchEvery > 0 && _frame % _watchEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture($"watch_{_frame:d5}");
+        if (_status >= 0 && _view.Controlled && _view.Battle?.Ashley is { } afflicted && !afflicted.Statuses.ContainsKey(_status))
+        {
+            afflicted.Statuses[_status] = FieldBattle.Duration(_status);
+            GD.Print($"FIELD: Ashley takes status {_status}");
+        }
         if (_shortcuts && (_view.Controlled || _shortcutStep > 0) && _view.Battle is { } shortcutBattle)
         {
-            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); shortcutBattle.Assign(_view.Abilities); }
+            // Four chain abilities, the first three on the buttons in turn.
+            if (_view.Abilities.Count == 0) { _view.Abilities.AddRange(new[] { 22, 23, 24, 25 }); shortcutBattle.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
             switch (++_shortcutStep)
             {
                 case 30: Input.ActionPress("ps_l2"); break;
@@ -411,21 +420,37 @@ public partial class FieldContracts : Node
                     if (!_view.MenuOpen) { Finish("the CHAIN shortcut opened nothing"); return; }
                     Capture("shortcut_chain");
                     Input.ActionRelease("ps_l2");
+                    Tap("ps_circle");
+                    break;
+                case 120: Capture("abilities_chain"); Tap("ps_down"); break;
+                case 140: Tap("ps_down"); break;
+                case 160: Tap("ps_down"); break;
+                case 180:
+                    // The fourth, on no button, goes on Triangle; the second, which was there, comes off.
+                    if (_view.ChainButtons[1] != 23) { Finish($"Triangle held {_view.ChainButtons[1]} before the change, not 23"); return; }
+                    Tap("ps_triangle");
+                    break;
+                case 200:
+                    Capture("abilities_assigned");
+                    GD.Print($"FIELD: the chain buttons hold {string.Join(", ", _view.ChainButtons)}");
+                    if (_view.ChainButtons[1] != 25 || Array.IndexOf(_view.ChainButtons, 23) >= 0) { Finish($"Triangle did not take the fourth ability: {string.Join(", ", _view.ChainButtons)}"); return; }
+                    if (shortcutBattle.ChainSlots[1] != 25) { Finish("the battle does not hold the chosen buttons"); return; }
                     Tap("ps_cross");
                     break;
-                case 130:
+                case 220: Tap("ps_cross"); break;
+                case 250:
                     if (_view.MenuOpen) { Finish("leaving the CHAIN shortcut's page left the menu open"); return; }
                     Input.ActionPress("ps_l2");
                     break;
-                case 170: Tap("ps_up"); break;
-                case 200:
+                case 290: Tap("ps_up"); break;
+                case 320:
                     if (!_view.MenuOpen) { Finish("the ITEMS shortcut opened nothing"); return; }
                     Capture("shortcut_items");
                     Input.ActionRelease("ps_l2");
                     Tap("ps_cross");
                     break;
-                case 230: if (_view.MenuOpen) Tap("ps_cross"); break;
-                case 260:
+                case 350: if (_view.MenuOpen) Tap("ps_cross"); break;
+                case 380:
                     Capture("shortcut_after");
                     Finish(_view.MenuOpen ? "leaving the ITEMS shortcut's page left the menu open" : "");
                     return;
@@ -434,7 +459,7 @@ public partial class FieldContracts : Node
         }
         if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
         {
-            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities); }
+            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
             if (brawl.GameOver) { Finish("Ashley fell in the room's fight"); return; }
             if (brawl.HostileCount() == 0) { Steer(Vector2.Zero); if (++_calm > 180) Finish(""); return; }
             _calm = 0;
@@ -831,7 +856,7 @@ public partial class FieldContracts : Node
             // These menus open only where no enemy is about (Triangle does nothing while one fights).
             if (since == 2645) _menusCalm = _view.Battle?.HostileCount() == 0;
             // BATTLE ABILITIES, once she has one (a chain ability given here), is the row above ITEMS: its two kinds, NEXT and help.
-            if (_menusCalm && since == 2650 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); _view.Battle?.Assign(_view.Abilities); }
+            if (_menusCalm && since == 2650 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); _view.Battle?.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
             if (_menusCalm && since == 2660) Tap("ps_triangle");
             // Up until BATTLE ABILITIES (row 2) is chosen, wherever the list was left.
             if (_menusCalm && since is >= 2680 and < 2720 && since % 10 == 0 && _view.MenuRow != 2) Tap("ps_up");
@@ -1400,7 +1425,7 @@ public partial class FieldContracts : Node
         // The sphere as it opens (its lists sliding in) and once they are in.
         if (battle.Paused && ++_sphereFrames is 4 or 30 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture(_sphereFrames == 4 ? "battle_sphere_open" : "battle_sphere");
         // A chain ability to grade: given as the first battle starts, so her presses are graded about each hit.
-        if (elapsed == 1 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); battle.Assign(_view.Abilities); }
+        if (elapsed == 1 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); battle.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
         // Circle just before her hit lands, as a player times a chain: from two frames before it, so a press that
         // falls while another is still held goes in a frame later, still in time.
         if (battle.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");

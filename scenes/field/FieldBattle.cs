@@ -222,7 +222,9 @@ public sealed class FieldBattle
         _status.Visible = shown;
     }
     /// <summary>The abilities Ashley has set to Circle, Triangle and Square: chains when she attacks, defenses when struck.</summary>
-    public readonly int[] ChainSlots = new int[3], DefenseSlots = new int[3];
+    /// <summary>The abilities on Circle, Triangle and Square (0 none): the field's own arrays, shared, so a choice made in the menu outlives the room.</summary>
+    public int[] ChainSlots { get; private set; } = new int[3];
+    public int[] DefenseSlots { get; private set; } = new int[3];
     private static readonly string[] SlotButtons = { "ps_circle", "ps_triangle", "ps_square" };
     /// <summary>Frames left to chain onto, or defend against, the hit that just landed; the hit's damage; the chain so far.</summary>
     private int _lastDamage, _chain;
@@ -250,6 +252,7 @@ public sealed class FieldBattle
                     hudData.ContainsKey("emotes") ? view.Content.ScreenTexture("hud_emotes") : null,
                     hudData.GetValueOrDefault("font", default).AsGodotDictionary(), view.Content.ScreenTexture("hud_page_976", true));
                 if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.ScreenTexture("hud_chain_cue");
+                if (view.Content.Has("hud_cursor")) _hud.StatusPage = view.Content.ScreenTexture("hud_cursor", true);
                 hud.AddChild(_hud);
             }
             catch (System.IO.IOException) { _hud = null; }
@@ -1275,16 +1278,27 @@ public sealed class FieldBattle
         cast.Caster.Timer = EnemyPause;
     }
 
-    /// <summary>Sets the learned abilities to the buttons: chains (actions below 40) and defenses each fill Circle, Triangle, Square in order learned.</summary>
-    public void Assign(IEnumerable<int> learned)
+    /// <summary>
+    /// Sets the learned abilities to the buttons. With <paramref name="chain"/> and <paramref name="defense"/> the field's
+    /// own arrays are taken and kept. A button keeps the ability it has while Ashley knows it; an empty one takes the
+    /// next learned ability of its kind not on a button, chains (actions 22 to 39) and defenses (40 to 53) each filling
+    /// Circle, Triangle and Square in turn.
+    /// </summary>
+    public void Assign(IEnumerable<int> learned, int[]? chain = null, int[]? defense = null)
     {
-        Array.Clear(ChainSlots);
-        Array.Clear(DefenseSlots);
-        int chains = 0, defenses = 0;
-        foreach (int id in learned)
+        if (chain != null) ChainSlots = chain;
+        if (defense != null) DefenseSlots = defense;
+        var known = new List<int>(learned);
+        foreach (var (slots, low, high) in new[] { (ChainSlots, 22, 39), (DefenseSlots, 40, 53) })
         {
-            if (id is >= 22 and < 40 && chains < 3) ChainSlots[chains++] = id;
-            else if (id is >= 40 and <= 53 && defenses < 3) DefenseSlots[defenses++] = id;
+            for (int i = 0; i < 3; i++) if (!known.Contains(slots[i])) slots[i] = 0;
+            foreach (int id in known)
+            {
+                if (id < low || id > high || Array.IndexOf(slots, id) >= 0) continue;
+                int empty = Array.IndexOf(slots, 0);
+                if (empty < 0) break;
+                slots[empty] = id;
+            }
         }
     }
 
@@ -1988,6 +2002,7 @@ public sealed class FieldBattle
     {
         if (Ashley == null) return;
         _hud?.Set(Ashley.Hp, Ashley.MaxHp, Ashley.Mp, Ashley.MaxMp, Ashley.Risk, Drawn, Ashley.Limbs.ConvertAll(limb => (limb.Hp, limb.MaxHp)));
+        _hud?.ShowStatuses(Ashley.Statuses.Keys);
         _status.Text = _hud == null ? $"HP {Ashley.Hp}/{Ashley.MaxHp}   MP {Ashley.Mp}/{Ashley.MaxMp}   RISK {Ashley.Risk}" + (Drawn ? "   BATTLE" : "") : "";
         if (GameOver) _status.Text += "   GAME OVER";
     }

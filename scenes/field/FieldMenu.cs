@@ -352,6 +352,9 @@ public sealed partial class FieldMenu : PanelContainer
         }
     }
 
+    /// <summary>The abilities of a kind Ashley has (0 chain, actions 22 to 39; 1 defense, 40 to 53), in the order learned.</summary>
+    private List<int> KindAbilities(int kind) => _view.Abilities.FindAll(id => kind == 0 ? id is >= 22 and < 40 : id is >= 40 and <= 53);
+
     private string AbilityName(int id) =>
         _view.Content.Data("abilities").GetValueOrDefault(id.ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("name", "").AsString();
 
@@ -1421,10 +1424,33 @@ public sealed partial class FieldMenu : PanelContainer
             if (_abilityKind < 0)
             {
                 if (step != 0) { _cursor = 1 - _cursor; _view.MenuSound(FieldView.MenuChange); }
-                if (pressed("ps_circle")) { _abilityKind = _cursor; _view.MenuSound(FieldView.MenuSelect); }
+                if (pressed("ps_circle"))
+                {
+                    // A kind Ashley has none of yet does not open (its help says so).
+                    if (KindAbilities(_cursor).Count == 0) _view.MenuSound(FieldView.MenuInvalid);
+                    else { _abilityKind = _cursor; _cursor = 0; _view.MenuSound(FieldView.MenuSelect); }
+                }
                 else if (pressed("ps_triangle") || pressed("ps_cross")) { _page = -1; _view.MenuSound(FieldView.MenuLeave); _view.Battle?.CoverHud(true); }
             }
-            else if (pressed("ps_triangle") || pressed("ps_cross")) { _abilityKind = -1; _view.MenuSound(FieldView.MenuLeave); }
+            else
+            {
+                // A kind's abilities: up and down choose one, Circle, Triangle or Square puts it on that button (taking
+                // it off any other), and Cross goes back to the kinds (Episode 4 at 10:04 to 10:16).
+                var list = KindAbilities(_abilityKind);
+                if (list.Count > 1 && step != 0) { _cursor = (_cursor + step + list.Count) % list.Count; _view.MenuSound(FieldView.MenuChange); }
+                var slots = _abilityKind == 0 ? _view.ChainButtons : _view.DefenseButtons;
+                string[] buttons = { "ps_circle", "ps_triangle", "ps_square" };
+                for (int b = 0; b < 3 && list.Count > 0; b++)
+                {
+                    if (!pressed(buttons[b])) continue;
+                    int id = list[Math.Min(_cursor, list.Count - 1)];
+                    for (int other = 0; other < 3; other++) if (slots[other] == id) slots[other] = 0;
+                    slots[b] = id;
+                    _view.MenuSound(FieldView.MenuSelect);
+                    break;
+                }
+                if (pressed("ps_cross")) { _cursor = _abilityKind; _abilityKind = -1; _view.MenuSound(FieldView.MenuLeave); }
+            }
         }
         else if (_page == Items && !_legacy && _setup >= 0) return StepSetup(pressed, step);
         else if (_page == Items && !_legacy)
@@ -2042,7 +2068,7 @@ public sealed partial class FieldMenu : PanelContainer
         bool artsList = Visible && _page == Arts && _view.Content.Has("break_arts");
         bool magicList = Visible && _page == Magic && _view.Content.Has("magic_menu");
         artsList |= magicList;
-        _list.Visible = Visible && (_page < 0 || _page == Abilities && _abilityKind < 0) || reclaimList || artsList;
+        _list.Visible = Visible && (_page < 0 || _page == Abilities) || reclaimList || artsList;
         bool itemMenu = Visible && _page == Items && !_legacy;
         if (_items.Visible && !itemMenu && _page != Items && _page != Container && _page != Status) _items.ShowAshley(null, "");
         // The field darkens behind the gadget bag (retail footage: to about 45%).
@@ -2142,7 +2168,7 @@ public sealed partial class FieldMenu : PanelContainer
             _bag.Set(entries, _cursor, _view.BagCounts());
         }
         // The commands are retail's list; the pages are still drawn as text in a panel.
-        bool abilityList = _page == Abilities && _abilityKind < 0;
+        bool abilityList = _page == Abilities;
         bool panel = _page >= 0 && !statusPage && !(_page == Map && _view.Content.Has("map_menu")) && _page != Chest && _page != Container && _page != Data && _page != Reclaim && !artsList && !(_page == Items && !_legacy) && !abilityList;
         SelfModulate = panel ? Colors.White : Colors.Transparent;
         _text.Visible = panel;
@@ -2253,6 +2279,27 @@ public sealed partial class FieldMenu : PanelContainer
                 string help = index > 0 && index < strings.Count ? strings[index].AsGodotDictionary()["text"].AsString() : "";
                 _list.Set(names, _cursor - first, Line(14 + _reclaimKind), help, titled: false);
             }
+        }
+        else if (abilityList && _abilityKind >= 0 && _view.Content.Has("battle_abilities"))
+        {
+            // A kind's abilities, as Episode 4 shows them at 10:04: under BATTLE ABILITIES and the kind's bar, each with
+            // the face button it is on, the chosen one's description below and its RISK in the cost box.
+            var page = _view.Content.Data("battle_abilities");
+            var strings = page["strings"].AsGodotArray();
+            string Text(int i) => i >= 0 && i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
+            var menuNames = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
+            var descriptions = page["descriptions"].AsGodotArray();
+            var list = KindAbilities(_abilityKind);
+            var slots = _abilityKind == 0 ? _view.ChainButtons : _view.DefenseButtons;
+            // The slots are Circle, Triangle and Square; the label page's buttons run triangle, square, circle.
+            int[] buttonOf = { 2, 0, 1 };
+            var names = list.ConvertAll(AbilityName);
+            var buttons = list.ConvertAll(id => Array.IndexOf(slots, id) is >= 0 and var slot ? buttonOf[slot] : -1);
+            int chosen = list.Count > 0 ? list[Math.Min(_cursor, list.Count - 1)] : 0;
+            int description = chosen < descriptions.Count ? descriptions[chosen].AsInt32() : 0;
+            int cost = _view.Content.Data("abilities").GetValueOrDefault(chosen.ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("cost", 0).AsInt32();
+            _list.Set(names, Math.Min(_cursor, Math.Max(0, list.Count - 1)), menuNames.Count > Abilities ? menuNames[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
+                description > 0 ? Text(description) : "", sub: (Text(_abilityKind * 3), -1), cost: ("RISK", cost.ToString()), titled: !_shortcut, buttons: buttons, headerDimmed: false);
         }
         else if (abilityList && _view.Content.Has("battle_abilities"))
         {

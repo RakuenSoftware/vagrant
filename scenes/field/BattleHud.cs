@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Godot;
 
@@ -404,7 +405,6 @@ public sealed partial class BattleHud : Control
     private int _shortcutFrames;
     private static readonly Vector2[] ShortcutAt = { new(96, 109), new(70, 122), new(105, 122), new(80, 136), new(245, 109), new(213, 122), new(256, 122), new(222, 136) };
     private static readonly Vector2[] ShortcutButtons = { new(225, 108), new(216, 117), new(235, 117), new(225, 127) };
-    private static readonly Color[] ShortcutTints = { new(0.7f, 1.5f, 0.9f), new(1.5f, 0.8f, 1.5f), new(1.7f, 0.7f, 0.7f), new(0.8f, 1.0f, 1.6f) };
     private static readonly Color ShortcutGrey = Color.Color8(0x80, 0x80, 0x80);
 
     /// <summary>
@@ -425,7 +425,7 @@ public sealed partial class BattleHud : Control
         float slide = RowSteps[Math.Clamp(11 - _shortcutFrames, 0, 15)];
         DrawSetTransform(FieldView.Pin(Size, 1).Offset);
         Sprite(_labels, new Rect2(184, 160, 31, 30), new Vector2(72 - slide, 110));
-        for (int b = 0; b < 4; b++) Sprite(_labels, new Rect2(16 * b, 128, 16, 16), ShortcutButtons[b] + new Vector2(slide, 0), ShortcutTints[b]);
+        for (int b = 0; b < 4; b++) Sprite(_labels, new Rect2(16 * b, 128, 16, 16), ShortcutButtons[b] + new Vector2(slide, 0), MenuList.ButtonTints[b]);
         for (int i = 0; i < 8 && i < _shortcuts.Length; i++)
         {
             string name = _shortcuts[i];
@@ -446,6 +446,40 @@ public sealed partial class BattleHud : Control
                 DrawRect(new Rect2(new Vector2(at.X + 2, at.Y + 4) * unit, unit * 1.5f), tint);
             }
         }
+    }
+
+    /// <summary>The orange HUD page (hud_cursor), whose row at y 16 holds the status icons.</summary>
+    public Texture2D? StatusPage;
+    private int[] _statuses = Array.Empty<int>();
+
+    // A lowered or raised stat's icon on the orange page's row at y 16, 16 by 16: STR, INT and AGL, each lowered then
+    // raised. Episode 4 at 9:46 shows Degenerate's (16, 16); the others are taken in the page's order.
+    private static readonly Dictionary<int, int> StatusColumns = new()
+    {
+        [FieldBattle.Degenerate] = 16, [FieldBattle.Herakles] = 32, [FieldBattle.Psychodrain] = 48,
+        [FieldBattle.Enlighten] = 64, [FieldBattle.Leadbones] = 80, [FieldBattle.Invigorate] = 96,
+    };
+
+    /// <summary>Ashley's statuses, by effect id, shown as icons right of the MP block.</summary>
+    public void ShowStatuses(IEnumerable<int> statuses)
+    {
+        var shown = new List<int>();
+        foreach (int status in statuses) if (StatusColumns.ContainsKey(status)) shown.Add(status);
+        shown.Sort();
+        if (shown.SequenceEqual(_statuses)) return;
+        _statuses = shown.ToArray();
+        QueueRedraw();
+    }
+
+    /// <summary>
+    /// The status icons: the first at (169, 8), measured from Episode 4 at 9:46; any further ones 16 to the right of
+    /// it (not seen in the footage).
+    /// </summary>
+    private void DrawStatuses()
+    {
+        if (StatusPage == null) return;
+        for (int i = 0; i < _statuses.Length; i++)
+            Sprite(StatusPage, new Rect2(StatusColumns[_statuses[i]], 16, 16, 16), new Vector2(169 + 16 * i, 8));
     }
 
     private static int LimbState(int hp, int most) => hp < 2 ? 0 : 4 * hp < most ? 1 : 4 * hp < 3 * most ? 2 : hp < most ? 3 : 4;
@@ -499,6 +533,7 @@ public sealed partial class BattleHud : Control
         else Letter("RISK  ZERO", new Vector2(12, 22));
         Block(1, Mp, MaxMp);
         Block(0, Hp, MaxHp);
+        DrawStatuses();
         DrawSetTransform(FieldView.Pin(Size, 2).Offset);
         if (_parts != null || _leftParts != null) Parts();
         DrawShortcuts();

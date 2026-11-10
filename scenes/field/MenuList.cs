@@ -27,6 +27,13 @@ public sealed partial class MenuList : Control
     private string? _header;
     private string _help = "";
     private IReadOnlyList<int>? _icons;
+    /// <summary>
+    /// Each entry's face button (0 triangle, 1 square, 2 circle, 3 cross; -1 none), drawn 12 by 12 from the label page's
+    /// buttons (16 by 16 from (0, 128)) at x 202 in its own tint, the name then from x 218 (Episode 4 at 10:04, the chain
+    /// abilities on their buttons). Null for a list without.
+    /// </summary>
+    private IReadOnlyList<int>? _buttons;
+    public static readonly Color[] ButtonTints = { new(0.7f, 1.5f, 0.9f), new(1.5f, 0.8f, 1.5f), new(1.7f, 0.7f, 0.7f), new(0.8f, 1.0f, 1.6f) };
     private bool _headerDimmed;
     private int _chosen;
     private (string Left, string Right) _note = ("", "");
@@ -75,10 +82,11 @@ public sealed partial class MenuList : Control
     /// <param name="cost">A cost box at the bottom left, its label and value (a Break Art's HP, MENU1.PRG).</param>
     public void Set(IReadOnlyList<string> entries, int chosen, string? header = null, string help = "", (string Left, string Right)? note = null, (float Left, float Top)? prompt = null, bool titled = true,
         (string Name, int Icon)? sub = null, IReadOnlyList<int>? kinds = null, (string Label, string Value)? cost = null,
-        IReadOnlyList<int>? icons = null, bool? headerDimmed = null)
+        IReadOnlyList<int>? icons = null, bool? headerDimmed = null, IReadOnlyList<int>? buttons = null)
     {
         _titled = titled;
         _icons = icons;
+        _buttons = buttons;
         _headerDimmed = headerDimmed ?? sub != null;
         _sub = sub;
         _kinds = kinds;
@@ -161,11 +169,13 @@ public sealed partial class MenuList : Control
             int icon = _icons != null && i < _icons.Count ? _icons[i] : -1;
             // An entry with an icon has it in a box 16 wide at the row's left, light teal when chosen and half as bright
             // otherwise, its bar after it and its name 24 in (Ep. 3 7:14, View Arts: boxes from 195, names from 219).
-            float barLeft = icon >= 0 ? left + 16 : left, nameLeft = icon >= 0 ? left + 24 : left + 2 + (_sub != null ? 2 : 0);
+            float barLeft = icon >= 0 ? left + 16 : left, nameLeft = icon >= 0 ? left + 24 : _buttons != null ? 218 : left + 2 + (_sub != null ? 2 : 0);
             if (icon >= 0)
                 DrawTextureRectRegion(_labels, new Rect2(new Vector2(left, 18 + 16 * (first + i) - 2) * unit, new Vector2(16, 16) * unit), new Rect2(icon % 16 * 16, 98 + icon / 16 * 16, 16, 16), chosen ? IconTint : IconTint * new Color(0.48f, 0.48f, 0.48f));
             if (kind == 2) Bar(first + i, barLeft, chosen ? OliveLight : OliveDark, chosen ? OliveDark : OliveLight);
             else Bar(first + i, barLeft, chosen ? ChosenLight : BarDark, chosen ? ChosenDark : BarLight);
+            if (_buttons != null && i < _buttons.Count && _buttons[i] is >= 0 and < 4 and var button)
+                DrawTextureRectRegion(_labels, new Rect2(new Vector2(202, 18 + 16 * (first + i) + 1) * unit, new Vector2(12, 12) * unit), new Rect2(16 * button, 128, 16, 16), ButtonTints[button]);
             Name(_entries[i], nameLeft, first + i, kind == 1 ? Greyed : kind == 3 ? ItemMenu.ChosenName : null);
         }
         if (_cursor != null && _chosen >= 0 && _chosen < _entries.Count) Sprite(_cursor, Pointer, new Vector2(left - 20, 18 + 16 * (first + _chosen) - 7));
