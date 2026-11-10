@@ -40,6 +40,10 @@ public partial class FieldContracts : Node
     private (int Zone, int Map)? _room;
     /// <summary>With <c>--at=X,Z</c>, Ashley is set down on that tile of the room instead of at a door, as if she had walked there: the room's tile conditions then start its scenes as play would.</summary>
     private (int X, int Z)? _at;
+    /// <summary>With <c>--yaw=</c>, the gameplay camera stands at that yaw (4096 a turn, 512 a step of L1 or R1), to match a view the footage shows.</summary>
+    private int? _yaw;
+    /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
+    private bool _fight;
     private string _lastNode = "";
     private int _controlAt;
     private int _nodeFrame;
@@ -92,6 +96,8 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--tap-every=", StringComparison.Ordinal)) _tapEvery = Math.Max(1, int.Parse(argument["--tap-every=".Length..]));
             if (argument.StartsWith("--room=", StringComparison.Ordinal) && argument["--room=".Length..].Split(',') is [var zone, var map]) _room = (int.Parse(zone), int.Parse(map));
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
+            if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
+            if (argument == "--fight") _fight = true;
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -190,6 +196,7 @@ public partial class FieldContracts : Node
 
     public override void _PhysicsProcess(double delta)
     {
+        if (_yaw is { } yaw && _view != null) _view.Gameplay.Yaw = yaw;
         if (_ending != null)
         {
             _frame++;
@@ -388,6 +395,17 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the HUD shows during the event: {_view.HudShown}");
         }
         if (_watchEvery > 0 && _frame % _watchEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture($"watch_{_frame:d5}");
+        if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
+        {
+            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities); }
+            if (brawl.GameOver) { Finish("Ashley fell in the room's fight"); return; }
+            if (brawl.HostileCount() == 0) { Steer(Vector2.Zero); if (++_calm > 180) Finish(""); return; }
+            _calm = 0;
+            if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
+            if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
+            Fight(brawl, brawler, _frame);
+            return;
+        }
         if (_eventEvery > 0 && !_view.Controlled && _frame % _eventEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless")
         {
             Capture($"event_{_frame:d5}");
