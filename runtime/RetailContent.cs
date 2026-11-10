@@ -234,7 +234,8 @@ public partial class RetailContent : Node
         BitmapFontAsset font;
         try { font = BitmapFontAsset.Load(definition.RootElement, image, display?.FontScaling.Factor ?? 1); }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException) { throw new InvalidDataException($"The installed font {asset} could not be read: {error.Message}"); }
-        font.Antialiasing = TextServer.FontAntialiasing.None;
+        // The font's own settings are left as loaded: changing one (its antialiasing, say) clears the glyphs it was
+        // given, and the text then falls to the default font.
         // A pixel of a message's horizontal offset.
         int size = font.FixedSize;
         font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
