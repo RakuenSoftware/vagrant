@@ -5,6 +5,8 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Godot;
+using Wol.Engine.Display;
+using Wol.Engine.Ui;
 using Wol.Games.Vagrant.Installation;
 
 namespace Wol.Games.Vagrant.Runtime;
@@ -44,6 +46,8 @@ public partial class RetailContent : Node
         foreach (string argument in OS.GetCmdlineUserArgs())
             if (argument.StartsWith("--install-root=", StringComparison.Ordinal)) Root = argument["--install-root=".Length..];
         Reload();
+        // The display settings may be added after this node, so their signal is joined once both are in the tree.
+        Callable.From(() => { if (GetNodeOrNull<DisplaySettings>("/root/DisplaySettings") is { } display) display.AssetScalingChanged += Rescale; }).CallDeferred();
     }
 
     public override void _ExitTree()
@@ -201,44 +205,82 @@ public partial class RetailContent : Node
             var layer = layers[i].AsGodotDictionary();
             // The layer's fill: colour 0 of its palette, none when that is 0 (as the GPU leaves such texels out).
             int fill = layer.GetValueOrDefault("fill", 0).AsInt32();
-            result[i] = (LoadTexture(layer["image"].AsString()), fill == 0 ? null : TitleConversion.ToColor((ushort)fill, false) with { A = 1 });
+            result[i] = (ScreenTexture(layer["image"].AsString()), fill == 0 ? null : TitleConversion.ToColor((ushort)fill, false) with { A = 1 });
         }
         return result;
     }
 
     /// <summary>
     /// An installed retail font as a bitmap font, 12-pixel cells drawn at their native size: the balloons'
-    /// "dialogue_font" or the system box's "system_font".
+    /// "dialogue_font" or the system box's "system_font". Its atlas takes the enhanced text scaling of the display
+    /// settings (the glyphs keep their sizes, so layout is unchanged); each font is made once and kept, and follows
+    /// a change of the setting in place.
     /// </summary>
     public FontFile BitmapFont(string asset)
     {
-        var parsed = Json.ParseString(File.ReadAllText(Asset(asset)));
-        if (parsed.VariantType != Variant.Type.Dictionary) throw new InvalidDataException($"The installed font {asset} could not be read.");
-        var definition = parsed.AsGodotDictionary();
-        var image = LoadImage(definition["texture"].AsString());
-        int size = definition["size"].AsInt32();
-        float ascent = definition["ascent"].AsSingle();
-        var cache = new Vector2I(size, 0);
-        var font = new FontFile { FixedSize = size, Antialiasing = TextServer.FontAntialiasing.None };
-        font.SetTextureImage(0, cache, 0, image);
-        font.SetCacheAscent(0, size, ascent);
-        font.SetCacheDescent(0, size, definition["descent"].AsSingle());
-        foreach (KeyValuePair<Variant, Variant> entry in definition["glyphs"].AsGodotDictionary())
-        {
-            int character = int.Parse(entry.Key.AsString());
-            var glyph = entry.Value.AsGodotDictionary();
-            var rect = glyph["rect"].AsGodotArray();
-            var area = new Rect2(rect[0].AsSingle(), rect[1].AsSingle(), rect[2].AsSingle(), rect[3].AsSingle());
-            font.SetGlyphAdvance(0, size, character, new Vector2(glyph["advance"].AsSingle(), 0));
-            font.SetGlyphOffset(0, cache, character, new Vector2(0, -ascent));
-            font.SetGlyphSize(0, cache, character, area.Size);
-            font.SetGlyphUVRect(0, cache, character, area);
-            font.SetGlyphTextureIdx(0, cache, character, 0);
-        }
-        // A pixel of a message's horizontal offset.
-        font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
-        font.SetGlyphSize(0, cache, DialogueConversion.HairSpace, Vector2.Zero);
+        if (_fonts.TryGetValue(asset, out var kept)) return kept;
+        var font = LoadFont(asset);
+        _fonts[asset] = font;
         return font;
+    }
+
+    private readonly Dictionary<string, BitmapFontAsset> _fonts = new(StringComparer.Ordinal);
+
+    private BitmapFontAsset LoadFont(string asset)
+    {
+        using var definition = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Asset(asset)));
+        using var image = LoadImage(definition.RootElement.GetProperty("texture").GetString()!);
+        var display = GetNodeOrNull<DisplaySettings>("/root/DisplaySettings");
+        BitmapFontAsset font;
+        try { font = BitmapFontAsset.Load(definition.RootElement, image, display?.FontScaling.Factor ?? 1); }
+        catch (Exception error) when (error is ArgumentException or KeyNotFoundException or InvalidOperationException) { throw new InvalidDataException($"The installed font {asset} could not be read: {error.Message}"); }
+        font.Antialiasing = TextServer.FontAntialiasing.None;
+        // A pixel of a message's horizontal offset.
+        int size = font.FixedSize;
+        font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
+        font.SetGlyphSize(0, new Vector2I(size, 0), DialogueConversion.HairSpace, Vector2.Zero);
+        return font;
+    }
+
+    /// <summary>
+    /// An installed picture drawn on the 320 by 240 screen (the HUD, menus, balloons, overlays): enlarged as the display
+    /// settings ask, crisply for art or anti-aliased for <paramref name="lettering"/>, while it reports its original
+    /// size, so everything that draws regions of it in screen pixels is unchanged. Each is made once and kept, and
+    /// follows a change of the setting in place.
+    /// </summary>
+    public Texture2D ScreenTexture(string name, bool lettering = false)
+    {
+        if (_screenTextures.TryGetValue(name, out var kept)) return kept.Texture;
+        var texture = new ImageTexture();
+        Enlarge(texture, name, lettering);
+        _screenTextures[name] = (texture, lettering);
+        return texture;
+    }
+
+    private readonly Dictionary<string, (ImageTexture Texture, bool Lettering)> _screenTextures = new(StringComparer.Ordinal);
+
+    private void Enlarge(ImageTexture texture, string name, bool lettering)
+    {
+        using var image = LoadImage(name);
+        var display = GetNodeOrNull<DisplaySettings>("/root/DisplaySettings");
+        var scaling = display == null ? TextureScaling.Original : lettering ? display.FontScaling : display.SpriteScaling;
+        if (scaling.Enlarges) { using var enlarged = scaling.Apply(image); texture.SetImage(enlarged); }
+        else texture.SetImage(image);
+        texture.SetSizeOverride(image.GetSize());
+    }
+
+    /// <summary>The enhanced 2D art or text setting changed: the kept pictures and fonts are remade in place.</summary>
+    private void Rescale()
+    {
+        foreach (var (name, (texture, lettering)) in _screenTextures) Enlarge(texture, name, lettering);
+        foreach (var (asset, font) in _fonts)
+        {
+            using var fresh = LoadFont(asset);
+            int size = font.FixedSize;
+            var cache = new Vector2I(size, 0);
+            font.SetTextureImage(0, cache, 0, fresh.GetTextureImage(0, cache, 0));
+            foreach (int glyph in fresh.GetGlyphList(0, cache)) font.SetGlyphUVRect(0, cache, glyph, fresh.GetGlyphUVRect(0, cache, glyph));
+        }
     }
 
     /// <summary>

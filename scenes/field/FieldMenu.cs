@@ -153,11 +153,11 @@ public sealed partial class FieldMenu : PanelContainer
         _text.AddThemeConstantOverride("outline_size", 4);
         AddChild(_text);
         _list = new MenuList { Name = "Commands", Visible = false };
-        _list.Configure(view.Content.Has("hud_labels") ? view.Content.Texture("hud_labels") : null, view.Content.Has("hud_cursor") ? view.Content.Texture("hud_cursor") : null,
+        _list.Configure(view.Content.Has("hud_labels") ? view.Content.ScreenTexture("hud_labels", true) : null, view.Content.Has("hud_cursor") ? view.Content.ScreenTexture("hud_cursor") : null,
             view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null,
             view.Content.Has("hud") ? view.Content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null);
         _bag = new GadgetBag { Name = "GadgetBag", Visible = false };
-        _bag.Configure(view.Content.Has("hud_labels") ? view.Content.Texture("hud_labels") : null, view.Content.Has("hud_cursor") ? view.Content.Texture("hud_cursor") : null,
+        _bag.Configure(view.Content.Has("hud_labels") ? view.Content.ScreenTexture("hud_labels", true) : null, view.Content.Has("hud_cursor") ? view.Content.ScreenTexture("hud_cursor") : null,
             view.Content.Has("hud") ? view.Content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null, view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null,
             view.Content.Has("gadget_bag") ? view.Content.Data("gadget_bag") : null);
         // The list and the bag draw over the whole screen, so they stand beside the menu's panel rather than in it.
@@ -2381,7 +2381,7 @@ public sealed partial class FieldMenu : PanelContainer
             int y = record["y"].AsInt32(), height = record["height"].AsInt32();
             if (y + height <= top || y >= bottom) continue;
             string name = record["image"].AsString();
-            if (!_pictureTextures.TryGetValue(name, out var texture)) _pictureTextures[name] = texture = _view.Content.Texture(name);
+            if (!_pictureTextures.TryGetValue(name, out var texture)) _pictureTextures[name] = texture = _view.Content.ScreenTexture(name);
             var picture = new TextureRect
             {
                 Texture = texture, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.Scale, TextureFilter = TextureFilterEnum.Nearest,

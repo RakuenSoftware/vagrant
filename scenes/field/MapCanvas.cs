@@ -70,7 +70,7 @@ public sealed partial class MapCanvas : Control
     {
         Texture2D? Page(string name)
         {
-            try { return content.Texture(name); }
+            try { return content.ScreenTexture(name); }
             catch (System.IO.InvalidDataException) { return null; }
             catch (System.IO.IOException) { return null; }
         }

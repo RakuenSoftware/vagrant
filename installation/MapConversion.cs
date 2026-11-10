@@ -1202,7 +1202,7 @@ public sealed class MapConversion
             string surfaceKey = key + "_" + passBlend + (twoSided ? "_both" : "") + suffix;
             if (!surfaces.TryGetValue(surfaceKey, out var surface))
             {
-                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray() };
+                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray(), ["faces"] = new JsonArray() };
                 surfaces[surfaceKey] = surface;
             }
             targets.Add((surface, passGain));
@@ -1236,6 +1236,8 @@ public sealed class MapConversion
         bool single = true;
         for (int k = 1; k < uv.Length; k++) single &= uv[k] == uv[0];
         float centre = single ? 0.5f : 0;
+        // Each face's triangles (a quad's two), so that the field can drop a face whole as the retail renderer does.
+        foreach (var (surface, _) in targets) surface["faces"]!.AsArray().Add(quad ? 2 : 1);
         foreach (var (surface, passGain) in targets)
             foreach (int corner in order)
             {

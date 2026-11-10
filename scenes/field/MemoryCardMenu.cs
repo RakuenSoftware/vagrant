@@ -75,7 +75,7 @@ public sealed partial class MemoryCardMenu : Control
         _view = view;
         Texture2D? Page(string name)
         {
-            try { return content.Texture(name); }
+            try { return content.ScreenTexture(name); }
             catch (System.IO.IOException) { return null; }
         }
         if (content.Has("memory_card")) _strings = content.Data("memory_card")["strings"].AsGodotArray();
