@@ -202,7 +202,14 @@ public sealed class CharacterConversion
                 track = rest.AddTrack(Animation.TrackType.Position3D);
                 rest.TrackSetPath(track, "Space/Skeleton:b0");
                 // The lift is in map units; the skeleton is in the model's own, ModelScale of them.
-                rest.PositionTrackInsertKey(track, 0, new Vector3(0, _skeleton[1].Length / 2 / ModelScale, 0));
+                var place = new Vector3(0, _skeleton[1].Length / 2, 0);
+                // The man slumped in MAP172's chair (0x73) is drawn against the chair's back, 54 units from the place
+                // his script gives him (561, 0, 1221, heading 1184): in his own frame, 53 ahead and 11 to one side.
+                // This is measured, not read from retail: his place was fitted against Episode 1 at 16:51 (from beside
+                // the chair) and 16:54 (over Ashley's shoulder), where the same fit leaves the man on the table (0x74)
+                // where his script puts him. How retail comes by it was not found.
+                if (_name == "character_73") place += new Vector3(-11, 0, 53);
+                rest.PositionTrackInsertKey(track, 0, place / ModelScale);
                 track = rest.AddTrack(Animation.TrackType.Rotation3D);
                 rest.TrackSetPath(track, "Space/Skeleton:b1");
                 rest.RotationTrackInsertKey(track, 0, Rotation(new Vector3(2048, 0, 6144)));
