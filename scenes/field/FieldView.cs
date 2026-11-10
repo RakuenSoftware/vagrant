@@ -3428,7 +3428,6 @@ void fragment() {
         var rolled = new Quaternion(Vector3.Back, roll);
         if (!Field!.CameraViewRotation.IsEqualApprox(rolled)) Field.SetCameraViewRotation(rolled);
         ApplyCamera();
-        DropNearFaces();
         ShowRoomGroups();
         StepTextureFrames();
         Field.AdvancePresentation();
@@ -3455,7 +3454,8 @@ void fragment() {
                 _characterLight = CharacterQuality.Light(Field.Geometry);
             CharacterQuality.Follow(_characterLight, Field.Camera, Field.FieldEnvironment);
         }
-        // Characters the camera stands close to are drawn as the GTE and GPU would show them.
+        // Room faces and characters the camera stands close to are drawn as the GTE and GPU would show them.
+        DropNearFaces();
         bool staged = EventCamera.Active && !Controlled;
         foreach (var actor in Actors.Values) actor.ProjectAsRetail(Field.Camera, staged ? EventCamera.Projection : Gameplay.Projection, staged ? EventCamera.Far : 4096);
         foreach (var effect in _effects) effect.NearLimit = (staged ? EventCamera.Projection : Gameplay.Projection) / 2 * 4096 / (staged ? EventCamera.Far : 4096);
@@ -5409,7 +5409,7 @@ void fragment() {
     /// is -z, 2 is +x, 4 is +z and 6 is -x in map space. Scripts may also hide single groups, or the parts marked for
     /// first-person view.
     /// </summary>
-    /// <summary>A room group's mesh as converted, face by face, and which of its faces the near cut drops.</summary>
+    /// <summary>A room group's mesh as converted, face by face, and which of its triangles retail would not draw.</summary>
     private sealed class RoomFaces
     {
         public required MeshInstance3D View;
@@ -5418,6 +5418,7 @@ void fragment() {
         public required Material[] Materials;
         /// <summary>Per surface, the triangles of each face in turn (a quad's two).</summary>
         public required int[][] Faces;
+        /// <summary>Per surface, whether each triangle is left out.</summary>
         public required bool[][] Dropped;
     }
 
@@ -5451,42 +5452,62 @@ void fragment() {
             {
                 arrays[i] = mesh.SurfaceGetArrays(i);
                 materials[i] = mesh.SurfaceGetMaterial(i);
-                dropped[i] = new bool[faces[i].Length];
+                int triangles = 0;
+                foreach (int count in faces[i]) triangles += count;
+                dropped[i] = new bool[triangles];
             }
             _roomFaces.Add(new RoomFaces { View = view, Mesh = mesh, Arrays = arrays, Materials = materials, Faces = faces.ToArray(), Dropped = dropped });
         }
     }
 
     /// <summary>
-    /// Leaves out every room face whose nearest corner stands closer to the camera than the near cut (see
-    /// ApplyCamera), outside first-person view. A group's mesh is rebuilt only when its faces left out change.
+    /// Leaves out the room faces retail does not draw, outside first-person view (where near faces are subdivided
+    /// instead). The room renderer drops a whole face whose nearest corner stands closer to the camera than the near
+    /// cut (see ApplyCamera). The GPU then drops a triangle more than 1023 pixels across or 511 down, a quad going to it
+    /// as two triangles tested alone: as for characters (<see cref="EventActor.ProjectAsRetail"/>), a corner nearer than
+    /// H / 2 after the view's scale, or behind the eye, is projected as if it stood there and its screen place is held
+    /// within -1024 to 1023. MAP172's door, ajar beside the eye in the shot over Ashley's shoulder (Episode 1, 16:53),
+    /// spans more than that and is not drawn, so the man on the table shows. A group's mesh is rebuilt only when what
+    /// it leaves out changes.
     /// </summary>
     private void DropNearFaces()
     {
         bool staged = EventCamera.Active && !Controlled;
-        float reject = _hideFirstPerson ? float.NegativeInfinity
-            : 4 * (staged ? EventCamera.Near : 64) * 4096 / (staged ? EventCamera.Far : 4096) / Installation.MapConversion.UnitsPerMetre;
-        var eye = Field.CameraEye;
-        var ahead = (Field.CameraTarget - Field.CameraEye).Normalized();
-        if (!ahead.IsFinite() || ahead == Vector3.Zero) return;
+        float units = Installation.MapConversion.UnitsPerMetre;
+        float projection = staged ? EventCamera.Projection : Gameplay.Projection, far = staged ? EventCamera.Far : 4096;
+        float reject = 4 * (staged ? EventCamera.Near : 64) * 4096 / far, least = projection / 2 * 4096 / far;
+        var view = Field.Camera.GlobalTransform.AffineInverse();
+        var screen = new Vector2[6];
         foreach (var room in _roomFaces)
         {
-            var toLocal = room.View.GlobalTransform.AffineInverse();
-            var localEye = toLocal * eye;
-            var localAhead = (toLocal.Basis * ahead).Normalized();
+            var toEye = view * room.View.GlobalTransform;
             bool changed = false;
             for (int surface = 0; surface < room.Faces.Length; surface++)
             {
                 var vertices = room.Arrays[surface][(int)Mesh.ArrayType.Vertex].AsVector3Array();
-                int at = 0;
+                int at = 0, triangle = 0;
                 for (int face = 0; face < room.Faces[surface].Length; face++)
                 {
                     int count = room.Faces[surface][face] * 3;
+                    if (screen.Length < count) screen = new Vector2[count];
                     float nearest = float.PositiveInfinity;
-                    for (int v = at; v < at + count; v++) nearest = Math.Min(nearest, (vertices[v] - localEye).Dot(localAhead));
+                    for (int v = 0; v < count; v++)
+                    {
+                        // The corner in the camera's frame, in retail units, and its screen place (9/8 across, y down).
+                        var local = toEye * vertices[at + v] * units;
+                        float depth = -local.Z, divisor = Math.Max(depth, least);
+                        nearest = Math.Min(nearest, depth);
+                        screen[v] = new Vector2(Math.Clamp(projection * local.X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), Math.Clamp(projection * -local.Y / divisor, -1024 - 112, 1023 - 112));
+                    }
+                    bool near = !_hideFirstPerson && nearest < reject;
+                    for (int v = 0; v < count; v += 3, triangle++)
+                    {
+                        Vector2 a = screen[v], b = screen[v + 1], c = screen[v + 2];
+                        bool drop = near || !_hideFirstPerson
+                            && (Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X)) > 1023 || Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y)) > 511);
+                        if (drop != room.Dropped[surface][triangle]) { room.Dropped[surface][triangle] = drop; changed = true; }
+                    }
                     at += count;
-                    bool drop = nearest < reject;
-                    if (drop != room.Dropped[surface][face]) { room.Dropped[surface][face] = drop; changed = true; }
                 }
             }
             if (!changed) continue;
@@ -5495,13 +5516,8 @@ void fragment() {
             {
                 var source = room.Arrays[surface];
                 var kept = new List<int>();
-                int at = 0;
-                for (int face = 0; face < room.Faces[surface].Length; face++)
-                {
-                    int count = room.Faces[surface][face] * 3;
-                    if (!room.Dropped[surface][face]) for (int v = at; v < at + count; v++) kept.Add(v);
-                    at += count;
-                }
+                for (int triangle = 0; triangle < room.Dropped[surface].Length; triangle++)
+                    if (!room.Dropped[surface][triangle]) for (int v = triangle * 3; v < triangle * 3 + 3; v++) kept.Add(v);
                 if (kept.Count == 0) kept.AddRange(new[] { 0, 0, 0 });
                 var arrays = new GArray();
                 arrays.Resize((int)Mesh.ArrayType.Max);
