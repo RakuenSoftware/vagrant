@@ -245,11 +245,11 @@ public sealed class FieldBattle
             {
                 _hud = new BattleHud { Name = "BattleHud" };
                 var hudData = view.Content.Data("hud");
-                _hud.Configure(view.Content.Texture("hud_digits"), view.Content.Texture("hud_labels"),
-                    hudData.ContainsKey("battle_mode") ? view.Content.Texture("hud_battle_mode") : null,
-                    hudData.ContainsKey("emotes") ? view.Content.Texture("hud_emotes") : null,
-                    hudData.GetValueOrDefault("font", default).AsGodotDictionary(), view.Content.Texture("hud_page_976"));
-                if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.Texture("hud_chain_cue");
+                _hud.Configure(view.Content.ScreenTexture("hud_digits", true), view.Content.ScreenTexture("hud_labels", true),
+                    hudData.ContainsKey("battle_mode") ? view.Content.ScreenTexture("hud_battle_mode") : null,
+                    hudData.ContainsKey("emotes") ? view.Content.ScreenTexture("hud_emotes") : null,
+                    hudData.GetValueOrDefault("font", default).AsGodotDictionary(), view.Content.ScreenTexture("hud_page_976", true));
+                if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.ScreenTexture("hud_chain_cue");
                 hud.AddChild(_hud);
             }
             catch (System.IO.IOException) { _hud = null; }

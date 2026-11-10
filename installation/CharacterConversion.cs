@@ -184,7 +184,12 @@ public sealed class CharacterConversion
                 library.AddAnimation(clip, animation);
                 names.Add(clip);
             }
-        // A model without animations (a prop) still has one clip: its rest pose.
+        // A model without animations (a prop: the opening's dead men, 0x73 to 0x76) still has one clip, the pose the field
+        // draws it in. Its root stands half its bone 1 length above the actor's place, as the actor renderer lifts every
+        // model (BATTLE.PRG 0x800AF620 adds half the model's word at +0x50, bone 1's length, to the drawn height),
+        // with no animation to place it otherwise. Bone 1 takes the standing turn every humanoid animation set gives
+        // the hip as its base, (2048, 0, 6144): modelled as they lie in the scene, unturned the props stand on end
+        // (Episode 1 at 16:50, MAP172: the man slumped in the chair, the man spread on his back across the table).
         if (names.Count == 0)
         {
             // glTF drops animations without tracks, so the rest pose holds the root bone explicitly.
@@ -192,6 +197,16 @@ public sealed class CharacterConversion
             int track = rest.AddTrack(Animation.TrackType.Rotation3D);
             rest.TrackSetPath(track, "Space/Skeleton:b0");
             rest.RotationTrackInsertKey(track, 0, Quaternion.Identity);
+            if (_bones >= 2)
+            {
+                track = rest.AddTrack(Animation.TrackType.Position3D);
+                rest.TrackSetPath(track, "Space/Skeleton:b0");
+                // The lift is in map units; the skeleton is in the model's own, ModelScale of them.
+                rest.PositionTrackInsertKey(track, 0, new Vector3(0, _skeleton[1].Length / 2 / ModelScale, 0));
+                track = rest.AddTrack(Animation.TrackType.Rotation3D);
+                rest.TrackSetPath(track, "Space/Skeleton:b1");
+                rest.RotationTrackInsertKey(track, 0, Rotation(new Vector3(2048, 0, 6144)));
+            }
             library.AddAnimation("rest", rest);
             names.Add("rest");
         }

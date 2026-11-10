@@ -33,7 +33,7 @@ public partial class Ending : Control
         var data = content.Data("ending");
         foreach (var asset in data["illustrations"].AsGodotArray())
         {
-            var picture = new TextureRect { Texture = content.Texture(asset.AsString()), StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, AnchorRight = 1, AnchorBottom = 1, Modulate = new Color(1, 1, 1, 0) };
+            var picture = new TextureRect { Texture = content.ScreenTexture(asset.AsString()), StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, AnchorRight = 1, AnchorBottom = 1, Modulate = new Color(1, 1, 1, 0) };
             AddChild(picture);
             _pictures.Add(picture);
         }

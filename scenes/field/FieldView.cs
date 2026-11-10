@@ -349,10 +349,10 @@ void fragment() {
         _hud.AddChild(Screen);
         _minimap = new Minimap { Name = "Minimap" };
         Screen.AddChild(_minimap);
-        _minimap.Configure(_content.Has("hud_cursor") ? _content.Texture("hud_cursor") : null);
+        _minimap.Configure(_content.Has("hud_cursor") ? _content.ScreenTexture("hud_cursor") : null);
         SystemBox = new SystemBox { Name = "SystemBox" };
         Texture2D? labels = null;
-        try { labels = _content.Texture("hud_labels"); } catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { }
+        try { labels = _content.ScreenTexture("hud_labels", true); } catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { }
         SystemBox.Configure(_content.Has("system_font") ? _content.BitmapFont("system_font") : null, labels);
         Screen.AddChild(SystemBox);
         // The field darkens behind MENUF's screens.
@@ -663,6 +663,7 @@ void fragment() {
                 Fail($"The installed room {name} could not be constructed ({result}).");
                 return;
             }
+            ReadRoomFaces(document);
             foreach (var material in Field.Materials)
             {
                 material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
@@ -1815,7 +1816,7 @@ void fragment() {
         try
         {
             _balloonShapes ??= _content.Data("dialogue_balloons");
-            _paper ??= _content.Texture(_balloonShapes["paper"].AsString());
+            _paper ??= _content.ScreenTexture(_balloonShapes["paper"].AsString());
         }
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException)
         {
@@ -2173,7 +2174,8 @@ void fragment() {
         Tint(actor, Vector3.Zero);
         Actors[reference] = actor;
         // A new actor stands in its base idle (animation 1) until the script animates it.
-        actor.Animate("base_" + FieldPlayer.Idle, 0);
+        // A prop, with no animations of its own, holds the pose its model was converted with.
+        if (!actor.Animate("base_" + FieldPlayer.Idle, 0)) actor.Animate("rest", 0);
         actor.Apply();
         return Error.Ok;
     }
@@ -3426,6 +3428,7 @@ void fragment() {
         var rolled = new Quaternion(Vector3.Back, roll);
         if (!Field!.CameraViewRotation.IsEqualApprox(rolled)) Field.SetCameraViewRotation(rolled);
         ApplyCamera();
+        DropNearFaces();
         ShowRoomGroups();
         StepTextureFrames();
         Field.AdvancePresentation();
@@ -4261,8 +4264,8 @@ void fragment() {
         if (_results == null)
         {
             _results = new ResultsScreen { Name = "Results", Sound = MenuSound, StopSound = id => StopSound($"effect_{id}") };
-            _results.Configure(_content.Texture("results_sheet"), _content.Texture("results_reel"), _content.Data("results"),
-                _content.Has("hud_labels") ? _content.Texture("hud_labels") : null,
+            _results.Configure(_content.ScreenTexture("results_sheet"), _content.ScreenTexture("results_reel"), _content.Data("results"),
+                _content.Has("hud_labels") ? _content.ScreenTexture("hud_labels", true) : null,
                 _content.Has("hud") ? _content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null);
             Screen.AddChild(_results);
         }
@@ -5333,24 +5336,28 @@ void fragment() {
     /// <summary>Gives the event camera to the shared field camera: retail map units become engine units, and the projection distance a field of view.</summary>
     private void ApplyCamera()
     {
-        // The retail room renderer drops each room polygon (after subdividing near ones) whose nearest corner's depth,
-        // over four, is below the near clip, so a camera beside room geometry sees past it; actors keep the ordinary
-        // near plane. The view matrix is scaled by ec's value over 4096 (0x8007CD14 into 0x1F800064, applied at
-        // 0x8007AF08), which leaves the picture as it is but scales every depth, so the cut stands at four times the
-        // near clip over that scale.
+        // The retail room renderer drops each room polygon whose nearest corner's depth, over four, is below the near
+        // clip (BATTLE.PRG 0x80097A10 takes the least of the three GTE depths, 0x800980F8 compares it), so a camera
+        // beside room geometry sees past it; actors keep the ordinary near plane. A corner behind the camera has depth
+        // 0, so a face reaching behind it goes too. The view matrix is scaled by ec's value over 4096 (0x8007CD14 into
+        // 0x1F800064, applied at 0x8007AF08), which leaves the picture as it is but scales every depth, so the cut stands
+        // at four times the near clip over that scale. Only in first-person view (the switch at 0x800F19C8, which the
+        // renderer takes as its second argument) are near polygons first subdivided, by their group's levels, and the
+        // pieces tested: a cut by the pixel stands in for that.
         bool staged = EventCamera.Active && !Controlled;
         float reject = 4 * (staged ? EventCamera.Near : 64) * 4096 / (staged ? EventCamera.Far : 4096) / Installation.MapConversion.UnitsPerMetre;
-        if (reject != _roomNear)
+        float pixelCut = _hideFirstPerson ? reject : 0;
+        if (pixelCut != _roomNear)
         {
-            _roomNear = reject;
+            _roomNear = pixelCut;
             var rigs = new HashSet<StandardMaterial3D>();
             foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
             foreach (var material in Field.Materials)
             {
                 if (rigs.Contains(material)) continue;
-                material.DistanceFadeMode = BaseMaterial3D.DistanceFadeModeEnum.PixelDither;
-                material.DistanceFadeMinDistance = reject;
-                material.DistanceFadeMaxDistance = reject + 0.001f;
+                material.DistanceFadeMode = pixelCut > 0 ? BaseMaterial3D.DistanceFadeModeEnum.PixelDither : BaseMaterial3D.DistanceFadeModeEnum.Disabled;
+                material.DistanceFadeMinDistance = pixelCut;
+                material.DistanceFadeMaxDistance = pixelCut + 0.001f;
             }
         }
         if (Controlled)
@@ -5402,6 +5409,116 @@ void fragment() {
     /// is -z, 2 is +x, 4 is +z and 6 is -x in map space. Scripts may also hide single groups, or the parts marked for
     /// first-person view.
     /// </summary>
+    /// <summary>A room group's mesh as converted, face by face, and which of its faces the near cut drops.</summary>
+    private sealed class RoomFaces
+    {
+        public required MeshInstance3D View;
+        public required ArrayMesh Mesh;
+        public required GArray[] Arrays;
+        public required Material[] Materials;
+        /// <summary>Per surface, the triangles of each face in turn (a quad's two).</summary>
+        public required int[][] Faces;
+        public required bool[][] Dropped;
+    }
+
+    private readonly List<RoomFaces> _roomFaces = new();
+
+    /// <summary>Keeps each room group's surfaces as converted, with their faces, for <see cref="DropNearFaces"/>.</summary>
+    private void ReadRoomFaces(GDictionary document)
+    {
+        _roomFaces.Clear();
+        var models = document["models"].AsGodotArray();
+        foreach (var value in document["objects"].AsGodotArray())
+        {
+            var item = value.AsGodotDictionary();
+            int model = item.GetValueOrDefault("model", -1).AsInt32();
+            if (model < 0 || model >= models.Count || !Field.Actors.TryGetValue(item["id"].AsInt32().ToString(), out var node)) continue;
+            if (node.GetChildCount() == 0 || node.GetChild(0) is not MeshInstance3D view || view.Mesh is not ArrayMesh mesh || mesh.GetBlendShapeCount() > 0) continue;
+            var faces = new List<int[]>();
+            foreach (var block in models[model].AsGodotDictionary()["blocks"].AsGodotArray())
+                foreach (var group in block.AsGodotDictionary()["groups"].AsGodotArray())
+                {
+                    var surface = group.AsGodotDictionary();
+                    if (surface["vertices"].AsGodotArray().Count == 0) continue;
+                    if (!surface.ContainsKey("faces")) { faces.Clear(); break; }
+                    faces.Add(surface["faces"].AsInt32Array());
+                }
+            if (faces.Count != mesh.GetSurfaceCount()) continue;
+            var arrays = new GArray[faces.Count];
+            var materials = new Material[faces.Count];
+            var dropped = new bool[faces.Count][];
+            for (int i = 0; i < faces.Count; i++)
+            {
+                arrays[i] = mesh.SurfaceGetArrays(i);
+                materials[i] = mesh.SurfaceGetMaterial(i);
+                dropped[i] = new bool[faces[i].Length];
+            }
+            _roomFaces.Add(new RoomFaces { View = view, Mesh = mesh, Arrays = arrays, Materials = materials, Faces = faces.ToArray(), Dropped = dropped });
+        }
+    }
+
+    /// <summary>
+    /// Leaves out every room face whose nearest corner stands closer to the camera than the near cut (see
+    /// ApplyCamera), outside first-person view. A group's mesh is rebuilt only when its faces left out change.
+    /// </summary>
+    private void DropNearFaces()
+    {
+        bool staged = EventCamera.Active && !Controlled;
+        float reject = _hideFirstPerson ? float.NegativeInfinity
+            : 4 * (staged ? EventCamera.Near : 64) * 4096 / (staged ? EventCamera.Far : 4096) / Installation.MapConversion.UnitsPerMetre;
+        var eye = Field.CameraEye;
+        var ahead = (Field.CameraTarget - Field.CameraEye).Normalized();
+        if (!ahead.IsFinite() || ahead == Vector3.Zero) return;
+        foreach (var room in _roomFaces)
+        {
+            var toLocal = room.View.GlobalTransform.AffineInverse();
+            var localEye = toLocal * eye;
+            var localAhead = (toLocal.Basis * ahead).Normalized();
+            bool changed = false;
+            for (int surface = 0; surface < room.Faces.Length; surface++)
+            {
+                var vertices = room.Arrays[surface][(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                int at = 0;
+                for (int face = 0; face < room.Faces[surface].Length; face++)
+                {
+                    int count = room.Faces[surface][face] * 3;
+                    float nearest = float.PositiveInfinity;
+                    for (int v = at; v < at + count; v++) nearest = Math.Min(nearest, (vertices[v] - localEye).Dot(localAhead));
+                    at += count;
+                    bool drop = nearest < reject;
+                    if (drop != room.Dropped[surface][face]) { room.Dropped[surface][face] = drop; changed = true; }
+                }
+            }
+            if (!changed) continue;
+            room.Mesh.ClearSurfaces();
+            for (int surface = 0; surface < room.Faces.Length; surface++)
+            {
+                var source = room.Arrays[surface];
+                var kept = new List<int>();
+                int at = 0;
+                for (int face = 0; face < room.Faces[surface].Length; face++)
+                {
+                    int count = room.Faces[surface][face] * 3;
+                    if (!room.Dropped[surface][face]) for (int v = at; v < at + count; v++) kept.Add(v);
+                    at += count;
+                }
+                if (kept.Count == 0) kept.AddRange(new[] { 0, 0, 0 });
+                var arrays = new GArray();
+                arrays.Resize((int)Mesh.ArrayType.Max);
+                var vertices = source[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                var uv = source[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+                var colors = source[(int)Mesh.ArrayType.Color].AsColorArray();
+                var normals = source[(int)Mesh.ArrayType.Normal].AsVector3Array();
+                arrays[(int)Mesh.ArrayType.Vertex] = kept.ConvertAll(v => vertices[v]).ToArray();
+                arrays[(int)Mesh.ArrayType.TexUV] = kept.ConvertAll(v => uv[v]).ToArray();
+                arrays[(int)Mesh.ArrayType.Color] = kept.ConvertAll(v => colors[v]).ToArray();
+                arrays[(int)Mesh.ArrayType.Normal] = kept.ConvertAll(v => normals[v]).ToArray();
+                room.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+                room.Mesh.SurfaceSetMaterial(surface, room.Materials[surface]);
+            }
+        }
+    }
+
     private void ShowRoomGroups()
     {
         var back = EventActor.RetailSpace.Basis.Inverse() * Field.Camera.GlobalBasis.Z;
