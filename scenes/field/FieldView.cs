@@ -1290,6 +1290,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case "sound.play":
                 PlaySound(args["sound"].AsString(), args["volume"].AsInt32(), group: args.GetValueOrDefault("group", -1).AsInt32());
                 return Error.Ok;
+            case "actor.mix":
+                foreach (var mixed in Targets(args))
+                    mixed.MixSounds(args["mode"].AsInt32(), args["pan"].AsInt32(), args["volume"].AsInt32(), args["frames"].AsInt32(), PlacedPan(mixed), 127);
+                return Error.Ok;
             case "actor.sound":
             {
                 // One of the sounds in the actor's own bank, picked at random; ones its model lacks are left out.
@@ -1303,12 +1307,19 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 }
                 return Error.Ok;
             }
-            case "sound.volume":
+            case "sound.reverb":
+                _driver.Reverb(args["value"].AsInt32());
+                return Error.Ok;
+            case "music.snapshot":
+                _driver.Snapshot();
+                return Error.Ok;
+            case "sound.volume": case "sound.pan":
             {
-                // The driver fades the one sound (the game's 0x80045BFC), whatever its pan.
+                // The driver slides the one sound's volume or pan (the game's 0x80045BFC and 0x80045CEC), whatever pan it started at.
                 if (!_sounds.TryGetValue(args["sound"].AsString(), out var key)) return Error.Ok;
                 var (bankName, bank, number, _, _) = _content.Sound(key);
-                _driver.FadeSound(bankName, bank, number, args["volume"].AsInt32(), args["frames"].AsInt32());
+                bool pan = type == "sound.pan";
+                _driver.SlideSound(bankName, bank, number, pan, args[pan ? "pan" : "volume"].AsInt32(), args["frames"].AsInt32());
                 return Error.Ok;
             }
             case "weather.drift":
@@ -1984,17 +1995,22 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// screen whatever the material's blend.
     /// </summary>
 
-    /// <summary>Plays one of an actor's own sounds: panned by where the actor stands on screen, at full volume whatever the distance.</summary>
+    /// <summary>
+    /// Plays one of an actor's own sounds: panned by where the actor stands on screen, at full volume whatever the
+    /// distance, unless its mix holds a pan or volume (see <see cref="EventActor.MixSounds"/>); a silenced actor plays none.
+    /// </summary>
     public void PlayActorSound(EventActor speaker, string sound)
     {
-        if (!_content.HasSound(sound)) return;
-        int pan = 0x80;
-        if (Field?.Camera is { } camera && camera.IsInsideTree() && !camera.IsPositionBehind(speaker.Node.GlobalPosition))
-        {
-            float across = camera.UnprojectPosition(speaker.Node.GlobalPosition).X / Math.Max(1, GetViewport().GetVisibleRect().Size.X);
-            pan = Math.Clamp((int)(across * 255), 0, 255);
-        }
-        PlaySound(sound, 127, pan);
+        if (!_content.HasSound(sound) || speaker.SoundMode == 2) return;
+        PlaySound(sound, speaker.SoundVolume != 0 ? speaker.SoundVolume : 127, speaker.SoundPan != 0 ? speaker.SoundPan : PlacedPan(speaker));
+    }
+
+    /// <summary>The pan an actor's place on screen gives its sounds: 0 at the left edge to 255 at the right, centred when out of sight behind.</summary>
+    private int PlacedPan(EventActor speaker)
+    {
+        if (Field?.Camera is not { } camera || !camera.IsInsideTree() || camera.IsPositionBehind(speaker.Node.GlobalPosition)) return 0x80;
+        float across = camera.UnprojectPosition(speaker.Node.GlobalPosition).X / Math.Max(1, GetViewport().GetVisibleRect().Size.X);
+        return Math.Clamp((int)(across * 255), 0, 255);
     }
 
     /// <summary>The resident sounds the menus play: the cursor's change, a choice made, leaving, a refusal and a file written.</summary>
@@ -3323,7 +3339,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Field.Camera.HOffset = shake.X / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.VOffset = -shake.Y / Installation.MapConversion.UnitsPerMetre;
         }
-        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) actor.StepLook(); }
+        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } }
         // The event camera's roll (opcode e2) is the engine's; play has none.
         if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();

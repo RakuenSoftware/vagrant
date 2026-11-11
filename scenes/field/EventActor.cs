@@ -505,6 +505,43 @@ public sealed class EventActor
     public int Flags;
 
     /// <summary>
+    /// Retail 24: how the actor's own sounds are mixed (BATTLE.PRG 0x8009f9f4, read back by 0x800ad62c). Mode 0 pans
+    /// them by where the actor stands at full volume; mode 1 holds the pan and volume given (0 for either leaves it to
+    /// the actor's place), sliding to them over the frames given from where they were; mode 2 silences them.
+    /// </summary>
+    public int SoundMode, SoundPan, SoundVolume;
+    private int _soundTargetPan, _soundTargetVolume, _soundFrames;
+
+    /// <summary>
+    /// Sets the mix of the actor's sounds, as retail 24 does. <paramref name="placedPan"/> and
+    /// <paramref name="placedVolume"/> are what its place gives now, from which a slide starts where nothing is held.
+    /// </summary>
+    public void MixSounds(int mode, int pan, int volume, int frames, int placedPan, int placedVolume)
+    {
+        if (mode == 0) { SoundPan = SoundVolume = 0; _soundFrames = 0; }
+        else if (mode == 1 && frames == 0) { SoundPan = pan; SoundVolume = volume; _soundFrames = 0; }
+        else if (mode == 1)
+        {
+            (_soundTargetPan, _soundTargetVolume, _soundFrames) = (pan, volume, frames);
+            if (SoundMode == 0) (SoundPan, SoundVolume) = (placedPan, placedVolume);
+            else if (SoundMode == 1) { if (SoundPan == 0) SoundPan = placedPan; if (SoundVolume == 0) SoundVolume = placedVolume; }
+            else (SoundPan, SoundVolume) = (128, 1);
+            if (pan == 0) SoundPan = 0;
+            if (volume == 0) SoundVolume = 0;
+        }
+        SoundMode = mode;
+    }
+
+    /// <summary>A frame of the event clock: a slide of the sounds' mix moves on (BATTLE.PRG 0x800af2b4).</summary>
+    public void StepSounds()
+    {
+        if (SoundMode != 1 || _soundFrames <= 0) return;
+        SoundVolume += (_soundTargetVolume - SoundVolume) / _soundFrames;
+        SoundPan += (_soundTargetPan - SoundPan) / _soundFrames;
+        _soundFrames--;
+    }
+
+    /// <summary>
     /// Retail 34, 38 and 39: the head turns towards a point or another actor, at most 800 either way and by the speed
     /// a frame (0x1000 at once), while the actor plays its base idle or walk (BATTLE.PRG 0x8009fc60).
     /// </summary>

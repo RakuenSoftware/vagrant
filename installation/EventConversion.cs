@@ -24,13 +24,10 @@ public sealed class EventConversion
     /// <summary>Opcodes understood but not presented yet; the scene plays without their effect.</summary>
     private static readonly HashSet<int> Unpresented = new()
     {
-        0x24,                                   // animation sound panning
-        0xa8,                                   // reverb
         0xbb, 0xbc, 0xbe,                       // screen post-processing
         0xe3,                                   // feedback overlay rotation
         0xaa, 0xed, 0xba, 0xf3, 0x7d,           // weapon trails, lens warp, echo source, scanlines, group field
-        0x98,                                   // music snapshot
-        0x9c, 0xb9,                             // sound pan slides, the echo's draw depth
+        0xb9,                                   // the echo's draw depth
     };
 
     /// <summary>Opcodes that wait only for loading, which installed content never needs.</summary>
@@ -1055,7 +1052,7 @@ public sealed class EventConversion
             // the selected slot (an SE file). The group is the driver's voice set (BATTLE.PRG's masks at 0x800E9B34).
             case 0x85: case 0x88:
                 return null;
-            case 0x80: case 0x82:
+            case 0x80: case 0x82: case 0x9c:
             {
                 int group = Byte(pc + 1);
                 // A bank sound with no bank loaded has nothing to play.
@@ -1072,7 +1069,8 @@ public sealed class EventConversion
                     if (!listed) _sounds.Add(sound);
                     Command("sound.play", new JsonObject { ["sound"] = sound, ["group"] = group, ["pan"] = Byte(pc + 3), ["volume"] = Byte(pc + 4) });
                 }
-                else Command("sound.volume", new JsonObject { ["sound"] = sound, ["volume"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });  // by sound, whatever its pan
+                // 82 slides a sound's volume and 9c its pan (BATTLE.PRG 0x800ba848), by sound whatever its pan.
+                else Command(op == 0x82 ? "sound.volume" : "sound.pan", new JsonObject { ["sound"] = sound, [op == 0x82 ? "volume" : "pan"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });
                 return null;
             }
             case 0x70:
@@ -1136,6 +1134,19 @@ public sealed class EventConversion
                 Command("actor.sound", new JsonObject { ["actor"] = Actor(pc + 1), ["sounds"] = sounds });
                 return null;
             }
+            case 0xa8:
+                // The driver's reverb (BATTLE.PRG 0x800baaf0: driver command 0x92 with the byte).
+                Command("sound.reverb", new JsonObject { ["value"] = Byte(pc + 1) });
+                return null;
+            case 0x98:
+                // The driver's music snapshot (BATTLE.PRG 0x800ba72c: driver command 0x40).
+                Command("music.snapshot", new JsonObject());
+                return null;
+            case 0x24:
+                // The mix of an actor's own sounds (all actors' for 0x2001; BATTLE.PRG 0x800b77dc): a mode, a pan, a
+                // volume and frames to slide over (see EventActor.MixSounds).
+                Command("actor.mix", new JsonObject { ["actor"] = Actor(pc + 1), ["mode"] = Byte(pc + 3), ["pan"] = Byte(pc + 4), ["volume"] = Byte(pc + 5), ["frames"] = Byte(pc + 6) });
+                return null;
             case 0x3e:
             {
                 // The actor's rim (BATTLE.PRG 0x800b8790 and 0x8009f940): a colour (bytes 7 to 9) other than black turns

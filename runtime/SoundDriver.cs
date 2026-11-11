@@ -22,8 +22,10 @@ public sealed partial class SoundDriver : Node
     // Sound driver and runtime library entry points in the verified US executable.
     private const long InitSound = 0x80011DAC, BindSfxBlob = 0x80011DEC, StartMusic = 0x80011FB4, StopMusic = 0x80011FDC, MusicVolume = 0x800128A0;
     private const long LoadResidentBank = 0x80012BB8, LoadResidentBankAt = 0x800131DC, LoadSoundFile = 0x80013188;
-    private const long PlaySfxById = 0x8001217C, PlaySfxBlob = 0x800121F0, StopSfx = 0x80012288, FadeSfx = 0x8001264C, StopAllSfx = 0x80012B98;
+    private const long PlaySfxById = 0x8001217C, PlaySfxBlob = 0x800121F0, StopSfx = 0x80012288, FadeSfx = 0x8001264C, PanSfx = 0x80012738, StopAllSfx = 0x80012B98;
     private const long WriteSpu = 0x800134D0, Tick = 0x80019A58;
+    // Driver commands 0x92 (the reverb, with its value) and 0x40 (the music snapshot), as event opcodes a8 and 98 send them.
+    private const long SetReverb = 0x80012468, SnapshotMusic = 0x80012004;
     private const long SpuSetTransferStartAddr = 0x8001EBC4;
     private static readonly long[] HostRoutines =
     {
@@ -264,6 +266,22 @@ public sealed partial class SoundDriver : Node
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 
+    /// <summary>Sets the driver's reverb (driver command 0x92, event opcode a8).</summary>
+    public void Reverb(int value)
+    {
+        if (!Ready) return;
+        try { Call(SetReverb, value); }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
+    /// <summary>Takes the driver's music snapshot (driver command 0x40, event opcode 98).</summary>
+    public void Snapshot()
+    {
+        if (!Ready) return;
+        try { Call(SnapshotMusic); }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
     /// <summary>Stops every sound (driver command 0xf1, as the game's 0x80045DC0 does).</summary>
     public void StopAllSounds()
     {
@@ -283,11 +301,14 @@ public sealed partial class SoundDriver : Node
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 
-    /// <summary>Fades one sound to a volume (0 to 127) over the frames given, as the game's 0x80045BFC asks the driver (0x8001264C).</summary>
-    public void FadeSound(string bankName, byte[]? bank, int id, int volume, int frames)
+    /// <summary>
+    /// Slides one sound's volume (0 to 127) or its pan (0 to 255, 128 the centre) over the frames given, as the game's
+    /// 0x80045BFC and 0x80045CEC ask the driver (0x8001264C and 0x80012738).
+    /// </summary>
+    public void SlideSound(string bankName, byte[]? bank, int id, bool pan, int value, int frames)
     {
         if (!Ready || Target(bankName, bank, id) is not long target) return;
-        try { Call(FadeSfx, target, 0, frames & 0xFF, Math.Clamp(volume, 0, 127)); }
+        try { Call(pan ? PanSfx : FadeSfx, target, 0, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 
