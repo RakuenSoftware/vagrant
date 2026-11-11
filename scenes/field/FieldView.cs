@@ -1146,7 +1146,14 @@ void fragment() {
                 {
                     if (actor.Id == "slot:1") continue;
                     Actors.Remove(actor.Id);
-                    foreach (var other in Actors.Values) if (other.Parent == actor) other.Parent = null;
+                    foreach (var other in Actors.Values)
+                        if (other.Parent == actor)
+                        {
+                            // What it held keeps its numbers, now as a place in the room.
+                            var (place, facing) = (other.Position, other.Facing);
+                            other.Parent = null;
+                            (other.Position, other.Facing) = (place, facing);
+                        }
                     var removed = Field.RemoveActor(actor.Id);
                     if (removed != Error.Ok) return removed;
                 }
@@ -1176,7 +1183,10 @@ void fragment() {
             case "actor.attach":
             {
                 if (Actor(args) is not { } actor) return Error.Ok;
+                // Its facing carries on, now about the bone.
+                float facing = actor.Facing;
                 actor.Parent = Actor(args, "target");
+                actor.Facing = facing;
                 actor.ParentBone = args["bone"].AsInt32();
                 actor.Position = Vector3.Zero;
                 actor.Angles = Vector3.Zero;
@@ -2195,7 +2205,7 @@ void fragment() {
         if (result != Error.Ok) return result;
         result = Field.ActivateRig(Field.RigBanks[(reference, "base")]);
         if (result != Error.Ok) return result;
-        var actor = new EventActor(reference, character, node) { LoadSet = AddAnimationSet };
+        var actor = new EventActor(reference, character, node) { LoadSet = AddAnimationSet, Scene = Field };
         // Drawn as the Settings choose: the disc's textures as they are, or enhanced.
         CharacterQuality.Apply(node, _content.Character(character).GetValueOrDefault("head_bone", -1).AsInt32());
         actor.ShadowRadius = _content.Character(character).GetValueOrDefault("shadow", 0).AsInt32();

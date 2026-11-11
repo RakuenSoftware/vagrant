@@ -23,9 +23,27 @@ public sealed class EventActor
     public readonly Node3D Node;
     public readonly Skeleton3D? Skeleton;
     public readonly AnimationPlayer? Player;
+    /// <summary>The engine's field the actor stands in, which places, turns and shapes it.</summary>
+    public Wol.Engine.World.FieldScene? Scene { get; init; }
 
-    public Vector3 Position;
-    public float Facing;
+    /// <summary>
+    /// Where the actor stands, in map units: the engine's place for it, turned into retail space (bone-local, and kept
+    /// here, while it is attached to another actor).
+    /// </summary>
+    public Vector3 Position
+    {
+        get => Parent == null && Scene != null && Scene.Actors.TryGetValue(Id, out var node) ? RetailSpace.AffineInverse() * node.Position : _position;
+        set { if (Parent == null && Scene != null && Scene.Actors.ContainsKey(Id)) Scene.SetActorPosition(Id, RetailSpace * value); else _position = value; }
+    }
+    private Vector3 _position;
+
+    /// <summary>The way it faces, 4096 a turn about retail's (downward) y: the engine's heading, which turns the other way.</summary>
+    public float Facing
+    {
+        get => Parent == null && Scene != null && Scene.ActorHeadings.TryGetValue(Id, out float heading) ? Mathf.PosMod(-heading * 4096 / Mathf.Tau, 4096) : _facing;
+        set { if (Parent == null && Scene != null && Scene.Actors.ContainsKey(Id)) Scene.UpdateCharacterDirection(Id, false, Mathf.Wrap(-value * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi)); else _facing = value; }
+    }
+    private float _facing;
     public Vector3 Angles;
     /// <summary>
     /// The scale opcode 2e sets (4096 is 1), easing over its frames, which status waits see. Retail keeps it at the
@@ -544,17 +562,28 @@ public sealed class EventActor
         return new Transform3D(basis * Basis.FromScale(Scale), Position);
     }
 
-    /// <summary>Writes the node's transform. An attached actor follows its parent's bone; its own motion is then bone-local.</summary>
+    /// <summary>
+    /// Hands the actor's place, facing and body to the engine: retail space turned into the engine's (a half turn
+    /// about x, so a retail facing turns the other way about the engine's up), the facing with the sway's half, and the
+    /// extra angles and scale as its body. An attached actor follows its parent's bone; its own motion is then bone-local.
+    /// </summary>
     public void Apply()
     {
         Node.Visible = Visible;
         if (Parent?.Skeleton is { } skeleton && Parent.SkeletonBone(ParentBone) is >= 0 and var held)
         {
             var bone = skeleton.GlobalTransform * skeleton.GetBoneGlobalPose(held);
+            Scene?.UpdateCharacterDirection(Id, false, 0);
+            Scene?.SetActorBody(Id, Basis.Identity);
             Node.GlobalTransform = bone * Local() * ModelSpace.AffineInverse();
             return;
         }
-        Node.Transform = RetailSpace * Local() * RetailSpace.AffineInverse();
+        if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Node.Transform = RetailSpace * Local() * RetailSpace.AffineInverse(); return; }
+        float unit = Mathf.Tau / 4096f;
+        Node.Basis = Basis.Identity;
+        // The sway turns the body about y, after the facing.
+        var body = new Basis(Vector3.Up, SwayCount / 2 * unit) * new Basis(Vector3.Back, Angles.Z * unit) * new Basis(Vector3.Up, Angles.Y * unit) * new Basis(Vector3.Right, Angles.X * unit) * Basis.FromScale(Scale);
+        Scene.SetActorBody(Id, RetailSpace.Basis.Orthonormalized() * body * RetailSpace.Basis.Orthonormalized().Inverse());
     }
 
     /// <summary>

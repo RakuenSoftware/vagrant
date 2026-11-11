@@ -140,30 +140,28 @@ public partial class FieldContracts : Node
             _view.KeepScene = true;
             _view.StartMap = room.Map;
             // She arrives as play brings her in: through the first door of another room that leads here, of the zone
-            // first, then of any zone (a zone's first room is often entered from the zone before). The doors are read
-            // from the installed rooms' documents: converting every room to look would take all the memory.
+            // first, then of any zone (a zone's first room is often entered from the zone before). Each room looked at
+            // is let go again, so that looking through them all does not hold them all.
             if (_at is { } tile) _view.StartAt = (tile.X, tile.Z, 0, false);
             else
             {
-                var rooms = new System.Collections.Generic.List<(int Zone, int Map, string Path)>();
-                foreach (string path in System.IO.Directory.GetFiles(only.GlobalRoot, "field_z*_m*.json", System.IO.SearchOption.AllDirectories))
-                {
-                    string name = System.IO.Path.GetFileNameWithoutExtension(path);
-                    if (name.Length != 14 || !int.TryParse(name[7..10], out int roomZone) || !int.TryParse(name[12..14], out int roomMap)) continue;
-                    if (roomZone != room.Zone || roomMap != room.Map) rooms.Add((roomZone, roomMap, path));
-                }
+                var rooms = new System.Collections.Generic.List<(int Zone, int Map, string Name)>();
+                foreach (string name in only.Field.RoomNames())
+                    if (int.Parse(name[1..4]) is var roomZone && int.Parse(name[6..8]) is var roomMap && (roomZone != room.Zone || roomMap != room.Map)) rooms.Add((roomZone, roomMap, name));
                 rooms.Sort((a, b) => a.Zone == b.Zone ? a.Map.CompareTo(b.Map) : a.Zone == room.Zone ? -1 : b.Zone == room.Zone ? 1 : a.Zone.CompareTo(b.Zone));
-                foreach (var (otherZone, other, path) in rooms)
+                foreach (var (otherZone, other, name) in rooms)
                 {
-                    using var document = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
-                    if (!document.RootElement.TryGetProperty("doors", out var doors)) continue;
-                    foreach (var door in doors.EnumerateArray())
+                    System.Text.Json.Nodes.JsonObject? document;
+                    try { document = only.Field.Data("field_" + name); }
+                    catch (System.IO.InvalidDataException) { continue; }
+                    only.Field.CacheRoom(name);
+                    foreach (var door in document?["doors"]?.AsArray() ?? new System.Text.Json.Nodes.JsonArray())
                     {
-                        int zone = (int)door.GetProperty("zone").GetDouble() is var named && named != 0 ? named : otherZone;
-                        if (zone != room.Zone || (int)door.GetProperty("map").GetDouble() != room.Map) continue;
-                        var to = door.GetProperty("destination");
-                        int x = (int)to[0].GetDouble(), z = (int)to[1].GetDouble();
-                        _view.StartAt = (x, z, (float)door.GetProperty("facing").GetDouble(), door.GetProperty("half").GetBoolean());
+                        int zone = (int)door!["zone"]! is var named && named != 0 ? named : otherZone;
+                        if (zone != room.Zone || (int)door["map"]! != room.Map) continue;
+                        var to = door["destination"]!;
+                        int x = (int)to[0]!, z = (int)to[1]!;
+                        _view.StartAt = (x, z, (int)door["facing"]!, (bool)door["half"]!);
                         GD.Print(otherZone == room.Zone ? $"FIELD: she arrives by the door from map {other} at tile {x}, {z}" : $"FIELD: she arrives by the door from zone {otherZone} map {other} at tile {x}, {z}");
                         break;
                     }
