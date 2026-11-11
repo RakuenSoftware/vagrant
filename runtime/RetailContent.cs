@@ -255,6 +255,9 @@ public partial class RetailContent : Node
         using var state = new GltfState();
         if (document.AppendFromBuffer(model, "", state) != Error.Ok || document.GenerateScene(state) is not Node3D scene)
             throw new InvalidDataException($"The installed {name} could not be read.");
+        // The rig's own sets (base and battle) loop; glTF does not keep that.
+        foreach (var node in scene.FindChildren("*", "AnimationPlayer", true, false))
+            foreach (var clip in ((AnimationPlayer)node).GetAnimationList()) ((AnimationPlayer)node).GetAnimation(clip).LoopMode = Animation.LoopModeEnum.Linear;
         // glTF keeps a mesh's vertex colours but not the material's use of them: a Gouraud-shaded model's colours
         // (the dragons', the shaded props') multiply its texture, doubled, as the PSX's 0x80 leaves a texel as it is.
         foreach (var node in scene.FindChildren("*", "MeshInstance3D", true, false))

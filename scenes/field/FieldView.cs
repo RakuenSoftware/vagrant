@@ -41,7 +41,46 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>The installed field document.</summary>
     public GDictionary Document { get; private set; } = new();
     public string Failure { get; private set; } = "";
-    public EventCamera EventCamera { get; private set; } = new();
+    /// <summary>
+    /// Whether an event has placed the camera (the engine's eye and target then move as its commands say); until
+    /// then the gameplay camera stays in charge. With it, the event's near clip and far-texture depth (ec, in map units).
+    /// </summary>
+    private bool _eventCamera;
+    private float _eventNear = 64, _eventFar = 4096;
+    /// <summary>The retail default projection distance (GTE H): about a 35 degree horizontal view on the 320-pixel screen.</summary>
+    public const float DefaultProjection = 512f;
+    /// <summary>The event camera's projection distance (GTE H) as the engine's view now has it.</summary>
+    private float EventProjection => VisibleLines / 2f / Mathf.Tan(Mathf.DegToRad(Field.Camera.Fov) / 2);
+    /// <summary>The engine's eye and target, carried by any anchor, in retail map space.</summary>
+    private Vector3 EventEye => EventActor.RetailSpace.AffineInverse() * (Field.CameraEye + Anchored);
+    private Vector3 EventLookAt => EventActor.RetailSpace.AffineInverse() * (Field.CameraTarget + Anchored);
+    private Vector3 Anchored => Field.CameraAnchor != "" && Field.Actors.TryGetValue(Field.CameraAnchor, out var anchor) ? anchor.Position : Vector3.Zero;
+    /// <summary>The camera's idle bits as retail's wait tests them: 1 look-at, 2 eye, 4 roll, 8 projection, 0x80 shake.</summary>
+    public int CameraIdle =>
+        (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Target].Active ? 0 : 1) | (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Eye].Active ? 0 : 2)
+        | (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Roll].Active ? 0 : 4) | (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Projection].Active ? 0 : 8)
+        | 0x70 | (Field.CameraWaving ? 0 : 0x80);
+
+    /// <summary>The four user curves (4 to 7) an event defines with 5f: a base shape and a power.</summary>
+    private static readonly (int Shape, int Power)[] UserCurves = new (int, int)[4];
+    /// <summary>A retail easing curve: 0 even, 1 ease-out, 2 in and out, 3 ease-in; 4 to 7 the event's own (5f).</summary>
+    public static Wol.Engine.World.CameraEase Ease(int curve) =>
+        curve >= 4 ? new((Wol.Engine.World.CameraEaseShape)UserCurves[(curve - 4) & 3].Shape, UserCurves[(curve - 4) & 3].Power) : new((Wol.Engine.World.CameraEaseShape)(curve & 3));
+
+    /// <summary>The engine's presentation ticks for retail event frames (30 a second).</summary>
+    private int EventTicks(int frames) => (int)Math.Round(frames * Field.PresentationHz / 30);
+
+    /// <summary>Stops the event camera's moves and puts its projection, roll and clip back as a room starts them.</summary>
+    private void ResetEventCamera()
+    {
+        _eventCamera = false;
+        _eventNear = 64; _eventFar = 4096;
+        if (Field == null) return;
+        Field.StopCameraPoints();
+        Field.SetCameraAnchor("");
+        Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
+        Field.ShakeCameraWave(0, 0, Vector3.Zero, Vector3.Zero, Wol.Engine.World.CameraShakeEnvelope.Steady, 0);
+    }
     /// <summary>The field camera around Ashley once the events hand control back.</summary>
     public readonly GameplayCamera Gameplay = new();
     /// <summary>Whether Ashley is under the player's control: no event runs and the camera is back on her.</summary>
@@ -78,30 +117,18 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private readonly List<int> _restarts = new();
     private readonly List<PresentationReceipt> _completions = new();
     private readonly Dictionary<int, GDictionary> _boxes = new();
-    private readonly Dictionary<int, EventBalloon> _balloons = new();
     private GDictionary? _balloonShapes;
     private Texture2D? _paper;
     private readonly List<(PresentationReceipt Id, Func<bool> Done)> _waits = new();
     private bool _oddFrame;
-    private ColorRect _screen = null!;
-    private bool _fadeWhite;
-
-    private const string FadeShader = @"shader_type canvas_item;
-uniform sampler2D screen_texture : hint_screen_texture, filter_nearest;
-uniform float level = 1.0;
-uniform bool white = false;
-uniform bool linear = false;
-vec3 to_srgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }
-vec3 to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
-void fragment() {
-    vec3 c = texture(screen_texture, SCREEN_UV).rgb;
-    if (linear) c = to_srgb(c);
-    c = white ? min(c + level, vec3(1.0)) : max(c - level, vec3(0.0));
-    if (linear) c = to_linear(c);
-    COLOR = vec4(c, 1.0);
-}";
-    private EventOverlay _overlay = null!;
-    private EventEcho _echo = null!;
+    /// <summary>
+    /// The screen's fade as the last room's field left it, for the next. A field starts black and fades in (subtracting
+    /// 8 a frame), as a room entered by a door does, unless its event takes the screen over (the opening fades in itself).
+    /// </summary>
+    private FieldScene? _previousField;
+    /// <summary>Retail's random draws for the screen (the credits' wipe edge).</summary>
+    private readonly Random _random = new();
+    private (Wol.Engine.World.ScreenFadeMode Mode, float Level, float Rate, bool Blank) _carriedFade = (Wol.Engine.World.ScreenFadeMode.Subtract, 1, -8 / 255f / 2, false);
     private EventRain _rain = null!;
     /// <summary>The game's own sound driver, playing the disc's sequences and banks live.</summary>
     private SoundDriver _driver = null!;
@@ -110,11 +137,15 @@ void fragment() {
     /// <summary>The music's volume (0 to 1) as fades move it.</summary>
     private float _musicLevel = 1;
     /// <summary>Sounds from actors' own banks, playing at their actors.</summary>
-    /// <summary>The screen's fade (1 black) and its speed a frame. A field starts black and fades in, as a room entered by a door does, unless its event takes the screen over (the opening fades in itself).</summary>
-    private float _fade = 1, _fadeSpeed = -8 / 255f;
-    /// <summary>How far the screen has faded (0 clear, 1 black), for the checks.</summary>
-    public float Fade => _fade;
-    private bool _displayOn = true;
+    /// <summary>How far the screen has faded (0 clear, 1 whole), for the checks: the engine's fade.</summary>
+    public float Fade => Field?.ScreenFadeLevel ?? 1;
+
+    /// <summary>
+    /// Fades the screen as retail does, subtracting a grey (adding a white with <paramref name="white"/>) in display
+    /// values, by <paramref name="speed"/> 255ths an event frame toward black (out) or back (in); 3's "none" is at once.
+    /// </summary>
+    private void FadeScreen(bool fadeOut, float speed, bool white) =>
+        Field.SetScreenFade(white ? Wol.Engine.World.ScreenFadeMode.Add : Wol.Engine.World.ScreenFadeMode.Subtract, Field.ScreenFadeLevel, (fadeOut ? 1 : -1) * speed / 255f / EventTicks(1));
     private bool _skyVisible = true;
 
     /// <summary>
@@ -122,7 +153,6 @@ void fragment() {
     /// second holds the frame's light plus the raw texels of every added sprite, so their difference is those texels'
     /// sum, which the PSX adds to the displayed colour.
     /// </summary>
-    private MeshInstance3D? _dome;
     private Vector2 _skyOffset;
     /// <summary>The sky's parallax for the camera's yaw and pitch (7e; 4096 a pixel a unit of angle).</summary>
     private Vector2 _skyParallax = new(4096, 4096);
@@ -196,34 +226,6 @@ void fragment() {
 
     /// <summary>The render layer effects and rain are drawn on, so that they can be drawn over a picture laid over the room.</summary>
     public const uint EffectLayer = 1u << 19;
-    private SubViewport _effectsView = null!;
-    private Camera3D _effectsCamera = null!;
-    private TextureRect _effectsOver = null!;
-
-    /// <summary>
-    /// While a picture is laid over the room (an overlay layer in front of it), effects and rain are drawn over the
-    /// picture: retail draws them after the screen's layers. They are then seen through a second camera that follows
-    /// the field's and draws only them, added over the picture.
-    /// </summary>
-    private void PlaceEffectsView()
-    {
-        if (Field == null) return;
-        bool over = _overlay.CoversRoom;
-        var camera = Field.Camera;
-        camera.CullMask = over ? camera.CullMask & ~EffectLayer : camera.CullMask | EffectLayer;
-        _effectsOver.Visible = over;
-        _effectsView.RenderTargetUpdateMode = over ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
-        if (!over) return;
-        _effectsView.World3D = camera.GetViewport().World3D;
-        _effectsView.Size = (Vector2I)GetViewport().GetVisibleRect().Size;
-        _effectsCamera.GlobalTransform = camera.GlobalTransform;
-        _effectsCamera.KeepAspect = camera.KeepAspect;
-        _effectsCamera.Fov = camera.Fov;
-        _effectsCamera.Near = camera.Near;
-        _effectsCamera.Far = camera.Far;
-        _effectsCamera.HOffset = camera.HOffset;
-        _effectsCamera.VOffset = camera.VOffset;
-    }
     private Minimap _minimap = null!;
     /// <summary>Ashley's hit and magic points, carried from room to room once she has fought.</summary>
     private int _playerHp = -1, _playerMp = -1;
@@ -317,28 +319,7 @@ void fragment() {
         AddChild(_driver);
         try { _content.Boot(_driver); }
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { Fail(error.Message); }
-        _rain = new EventRain { Name = "Rain" };
-        AddChild(_rain);
-        // The frame echo copies the scene beneath the HUD; the overlay's fades cover everything.
-        var echoLayer = new CanvasLayer { Layer = 6 };
-        _echo = new EventEcho { Name = "Echo" };
-        echoLayer.AddChild(_echo);
-        AddChild(echoLayer);
-        var overlayLayer = new CanvasLayer { Layer = 9 };
-        // An overlay layer drawn behind the room lies on a canvas layer that the field takes as its background.
-        var behindLayer = new CanvasLayer { Layer = BehindLayer, Name = "OverlayBehind" };
-        AddChild(behindLayer);
-        _overlay = new EventOverlay { Name = "Overlay", Behind = behindLayer };
-        overlayLayer.AddChild(_overlay);
-        // Effects and rain are drawn over a picture laid over the room, as the opening's fire is over the manor.
-        _effectsView = new SubViewport { Name = "EffectsView", TransparentBg = true, RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled };
-        _effectsCamera = new Camera3D { CullMask = EffectLayer };
-        _effectsView.AddChild(_effectsCamera);
-        AddChild(_effectsView);
-        _effectsOver = new TextureRect { Name = "EffectsOver", Texture = _effectsView.GetTexture(), AnchorRight = 1, AnchorBottom = 1, StretchMode = TextureRect.StretchModeEnum.Scale, MouseFilter = Control.MouseFilterEnum.Ignore, Visible = false };
-        _effectsOver.Material = new ShaderMaterial { Shader = new Shader { Code = "shader_type canvas_item;\nrender_mode blend_add;\nvoid fragment() { COLOR = vec4(texture(TEXTURE, UV).rgb, 1.0); }\n" } };
-        overlayLayer.AddChild(_effectsOver);
-        AddChild(overlayLayer);
+        _rain = new EventRain();
         _hud = new CanvasLayer { Layer = 7, Name = "Hud" };
         AddChild(_hud);
         // The HUD, the system box and the menus are laid out on retail's 320 by 240 screen, scaled by the window's
@@ -362,15 +343,9 @@ void fragment() {
         _menu = new FieldMenu { Name = "Menu" };
         _menu.Configure(this);
         _hud.AddChild(_menu);
-        var layer = new CanvasLayer { Layer = 10 };
-        // Black from the first frame: the scene change fades in with the tree paused, before the field steps its fade.
-        // Fades subtract a grey from the screen (an added one for a white fade), as a PlayStation's do: a lit room keeps
-        // its strongest colour longest, so an orange-lit cellar goes red on its way to black (retail footage).
-        // The fade reads the whole screen beneath it (room, HUD and windows) and takes the grey off in display values,
-        // as the console's subtractive blend does.
-        _screen = new ColorRect { Color = new Color(1, 1, 1, 1), AnchorRight = 1, AnchorBottom = 1, MouseFilter = Control.MouseFilterEnum.Ignore, Material = new ShaderMaterial { Shader = new Shader { Code = FadeShader } } };
-        layer.AddChild(_screen);
-        AddChild(layer);
+        // Fades are the engine's, over the whole screen (room, HUD and windows), subtracting a grey (adding a white for
+        // a white fade) in display values, as a PlayStation's do: a lit room keeps its strongest colour longest, so an
+        // orange-lit cellar goes red on its way to black (retail footage).
         if (PendingSave is { } save)
         {
             PendingSave = null;
@@ -590,19 +565,20 @@ void fragment() {
             if (Field != null)
             {
                 RememberEnemies();
+                // The screen's fade carries on into the next room's field.
+                _carriedFade = (Field.ScreenFadeMode, Field.ScreenFadeLevel, Field.ScreenFadeRate, Field.ScreenBlanked);
+                _previousField = Field;
                 RemoveChild(Field);
                 Field.QueueFree();
             }
             EnteredMarker = -1;
             _effects.Clear();
-            foreach (var balloon in _balloons.Values) balloon.QueueFree();
             _driver.StopSounds(-1);
             Actors.Clear();
             _fading.Clear();
             _materialising.Clear();
             _clipEvents.Clear();
             _dropped.Clear();
-            _balloons.Clear();
             _sounds.Clear();
             _boxes.Clear();
             _waits.Clear();
@@ -623,9 +599,9 @@ void fragment() {
             _unmapped = false;
             // A picture laid over the screen stays across a room change until a script frees it (19): the hall's credit
             // (MAP001) is wiped on before the change and off by the courtyard's script (MAP002), as retail shows it.
-            _echo.Clear();
+            _rain.Scene = null;
             _rain.Clear();
-            EventCamera = new EventCamera();
+            ResetEventCamera();
             Controlled = false;
             _control = null;
             _choice = null;
@@ -647,9 +623,9 @@ void fragment() {
                 return;
             }
             Document = document;
-            // The room's own weather starts with it, over its weather rectangle.
+            // The room's own weather starts with it, over its weather rectangle, drawn in the room's field (made below).
+            _rain.Scene = null;
             _rain.Room(document.GetValueOrDefault("weather").VariantType == Variant.Type.Dictionary ? document["weather"].AsGodotDictionary() : null);
-            ReadTextureFrames(textures);
             ReadSwings();
             ReadGroupScripts();
             // Platforms switched off from the start are not drawn.
@@ -663,9 +639,18 @@ void fragment() {
             Gameplay.Distance = Gameplay.TargetDistance;
             // Music slots outlast the room; the zone's own music replaces what its slot held.
             foreach (var (slot, asset) in document.GetValueOrDefault("music", new GDictionary()).AsGodotDictionary()) _musicSlots[slot.AsString()] = asset.AsString();
-            Field = new FieldScene { Name = "Field" };
+            Field = new FieldScene { Name = "Field", ShadowTexture = ShadowDisc, ShadowSize = new Vector2(200, 200), ShadowsSubtractDisplay = true };
+            _rain.Scene = Field;
             AddChild(Field);
             MoveChild(Field, 0);
+            Field.SetScreenFade(_carriedFade.Mode, _carriedFade.Level, _carriedFade.Rate);
+            // Effects and rain are drawn over a picture laid over the room, as the opening's fire is over the manor;
+            // and such a picture stays across a room change until a script frees it (19): the hall's credit (MAP001) is
+            // wiped on before the change and off by the courtyard's script (MAP002), as retail shows it.
+            Field.ScreenPicturesOverMask = EffectLayer;
+            if (_previousField != null && IsInstanceValid(_previousField)) Field.CarryScreenPictures(_previousField);
+            _previousField = null;
+            Field.SetScreenBlank(_carriedFade.Blank);
             var result = Field.LoadField(document, textures);
             if (result != Error.Ok)
             {
@@ -673,14 +658,6 @@ void fragment() {
                 return;
             }
             ReadRoomFaces(document);
-            foreach (var material in Field.Materials)
-            {
-                material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-                material.VertexColorIsSrgb = true;
-                material.AlbedoColor = new Color(2, 2, 2, material.AlbedoColor.A);
-            }
-            _dome = document.GetValueOrDefault("sky_colours", default).AsGodotArray() is { Count: 5 } bands ? Dome(bands) : null;
-            if (_dome != null) Field.Camera.AddChild(_dome);
             Field.DialogueFont = _content.BitmapFont("dialogue_font");
             Field.DialoguePixelAspect = PixelAspect;
             Field.Camera.Fov = 50;
@@ -712,7 +689,7 @@ void fragment() {
                 Field.CameraEye = EventActor.RetailSpace * Gameplay.Eye;
                 Field.CameraTarget = EventActor.RetailSpace * Gameplay.LookAt;
                 Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-                Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / EventCamera.DefaultProjection));
+                Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / DefaultProjection));
             }
             LoadInventory();
             Battle = new FieldBattle(this, Screen);
@@ -774,7 +751,7 @@ void fragment() {
     }
 
     /// <summary>Whether no event is running or pending, so the player would have control.</summary>
-    public bool Settled => _events != null && !Active(0) && _pendingChain.Length == 0 && _pendingTransition == null && _door == null && (EventCamera.IdleMask & 0xff) == 0xff;
+    public bool Settled => _events != null && !Active(0) && _pendingChain.Length == 0 && _pendingTransition == null && _door == null && (CameraIdle & 0xff) == 0xff;
 
     /// <summary>What the event is waiting on: the view's own waits and the open dialogue boxes, for diagnosis.</summary>
     public string WaitingOn => $"waits [{string.Join(", ", _waits.ConvertAll(w => $"{_flows[w.Id.Slot]}.{w.Id.Command}"))}] dialogues [{string.Join(", ", Field.Dialogues.Keys)}] choice {(_choice != null)} completions {_completions.Count}";
@@ -832,7 +809,7 @@ void fragment() {
         _returnSuppressed = false;
         _skippable = _skipRequested = false;
         Controlled = false;
-        EventCamera.ResetCurves();
+        Array.Clear(UserCurves);
         Events.Add(_mainEvent);
         if (!_programs.TryGetValue(eventName, out var compiled))
         {
@@ -893,6 +870,7 @@ void fragment() {
             Sound = key => PlaySound(key, 127),
             Rumble = (_, strength) => { foreach (int pad in Input.GetConnectedJoypads()) Input.StartJoyVibration(pad, Math.Min(1f, strength / 255f), Math.Min(1f, strength / 128f), 0.3f); },
         };
+        effect.Scene = Field;
         Field.Geometry.AddChild(effect);
         _effects.Add(effect);
         return effect;
@@ -949,6 +927,7 @@ void fragment() {
         _waits.RemoveAll(wait => wait.Id == id);
         _completions.Remove(id);
         Field.CancelDialogueWait(receipt);
+        Field.CancelCommand(receipt);
     }
 
     private static Vector3 Retail(GArray point) => new(point[0].AsSingle(), point[1].AsSingle(), point[2].AsSingle());
@@ -1020,33 +999,30 @@ void fragment() {
                 }
                 Battle?.ShowWeapons();
                 return Error.Ok;
-            case "actor.walk": case "actor.glide":
-            {
-                if (Actor(args) is not { } actor) return Error.Ok;
-                var target = Retail(args["position"].AsGodotArray());
-                bool snap = !args["relative"].AsBool() && target.Y == -32768;
-                if (args["relative"].AsBool()) target += actor.Position;
-                // A height of 0x8000 places the actor on the floor at its destination.
-                if (snap) target.Y = FloorHeight(target);
-                if (type == "actor.walk") actor.Walk(target, args["heading"].AsSingle(), args["speed"].AsInt32(), args["turn_speed"].AsInt32());
-                else actor.Glide(target, args["speed"].AsInt32());
-                return Error.Ok;
-            }
-            case "actor.turn":
-                Actor(args)?.TurnTo(args["heading"].AsSingle(), args["direction"].AsInt32(), args["speed"].AsSingle());
-                return Error.Ok;
-            case "actor.rotate":
-                Actor(args)?.Rotate(Retail(args["angles"].AsGodotArray()), args["relative"].AsBool(), args["speed"].AsInt32());
-                return Error.Ok;
             case "screen.echo":
             {
                 int ease = args.GetValueOrDefault("ease", 0).AsInt32(), frames = args.GetValueOrDefault("frames", 0).AsInt32();
-                if (args.ContainsKey("preset")) _echo.Preset(args["preset"].AsInt32());
-                if (args.ContainsKey("enabled")) _echo.Enable(args["enabled"].AsBool());
-                if (args.ContainsKey("mode")) _echo.Blend(args["mode"].AsInt32());
-                if (args.ContainsKey("scale")) { var v = args["scale"].AsGodotArray(); _echo.Zoom(v[0].AsSingle(), v[1].AsSingle(), ease, frames); }
-                if (args.ContainsKey("tint")) { var v = args["tint"].AsGodotArray(); _echo.Tint(v[0].AsInt32(), v[1].AsInt32(), v[2].AsInt32(), ease, frames); }
-                if (args.ContainsKey("offset")) { var v = args["offset"].AsGodotArray(); _echo.Offset(v[0].AsInt32(), v[1].AsInt32(), ease, frames); }
+                // The engine's echo, under the HUD (layer 6): e1 starts it or stops it two frames on; e4 scale (0x20
+                // is 1), e5 tint (0x80 neutral), e6 offset in screen pixels, each eased over event frames; e7 its blend.
+                var echo = Field.Echo(6);
+                var curve = Ease(ease);
+                int ticks = EventTicks(frames);
+                if (args.ContainsKey("preset"))
+                {
+                    // Retail bf: 0 resets it; otherwise this frame again over itself, half and half, two pixels low and
+                    // slightly bright, leaving no trail (Episode 3, 7:45: a knight rising before the camera stays solid).
+                    echo.Clear();
+                    if (args["preset"].AsInt32() != 0)
+                    {
+                        echo.Enable(true, trail: false);
+                        echo.Ease(null, new Vector3(144, 144, 144) / 128f, new Vector2(0, 2f / VisibleLines), curve, 0);
+                    }
+                }
+                if (args.ContainsKey("enabled")) echo.Enable(args["enabled"].AsBool(), stopTicks: EventTicks(2));
+                if (args.ContainsKey("mode")) echo.Blend((Wol.Engine.World.ScreenEchoBlend)(args["mode"].AsInt32() & 3));
+                if (args.ContainsKey("scale")) { var v = args["scale"].AsGodotArray(); echo.Ease(new Vector2(v[0].AsSingle(), v[1].AsSingle()), null, null, curve, ticks); }
+                if (args.ContainsKey("tint")) { var v = args["tint"].AsGodotArray(); echo.Ease(null, new Vector3(v[0].AsInt32(), v[1].AsInt32(), v[2].AsInt32()) / 128f, null, curve, ticks); }
+                if (args.ContainsKey("offset")) { var v = args["offset"].AsGodotArray(); echo.Ease(null, null, new Vector2(v[0].AsInt32() / 320f, v[1].AsInt32() / (float)VisibleLines), curve, ticks); }
                 return Error.Ok;
             }
             case "room.cutaway":
@@ -1071,9 +1047,6 @@ void fragment() {
                     looking.LookPoint = args.ContainsKey("point") ? Retail(args["point"].AsGodotArray()) : null;
                     looking.LookTarget = args.ContainsKey("target") ? Actor(args, "target") : null;
                 }
-                return Error.Ok;
-            case "actor.sway":
-                foreach (var swaying in Targets(args)) { swaying.SwayPeriod = args["period"].AsInt32(); swaying.SwayCount = 0; }
                 return Error.Ok;
             case "room.animation":
             {
@@ -1125,21 +1098,6 @@ void fragment() {
                 if (args["hidden"].AsBool()) _hiddenGroups.Add(args["group"].AsInt32());
                 else _hiddenGroups.Remove(args["group"].AsInt32());
                 return Error.Ok;
-            case "actor.scale":
-                Actor(args)?.ScaleTo(Retail(args["scale"].AsGodotArray()) / 4096f, args["frames"].AsInt32());
-                return Error.Ok;
-            case "actor.animate":
-            {
-                // An animation the base set has no slot for plays animation 0 instead (BATTLE.PRG 0x800A0204 looks
-                // it up again as 0), when there is one.
-                string clip = $"{args["set"].AsString()}_{args["number"].AsInt32()}";
-                if (Actor(args) is { } animated && !animated.HasClip(clip) && args["set"].AsString() == "base") clip = "base_0";
-                Actor(args)?.Animate(clip, args["blend"].AsInt32(), args.GetValueOrDefault("skip", 0).AsInt32());
-            }
-                return Error.Ok;
-            case "actor.queue":
-                Actor(args)?.Queue($"{args["set"].AsString()}_{args["number"].AsInt32()}", args["blend"].AsInt32());
-                return Error.Ok;
             case "actor.delete":
                 // The retail target list ends at slot 1, so a reference that resolves to slot 1 deletes nothing.
                 foreach (var actor in new List<EventActor>(Targets(args)))
@@ -1161,7 +1119,7 @@ void fragment() {
             case "text.duration":
                 if (_boxes.TryGetValue(args["box"].AsInt32(), out var opened)) opened["open_frames"] = args["frames"];
                 // A balloon already up (or closing) takes the new time too.
-                if (_balloons.TryGetValue(args["box"].AsInt32(), out var retimed)) retimed.Retime(args["frames"].AsInt32());
+                Field.RetimeDialogueShape("box" + args["box"].AsInt32(), EventTicks(args["frames"].AsInt32()));
                 return Error.Ok;
             case "wait.button":
             {
@@ -1171,13 +1129,6 @@ void fragment() {
                 bool timed = remaining > 0;
                 _pressedButtons = 0;
                 _waits.Add((id, () => (_pressedButtons & mask) != 0 || timed && --remaining <= 0));
-                return Error.Ok;
-            }
-            case "actor.wait":
-            {
-                var actor = Actor(args);
-                int mask = args["mask"].AsInt32();
-                _waits.Add((id, () => actor == null || (actor.Waiting & mask) == 0));
                 return Error.Ok;
             }
             case "actor.attach":
@@ -1196,58 +1147,98 @@ void fragment() {
                 if (Actor(args) is { } tinted) Tint(tinted, Retail(args["color"].AsGodotArray()));
                 return Error.Ok;
             case "camera.stage":
-                EventCamera.Stage(Channel(args), Retail(args["position"].AsGodotArray()));
+                Field.SetCameraPoint(Part(args), true, EventActor.RetailSpace * Retail(args["position"].AsGodotArray()));
                 return Error.Ok;
             case "camera.stage_bone":
             {
                 if (Actor(args) is not { } actor) return Error.Ok;
                 var offset = Retail(args["offset"].AsGodotArray());
                 if (args["local"].AsBool()) offset = new Basis(Vector3.Up, actor.Facing * Mathf.Tau / 4096f) * offset;
-                EventCamera.Stage(Channel(args), actor.BonePosition(args["bone"].AsInt32()) + offset);
+                Field.SetCameraPoint(Part(args), true, EventActor.RetailSpace * (actor.BonePosition(args["bone"].AsInt32()) + offset));
                 return Error.Ok;
             }
             case "camera.snap":
-                EventCamera.Snap(Channel(args));
+                Field.SnapCamera(Part(args), Field.CameraPoints[(int)Part(args)].End);
+                _eventCamera = true;
                 return Error.Ok;
             case "camera.move":
             {
-                Func<Vector3>? track = null;
-                if (args["mode"].AsString() == "track" && Actor(args) is { } actor)
+                // Retail's paths in retail space: its headings turn the other way about the engine's up, so an orbit's
+                // way round and a turn's angle flip; a turn's height is a retail height.
+                var part = Part(args);
+                var path = args["mode"].AsString() switch
                 {
-                    int bone = args["bone"].AsInt32();
-                    var offset = Retail(args["offset"].AsGodotArray());
-                    track = () => actor.BonePosition(bone) + offset;
-                }
-                EventCamera.Move(Channel(args), args, track);
+                    "radius" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Radius),
+                    "orbit" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Orbit, Heading: Ease(args.GetValueOrDefault("yaw_ease", 0).AsInt32()),
+                        Distance: Ease(args.GetValueOrDefault("radius_ease", 0).AsInt32()), Height: Ease(args.GetValueOrDefault("height_ease", 0).AsInt32()),
+                        Direction: args.GetValueOrDefault("direction", 0).AsInt32() switch { 1 => -1, 0xf => 1, _ => 0 }),
+                    "turn" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Turn, Heading: Ease(args.GetValueOrDefault("yaw_ease", 0).AsInt32()),
+                        Distance: Ease(args.GetValueOrDefault("radius_ease", 0).AsInt32()), Height: Ease(args.GetValueOrDefault("height_ease", 0).AsInt32()),
+                        Turn: -args.GetValueOrDefault("yaw", 0).AsSingle() * Mathf.Tau / 4096, DistanceScale: args.GetValueOrDefault("radius_scale", 64).AsSingle() / 64f,
+                        EndHeight: -args.GetValueOrDefault("height", 0).AsSingle() / Installation.MapConversion.UnitsPerMetre),
+                    "follow" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Follow),
+                    "track" when Actor(args) is { } tracked => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Actor, Actor: tracked.Id,
+                        Anchor: tracked.BoneAnchor(args["bone"].AsInt32()), Offset: EventActor.RetailSpace.Basis * Retail(args["offset"].AsGodotArray())),
+                    _ => new Wol.Engine.World.CameraPath(),
+                };
+                if (path.Kind == Wol.Engine.World.CameraPathKind.Line && args["mode"].AsString() == "track") return Error.Ok;
+                // A move goes to the point as staged each frame: staging another retargets it, as retail's does.
+                Field.GuideCamera(part, Field.CameraPoints[(int)part].End, EventTicks(Math.Max(1, args["frames"].AsInt32())), Ease(args.GetValueOrDefault("ease", 0).AsInt32()), path, followsStaged: true);
+                _eventCamera = true;
                 return Error.Ok;
             }
             case "camera.wait":
             {
                 int mask = args["mask"].AsInt32();
-                _waits.Add((id, () => (EventCamera.IdleMask & mask) == mask));
+                _waits.Add((id, () => (CameraIdle & mask) == mask));
                 return Error.Ok;
             }
             case "camera.roll":
-                EventCamera.SetRoll(args["angle"].AsInt32(), args["direction"].AsInt32(), args["ease"].AsInt32(), args["frames"].AsInt32());
+            {
+                // Direction 0 turns down the angles, 2 up them; anything else takes the shorter way.
+                float current = Field.CameraRoll * 4096 / Mathf.Tau, delta = Mathf.PosMod(args["angle"].AsInt32() - current, 4096);
+                int direction = args["direction"].AsInt32();
+                if (direction == 0) delta -= 4096;
+                else if (direction != 2 && delta > 2048) delta -= 4096;
+                Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, Field.CameraRoll + delta * Mathf.Tau / 4096, EventTicks(args["frames"].AsInt32()), ease: Ease(args["ease"].AsInt32()));
                 return Error.Ok;
+            }
             case "camera.lens":
-                EventCamera.SetLens(args["property"].AsString(), args["value"].AsInt32(), args["ease"].AsInt32(), args["frames"].AsInt32());
+            {
+                int value = args["value"].AsInt32();
+                switch (args["property"].AsString())
+                {
+                    case "projection":
+                        // The projection distance (GTE H, 4 a step) as the view's 1 / tan(half its height's angle).
+                        float distance = value == 0 ? DefaultProjection : value * 4;
+                        int frames = args["frames"].AsInt32();
+                        Field.SetCameraScalar(Wol.Engine.World.CameraPart.Projection, distance / (VisibleLines / 2f), frames == 0 ? 1 : EventTicks(frames), ease: Ease(args["ease"].AsInt32()));
+                        break;
+                    case "near": _eventNear = value == 0 ? 64 : value; break;
+                    case "far": _eventFar = value == 0 ? 4096 : value * 128; break;
+                }
                 return Error.Ok;
+            }
             case "camera.shake":
-                EventCamera.SetShake(args["cycles"].AsInt32(), args["amplitude"].AsInt32(), args["axes"].AsInt32(), args["envelope"].AsInt32(), args["frames"].AsInt32());
+            {
+                // Axes as -1, 0 or 1 for x, y and z (bits 2, 4 and 6), for the look-at (bit 0) and eye (bit 1).
+                int axes = args["axes"].AsInt32();
+                int Factor(int shift) => ((axes >> shift) & 3) - 1;
+                var factors = EventActor.RetailSpace.Basis.Orthonormalized() * new Vector3(Factor(2), Factor(4), Factor(6));
+                Field.ShakeCameraWave(args["cycles"].AsInt32(), args["amplitude"].AsInt32() / Installation.MapConversion.UnitsPerMetre, (axes & 2) != 0 ? factors : Vector3.Zero,
+                    (axes & 1) != 0 ? factors : Vector3.Zero, (Wol.Engine.World.CameraShakeEnvelope)(args["envelope"].AsInt32() & 3), EventTicks(args["frames"].AsInt32()));
                 return Error.Ok;
+            }
             case "screen.fade":
             {
-                bool fadeOut = args["direction"].AsString() == "out";
-                _fadeSpeed = (fadeOut ? 1 : -1) * args["speed"].AsInt32() / 255f;
-                _fadeWhite = args["effect"].AsInt32() == 1;
-                if (awaited) _waits.Add((id, () => _fade >= 1));
+                FadeScreen(args["direction"].AsString() == "out", args["speed"].AsInt32(), args["effect"].AsInt32() == 1);
+                if (awaited) _waits.Add((id, () => Field.ScreenFadeLevel >= 1));
                 return Error.Ok;
             }
             case "screen.display":
             {
                 int switches = args["switches"].AsInt32();
-                if ((switches & 3) < 2) _displayOn = (switches & 3) == 1;
+                if ((switches & 3) < 2) Field.SetScreenBlank((switches & 3) != 1);
                 return Error.Ok;
             }
             case "text.box":
@@ -1314,13 +1305,14 @@ void fragment() {
                     tallest = Math.Max(tallest, text[start..end].TrimEnd('\n').Split('\n').Length);
                 }
                 int padding = Math.Max(2, (geometry["height"].AsInt32() - tallest * Installation.DialogueConversion.LineHeight) / 2);
+                var (shape, shapeFrames) = balloon ? Balloon(geometry, flags) : (null, 0);
                 var style = new DialogueStyle(new Vector2(geometry["x"].AsInt32(), geometry["y"].AsInt32()), new Vector2(geometry["width"].AsInt32(), geometry["height"].AsInt32()),
-                    new Vector2(5, padding), Frameless: balloon, ShowPortrait: false, Wrap: false, Alignment: centred ? HorizontalAlignment.Center : HorizontalAlignment.Left);
+                    new Vector2(5, padding), Frameless: balloon, ShowPortrait: false, Wrap: false, Alignment: centred ? HorizontalAlignment.Center : HorizontalAlignment.Left,
+                    Shape: shape, ShapeTicks: EventTicks(shapeFrames));
                 var loaded = DialogueMessage.Load(new GDictionary { ["text"] = text, ["tokens"] = kept }, out var dialogue);
                 if (loaded != Error.Ok) return loaded;
                 var result = Field.OpenDialogue("box" + box, dialogue!, style);
                 if (result != Error.Ok) return result;
-                if (balloon) OpenBalloon(box, geometry, flags);
                 if (!awaited) return Error.Ok;
                 return Field.WaitForDialogue("box" + box, id, (in PresentationReceipt receipt, in DialogueAnswer _) => _completions.Add(receipt));
             }
@@ -1506,8 +1498,7 @@ void fragment() {
             case "overlay.load":
                 try
                 {
-                    _overlay.Load(_content.Overlay(args["overlay"].AsInt32()));
-                    ShowBehind();
+                    Field.LoadScreenPictures(_content.Overlay(args["overlay"].AsInt32()));
                 }
                 catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException or System.Collections.Generic.KeyNotFoundException)
                 {
@@ -1515,30 +1506,50 @@ void fragment() {
                 }
                 return Error.Ok;
             case "overlay.set":
-                _overlay.Set(args["layer"].AsInt32(), args["mode"].AsInt32(), new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(), args["brightness"].AsSingle(), args.GetValueOrDefault("behind", false).AsBool());
-                ShowBehind();
+            {
+                // A layer's mode (BATTLE.PRG's table at 0x800EC25C): 0 over the frame, 1 added while it fades, 3 added
+                // at a quarter, 2 the staff credits' wipe (0x800CC204), its edge ragged: each row 320 plus the sine, in
+                // eighths, of an angle that walks toward random targets by random steps (0x800C8550). 128 is full brightness.
+                int mode = args["mode"].AsInt32();
+                var rows = new int[240];
+                if (mode == 2)
+                {
+                    int angle = _random.Next(512), target = _random.Next(1024);
+                    for (int y = 0; y < 240; y++)
+                    {
+                        rows[y] = (int)(Math.Sin(angle * Math.Tau / 4096) * 4096) / 8 + 320;
+                        int step = _random.Next(256) - 64, next = _random.Next(1024);
+                        if (target < angle) { angle -= step; if (target >= angle) target = next; }
+                        else { angle += step; if (angle >= target) target = next; }
+                        if (angle < 0) { angle = 128; target = _random.Next(1024); }
+                    }
+                }
+                var blend = mode switch { 1 => Wol.Engine.World.ScreenPictureBlend.AddUntilFull, 2 => Wol.Engine.World.ScreenPictureBlend.Wipe, 3 => Wol.Engine.World.ScreenPictureBlend.QuarterAdd, _ => Wol.Engine.World.ScreenPictureBlend.Over };
+                Field.SetScreenPicture(Math.Min(args["layer"].AsInt32(), 2), blend, new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(),
+                    mode == 2 ? args["brightness"].AsSingle() : args["brightness"].AsSingle() / 128f, args.GetValueOrDefault("behind", false).AsBool(), rows);
+            }
                 return Error.Ok;
             case "overlay.move":
-                _overlay.Move(args["layer"].AsInt32(), new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(), args["brightness"].AsSingle(), args["ease"].AsInt32(), args["frames"].AsInt32());
+                Field.EaseScreenPicture(Math.Min(args["layer"].AsInt32(), 2), new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(), args["brightness"].AsSingle() / 128f,
+                    Ease(args["ease"].AsInt32()), EventTicks(args["frames"].AsInt32()));
                 return Error.Ok;
             case "overlay.wait":
-                _waits.Add((id, () => _overlay.Idle));
+                _waits.Add((id, () => Field.ScreenPicturesIdle));
                 return Error.Ok;
             case "overlay.free":
-                _overlay.Clear();
-                ShowBehind();
+                Field.ClearScreenPictures();
                 return Error.Ok;
             case "ease.define":
-                EventCamera.DefineCurve(args["slot"].AsInt32(), args["shape"].AsInt32(), args["power"].AsInt32());
+                UserCurves[args["slot"].AsInt32() & 3] = (args["shape"].AsInt32() & 3, args["power"].AsInt32());
                 return Error.Ok;
             case "camera.anchor":
-                EventCamera.Anchor(Actor(args) is { } anchor ? () => anchor.Position : null);
+                Field.SetCameraAnchor(Actor(args) is { } anchor ? anchor.Id : "");
                 return Error.Ok;
             case "camera.momentum":
-                EventCamera.Momentum(args["look_at"].AsBool(), args["eye"].AsBool());
+                Field.SetCameraMomentum(args["eye"].AsBool(), args["look_at"].AsBool());
                 return Error.Ok;
             case "camera.stop":
-                EventCamera.Stop();
+                Field.StopCameraPoints();
                 return Error.Ok;
             case "music.halt":
                 _musicFade?.Kill();
@@ -1585,7 +1596,7 @@ void fragment() {
             }
             case "screen.wait":
                 // Waits while the screen is still fading.
-                _waits.Add((id, () => _fadeSpeed == 0 || _fadeSpeed > 0 && _fade >= 1 || _fadeSpeed < 0 && _fade <= 0));
+                _waits.Add((id, () => !Field.ScreenFading));
                 return Error.Ok;
             case "actor.collapse":
                 foreach (var falling in Targets(args))
@@ -1824,9 +1835,42 @@ void fragment() {
             case "event.chain":
                 _pendingChain = "event_" + args["event"].AsString();
                 return Error.Ok;
+            case "actor.walk": case "actor.glide": case "actor.turn": case "actor.shape": case "actor.sway": case "actor.play": case "actor.queue": case "actor.wait":
+                return Engine(id, type, args, awaited);
             default:
                 return Error.Unavailable;
         }
+    }
+
+    /// <summary>
+    /// Hands one of the engine's own commands on, for the actor its reference names in this room (each, for a sway),
+    /// with the floor's height where it asks for it and the clip's set loaded. A base clip the rig has no slot for plays
+    /// clip 0 instead (BATTLE.PRG 0x800A0204 looks it up again as 0). A wait on no actor is over at once.
+    /// </summary>
+    private Error Engine(PresentationReceipt id, string type, GDictionary args, bool awaited)
+    {
+        var targets = type == "actor.sway" ? new List<EventActor>(Targets(args)) : Actor(args) is { } one ? new List<EventActor> { one } : new List<EventActor>();
+        if (targets.Count == 0 && type == "actor.wait") { _completions.Add(id); return Error.Ok; }
+        foreach (var actor in targets)
+        {
+            var own = args.Duplicate();
+            own["actor"] = actor.Id;
+            if (own.GetValueOrDefault("ground", false).AsBool())
+            {
+                var point = own["destination"].AsGodotArray();
+                var retail = EventActor.RetailSpace.AffineInverse() * new Vector3(point[0].AsSingle(), point[1].AsSingle(), point[2].AsSingle());
+                var grounded = EventActor.RetailSpace * (retail with { Y = FloorHeight(retail) });
+                own["destination"] = new GArray { grounded.X, grounded.Y, grounded.Z };
+            }
+            if (own.TryGetValue("clip", out var named) && !actor.HasClip(named.AsString()))
+            {
+                if (named.AsString().StartsWith("base_", StringComparison.Ordinal) && actor.HasClip("base_0")) own["clip"] = "base_0";
+                else continue;
+            }
+            var error = Field.Present(id, new Wol.Engine.World.FieldCommand(type, own, awaited), done => _completions.Add(done));
+            if (error != Error.Ok) return error;
+        }
+        return Error.Ok;
     }
 
     /// <summary>
@@ -1836,7 +1880,7 @@ void fragment() {
     /// <summary>The running script's own balloon shapes (9 to 15), by number.</summary>
     private GDictionary _scriptBalloons = new();
 
-    private void OpenBalloon(int box, GDictionary geometry, int flags)
+    private (Wol.Engine.World.DialogueShape?, int) Balloon(GDictionary geometry, int flags)
     {
         try
         {
@@ -1846,37 +1890,72 @@ void fragment() {
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException)
         {
             Fail(error.Message);
-            return;
+            return (null, 0);
         }
-        int type = flags & 15, shape = type == 1 ? 0 : type == 5 ? 2 : (flags >> 8) & 15;
+        int type = flags & 15, number = type == 1 ? 0 : type == 5 ? 2 : (flags >> 8) & 15;
         var shapes = _balloonShapes["shapes"].AsGodotArray();
         // Shapes 9 to 15 are the running script's own; a box with none there has no balloon (0x800CCE54).
-        var outline = shape < shapes.Count ? shapes[shape].AsGodotDictionary() : _scriptBalloons.GetValueOrDefault(shape.ToString()).AsGodotDictionary();
-        if (outline == null || outline.Count == 0) return;
-        if (_balloons.Remove(box, out var previous)) previous.QueueFree();
-        var balloon = new EventBalloon { Name = "Balloon" + box };
+        var shape = number < shapes.Count ? shapes[number].AsGodotDictionary() : _scriptBalloons.GetValueOrDefault(number.ToString()).AsGodotDictionary();
+        if (shape == null || shape.Count == 0) return (null, 0);
         // Open times in frames: {10, 20, 10, 8} by the flags' speed field, unless the script set one (1d).
         int frames = geometry.ContainsKey("open_frames") ? geometry["open_frames"].AsInt32() : ((0x45A5 >> (((flags >> 4) & 3) * 4)) & 0xF) * 2;
-        var rect = new Rect2(geometry["x"].AsSingle(), geometry["y"].AsSingle(), geometry["width"].AsSingle(), geometry["height"].AsSingle());
-        balloon.Configure(outline, _paper, rect, flags, frames);
-        var panel = Field.Dialogues["box" + box].Panel;
-        Field.DialogueLayer.AddChild(balloon);
-        Field.DialogueLayer.MoveChild(balloon, panel.GetIndex());
-        panel.Visible = false;
-        _balloons[box] = balloon;
-    }
-
-    /// <summary>Opens and closes balloons by one event frame, showing text once open and closing after its dialogue.</summary>
-    private void StepBalloons()
-    {
-        foreach (var (box, balloon) in new List<KeyValuePair<int, EventBalloon>>(_balloons))
+        var size = new Vector2(geometry["width"].AsSingle(), geometry["height"].AsSingle());
+        // The field engine's balloon table: an outline scaled across the box (its 0-255 space), one tail part chosen
+        // by the flags (bits 12-15, offsets from the attach vertex), flipped by bits 6-7; filled with the paper tile
+        // (repeating every 64 screen pixels), a grey outline and a black shadow two pixels down and right.
+        int flip = (flags >> 6) & 3, tail = (flags >> 12) & 15;
+        var parts = shape["parts"].AsGodotArray();
+        var vertices = shape["vertices"].AsGodotArray();
+        var polygons = shape["polygons"].AsGodotArray();
+        int total = vertices.Count, outline = parts[0].AsGodotArray()[2].AsInt32();
+        Vector2I Flip(int x, int y) => new((flip & 2) != 0 ? 255 - x : x, (flip & 1) != 0 ? 255 - y : y);
+        var points = new List<Vector2>();
+        for (int i = 0; i < outline; i++)
         {
-            bool showing = Field.Dialogues.TryGetValue("box" + box, out var dialogue);
-            if (!showing) balloon.Closing = true;
-            balloon.Step();
-            if (showing && balloon.Open) dialogue!.Panel.Visible = true;
-            if (balloon.Closed) { _balloons.Remove(box); balloon.QueueFree(); }
+            var v = vertices[i].AsGodotArray();
+            var p = Flip(v[0].AsInt32(), v[1].AsInt32());
+            points.Add(new Vector2(p.X * size.X / 256f, p.Y * size.Y / 256f));
         }
+        bool hasTail = tail >= 1 && tail < parts.Count;
+        int attach = hasTail ? parts[tail].AsGodotArray()[0].AsInt32() : -1;
+        var anchor = attach >= 0 ? vertices[attach].AsGodotArray() : null;
+        for (int i = outline; i < total; i++)
+        {
+            var v = vertices[i].AsGodotArray();
+            var o = Flip(v[0].AsInt32(), v[1].AsInt32());
+            int dx = (sbyte)(byte)o.X, dy = (sbyte)(byte)o.Y;
+            var a = anchor != null ? Flip(anchor[0].AsInt32(), anchor[1].AsInt32()) : Vector2I.Zero;
+            points.Add(new Vector2((dx + a.X) * size.X / 256f, (dy + a.Y) * size.Y / 256f));
+        }
+        int[] Indices(GArray polygon)
+        {
+            var indices = new List<int> { polygon[0].AsInt32(), polygon[1].AsInt32(), polygon[2].AsInt32() };
+            if (polygon[3].AsInt32() != 0xFF) indices.Add(polygon[3].AsInt32());
+            return indices.ToArray();
+        }
+        var faces = new List<int[]>();
+        foreach (var polygon in polygons[0].AsGodotArray()) faces.Add(Indices(polygon.AsGodotArray()));
+        if (hasTail) foreach (var polygon in polygons[tail].AsGodotArray()) faces.Add(Indices(polygon.AsGodotArray()));
+        // The outline runs round the body; at the tail's attach vertex it detours through the tail's vertices.
+        var edges = new List<(int, int)>();
+        int tailStart = outline;
+        for (int part = 1; part < tail && hasTail; part++) tailStart += parts[part].AsGodotArray()[2].AsInt32();
+        int resume = hasTail ? parts[tail].AsGodotArray()[1].AsInt32() : -1;
+        int tailCount = hasTail ? parts[tail].AsGodotArray()[2].AsInt32() : 0;
+        for (int n = 0; n < outline; n++)
+        {
+            int from = n;
+            if (n == attach)
+            {
+                for (int k = 0; k < tailCount; k++) { edges.Add((from, tailStart + k)); from = tailStart + k; }
+                edges.Add((from, resume));
+                n = resume;
+                if (n == 0) break;
+                from = n;
+            }
+            edges.Add((from, (n + 1) % outline));
+        }
+        return (new Wol.Engine.World.DialogueShape(points.ToArray(), faces.ToArray(), edges.ToArray(), _paper, 64, Color.Color8(48, 48, 48), new Vector2(2, 2)), frames);
     }
 
     /// <summary>
@@ -1889,18 +1968,28 @@ void fragment() {
         Gameplay.Place(ashley.Position);
         var look = Gameplay.LookAt;
         var eye = Gameplay.Eye;
-        int frames = (int)(((eye - EventCamera.EyePosition).Length() + (look - EventCamera.LookAtPosition).Length()) / 40);
-        EventCamera.Stage(EventCamera.LookAt, look);
-        EventCamera.Stage(EventCamera.Eye, eye);
+        int frames = (int)(((eye - EventEye).Length() + (look - EventLookAt).Length()) / 40);
+        Field.SetCameraAnchor("");
         // Before any event has placed the camera in this room it already stands where play puts it (the room's entry
         // script hands control back at once in retail), so there is nothing to ease back from.
-        if (immediate || !EventCamera.Active) { EventCamera.Snap(EventCamera.LookAt); EventCamera.Snap(EventCamera.Eye); return; }
+        if (immediate || !_eventCamera)
+        {
+            Field.SetCameraPoint(Wol.Engine.World.CameraPart.Target, true, EventActor.RetailSpace * look);
+            Field.SetCameraPoint(Wol.Engine.World.CameraPart.Eye, true, EventActor.RetailSpace * eye);
+            Field.SnapCamera(Wol.Engine.World.CameraPart.Target, EventActor.RetailSpace * look);
+            Field.SnapCamera(Wol.Engine.World.CameraPart.Eye, EventActor.RetailSpace * eye);
+            return;
+        }
         if (frames == 0) return;
-        EventCamera.Move(EventCamera.LookAt, new GDictionary { ["mode"] = "line", ["ease"] = 2, ["frames"] = frames });
-        EventCamera.Move(EventCamera.Eye, new GDictionary { ["mode"] = "orbit", ["yaw_ease"] = 2, ["radius_ease"] = 2, ["height_ease"] = 2, ["frames"] = frames });
+        var inOut = Ease(2);
+        Field.SetCameraPoint(Wol.Engine.World.CameraPart.Target, true, EventActor.RetailSpace * look);
+        Field.SetCameraPoint(Wol.Engine.World.CameraPart.Eye, true, EventActor.RetailSpace * eye);
+        Field.GuideCamera(Wol.Engine.World.CameraPart.Target, EventActor.RetailSpace * look, EventTicks(frames), inOut, new(), followsStaged: true);
+        Field.GuideCamera(Wol.Engine.World.CameraPart.Eye, EventActor.RetailSpace * eye, EventTicks(frames), inOut,
+            new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Orbit, Heading: inOut, Distance: inOut, Height: inOut), followsStaged: true);
     }
 
-    private static int Channel(GDictionary args) => args["channel"].AsString() == "eye" ? EventCamera.Eye : EventCamera.LookAt;
+    private static Wol.Engine.World.CameraPart Part(GDictionary args) => args["channel"].AsString() == "eye" ? Wol.Engine.World.CameraPart.Eye : Wol.Engine.World.CameraPart.Target;
 
     /// <summary>
     /// A palette transform in effect: every colour of the palettes is <c>scale * original + grey * grey(original) +
@@ -1915,7 +2004,6 @@ void fragment() {
         public bool Add;
         public (float Scale, float Grey, Vector3 Offset) From, To;
         public int Frames, Elapsed;
-        public readonly Dictionary<StandardMaterial3D, ShaderMaterial> Shaders = new();
         public bool Identity => Scale == 1 && Grey == 0 && Offset == Vector3.Zero && Floor == Vector3.Zero && !Add;
     }
 
@@ -1991,7 +2079,7 @@ void fragment() {
                 palette.Grey = Mathf.Lerp(palette.From.Grey, palette.To.Grey, t);
                 palette.Offset = palette.From.Offset.Lerp(palette.To.Offset, t);
             }
-            if (!palette.Identity || palette.Shaders.Count > 0) ShowPalette(target, palette);
+            ShowPalette(target, palette);
         }
     }
 
@@ -2003,35 +2091,10 @@ void fragment() {
     private void ShowPalette(string target, Palette palette)
     {
         if (Field == null) return;
-        var nodes = new List<Node3D>();
-        foreach (var (key, node) in Field.Actors)
-            if (target == "room" ? int.TryParse(key, out _) : key == target) nodes.Add(node);
-        bool identity = palette.Identity;
-        foreach (var root in nodes)
-            foreach (var found in root.FindChildren("*", "MeshInstance3D", true, false))
-            {
-                var mesh = (MeshInstance3D)found;
-                for (int surface = 0; surface < mesh.Mesh.GetSurfaceCount(); surface++)
-                {
-                    if (mesh.Mesh.SurfaceGetMaterial(surface) is not StandardMaterial3D material) continue;
-                    if (identity) { mesh.SetSurfaceOverrideMaterial(surface, null); continue; }
-                    if (!palette.Shaders.TryGetValue(material, out var shader))
-                    {
-                        if (PaletteShader(material, palette.Add) is not { } made) continue;
-                        palette.Shaders[material] = shader = made;
-                    }
-                    // The material's colour and texture scroll can change while the copy stands in for it.
-                    shader.SetShaderParameter("albedo", material.AlbedoColor);
-                    shader.SetShaderParameter("uv1_offset", material.Uv1Offset);
-                    shader.SetShaderParameter("distance_fade_min", material.DistanceFadeMinDistance);
-                    shader.SetShaderParameter("palette_scale", palette.Scale);
-                    shader.SetShaderParameter("palette_grey", palette.Grey);
-                    shader.SetShaderParameter("palette_offset", palette.Offset);
-                    shader.SetShaderParameter("palette_floor", palette.Floor);
-                    mesh.SetSurfaceOverrideMaterial(surface, shader);
-                }
-            }
-        if (identity) palette.Shaders.Clear();
+        var ids = new List<string>();
+        foreach (var key in Field.Actors.Keys)
+            if (target == "room" ? int.TryParse(key, out _) : key == target) ids.Add(key);
+        Field.SetColourTransform(ids, new Wol.Engine.World.ColourTransform(palette.Scale, palette.Grey, palette.Offset, palette.Floor, palette.Add));
     }
 
     /// <summary>
@@ -2040,64 +2103,6 @@ void fragment() {
     /// colours and near cut) with the palette transform applied to its texel; <paramref name="add"/> adds it to the
     /// screen whatever the material's blend.
     /// </summary>
-    private static ShaderMaterial? PaletteShader(StandardMaterial3D material, bool add)
-    {
-        // Untextured polygons take no palette; billboards keep their material.
-        if (material.BillboardMode != BaseMaterial3D.BillboardModeEnum.Disabled || material.AlbedoTexture == null) return null;
-        var modes = new List<string>
-        {
-            add ? "blend_add" : material.BlendMode switch { BaseMaterial3D.BlendModeEnum.Add => "blend_add", BaseMaterial3D.BlendModeEnum.Sub => "blend_sub", _ => "blend_mix" },
-            material.CullMode switch { BaseMaterial3D.CullModeEnum.Back => "cull_back", BaseMaterial3D.CullModeEnum.Front => "cull_front", _ => "cull_disabled" },
-            material.DepthDrawMode == BaseMaterial3D.DepthDrawModeEnum.Disabled ? "depth_draw_never" : "depth_draw_opaque",
-        };
-        if (material.ShadingMode == BaseMaterial3D.ShadingModeEnum.Unshaded) modes.Add("unshaded");
-        string filter = material.TextureFilter switch
-        {
-            BaseMaterial3D.TextureFilterEnum.Linear => "filter_linear",
-            BaseMaterial3D.TextureFilterEnum.NearestWithMipmaps => "filter_nearest_mipmap",
-            BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps => "filter_linear_mipmap",
-            _ => "filter_nearest",
-        };
-        string alpha = material.Transparency switch
-        {
-            BaseMaterial3D.TransparencyEnum.AlphaScissor => "\tALPHA = albedo.a * texel.a;\n\tALPHA_SCISSOR_THRESHOLD = 0.5;\n",
-            BaseMaterial3D.TransparencyEnum.Alpha => "\tALPHA = albedo.a * texel.a;\n",
-            _ => "",
-        };
-        string code = $$"""
-            shader_type spatial;
-            render_mode {{string.Join(", ", modes)}};
-            uniform vec4 albedo : source_color = vec4(1.0);
-            uniform sampler2D texture_albedo : source_color, {{filter}}, repeat_enable;
-            uniform vec3 uv1_offset = vec3(0.0);
-            uniform float distance_fade_min = 0.0;
-            uniform float palette_scale = 1.0;
-            uniform float palette_grey = 0.0;
-            uniform vec3 palette_offset = vec3(0.0);
-            uniform vec3 palette_floor = vec3(0.0);
-
-            vec3 palette_apply(vec3 linear_colour) {
-            	vec3 c = mix(1.055 * pow(linear_colour, vec3(1.0 / 2.4)) - 0.055, linear_colour * 12.92, lessThan(linear_colour, vec3(0.0031308)));
-            	c = max(clamp(c * palette_scale + vec3(dot(c, vec3(2.0, 3.0, 1.0) / 6.0)) * palette_grey + palette_offset, 0.0, 1.0), palette_floor);
-            	return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
-            }
-
-            void vertex() {
-            	UV = UV + uv1_offset.xy;
-            {{(material.VertexColorIsSrgb ? "\tif (!OUTPUT_IS_SRGB) { COLOR.rgb = mix(pow((COLOR.rgb + vec3(0.055)) * (1.0 / (1.0 + 0.055)), vec3(2.4)), COLOR.rgb * (1.0 / 12.92), lessThan(COLOR.rgb, vec3(0.04045))); }\n" : "")}}}
-
-            void fragment() {
-            {{(material.DistanceFadeMode != BaseMaterial3D.DistanceFadeModeEnum.Disabled ? "\tif (-VERTEX.z < distance_fade_min) { discard; }\n" : "")}}	vec4 texel = texture(texture_albedo, UV);
-            	texel.rgb = palette_apply(texel.rgb);
-            	texel *= COLOR;
-            	ALBEDO = albedo.rgb * texel.rgb;
-            	ROUGHNESS = 1.0;
-            {{alpha}}}
-            """;
-        var shader = new ShaderMaterial { Shader = new Shader { Code = code } };
-        shader.SetShaderParameter("texture_albedo", material.AlbedoTexture);
-        return shader;
-    }
 
     /// <summary>Plays one of an actor's own sounds: panned by where the actor stands on screen, at full volume whatever the distance.</summary>
     public void PlayActorSound(EventActor speaker, string sound)
@@ -2210,11 +2215,7 @@ void fragment() {
         CharacterQuality.Apply(node, _content.Character(character).GetValueOrDefault("head_bone", -1).AsInt32());
         actor.ShadowRadius = _content.Character(character).GetValueOrDefault("shadow", 0).AsInt32();
         actor.RoomLit = _content.Character(character).GetValueOrDefault("room_lit", true).AsBool();
-        if (actor.ShadowRadius > 0)
-        {
-            actor.Shadow = new MeshInstance3D { Name = "Shadow", Mesh = ShadowDisc, MaterialOverride = ShadowShade, TopLevel = true, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
-            node.AddChild(actor.Shadow);
-        }
+        if (actor.ShadowRadius > 0) Field.PrepareActorShadow(reference);
         // Its head can turn: a modifier on its rig after the animation.
         int head = _content.Character(character).GetValueOrDefault("head_bone", -1).AsInt32();
         if (actor.SkeletonBone(head) is >= 0 and var headIndex) { actor.Head = new HeadTurn { Bone = headIndex }; actor.Skeleton!.AddChild(actor.Head); }
@@ -2541,8 +2542,8 @@ void fragment() {
                     break;
                 case 7:
                     frames++;
-                    // The surfaces' stand-in shaders are made again to add.
-                    if (!palette.Add) { palette.Add = true; palette.Shaders.Clear(); }
+                    // From here it is drawn added.
+                    palette.Add = true;
                     palette.Offset = new Vector3(step(15) - 4 * frames / 31f, step(30) - 4 * frames / 31f, step(30) - 4 * frames / 31f);
                     if (4 * frames >= 31 + 30) mode = 8;
                     break;
@@ -2594,71 +2595,29 @@ void fragment() {
         actor.Light = color;
         // A glow scales the light's channels toward its tint (the characters are drawn unshaded).
         var tint = Vector3.One.Lerp(actor.GlowTint, actor.Glow);
-        var albedo = new Color(color.X / 128f * tint.X, color.Y / 128f * tint.Y, color.Z / 128f * tint.Z);
-        foreach (var node in actor.Node.FindChildren("*", "MeshInstance3D", true, false))
-        {
-            var mesh = (MeshInstance3D)node;
-            for (int surface = 0; surface < mesh.Mesh.GetSurfaceCount(); surface++)
-                if (mesh.Mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material)
-                    material.AlbedoColor = material.VertexColorUseAsAlbedo ? new Color(albedo.R * 2, albedo.G * 2, albedo.B * 2) : albedo;
-        }
+        actor.Scene?.SetActorLight(actor.Id, new Color(color.X / 128f * tint.X, color.Y / 128f * tint.Y, color.Z / 128f * tint.Z));
     }
 
     /// <summary>
     /// The disc of a character's shadow (BATTLE.PRG 0x800B4B14's tables at 0x800E9A68 and 0x800E9AD4): its centre, a
-    /// ring at 50 and one at 100 in eight directions, in 24 triangles; the centre at full strength, the inner ring at
-    /// half and the outer at none (in the vertex colour), so it fades out to its edge.
+    /// ring at 50 and one at 100 in eight directions, the centre at full strength, the inner ring at half and the outer
+    /// at none, so it fades out to its edge: as the engine's shadow picture, 200 units across.
     /// </summary>
-    private static readonly ArrayMesh ShadowDisc = BuildShadowDisc();
+    private static readonly ImageTexture ShadowDisc = BuildShadowDisc();
 
-    private static ArrayMesh BuildShadowDisc()
+    private static ImageTexture BuildShadowDisc()
     {
-        var points = new List<Vector3> { Vector3.Zero };
-        var colours = new List<Color> { Colors.White };
-        for (int i = 0; i < 8; i++)
-        {
-            float angle = i * Mathf.Tau / 8, x = Mathf.Cos(angle), z = Mathf.Sin(angle);
-            points.Add(new Vector3(x * 50, 0, z * 50)); colours.Add(new Color(0.5f, 0.5f, 0.5f));
-            points.Add(new Vector3(x * 100, 0, z * 100)); colours.Add(Colors.Black);
-        }
-        var indices = new List<int>();
-        for (int i = 0; i < 8; i++)
-        {
-            int inner = 1 + i * 2, outer = inner + 1, nextInner = 1 + (i + 1) % 8 * 2, nextOuter = nextInner + 1;
-            indices.AddRange(new[] { 0, inner, nextInner, inner, outer, nextOuter, nextOuter, nextInner, inner });
-        }
-        var arrays = new Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = points.ToArray();
-        arrays[(int)Mesh.ArrayType.Color] = colours.ToArray();
-        arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
-        var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-        return mesh;
+        const int Size = 128;
+        var image = Image.CreateEmpty(Size, Size, false, Image.Format.Rgba8);
+        for (int y = 0; y < Size; y++)
+            for (int x = 0; x < Size; x++)
+            {
+                float distance = new Vector2(x + 0.5f - Size / 2f, y + 0.5f - Size / 2f).Length() / (Size / 2f);
+                float strength = Math.Clamp(1 - distance, 0, 1);
+                image.SetPixel(x, y, new Color(strength, strength, strength, distance <= 1 ? 1 : 0));
+            }
+        return ImageTexture.CreateFromImage(image);
     }
-
-    /// <summary>
-    /// Retail draws the shadow subtracting its colour from the screen (semi-transparency mode 2); the screen is read
-    /// back and the subtraction made on its display values, as the console's is.
-    /// </summary>
-    private static readonly ShaderMaterial ShadowShade = new()
-    {
-        Shader = new Shader
-        {
-            Code = """
-                shader_type spatial;
-                render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
-                uniform sampler2D screen : hint_screen_texture, filter_nearest;
-                instance uniform float strength = 0.75;
-                vec3 to_srgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }
-                vec3 to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
-                void fragment() {
-                    vec3 shown = to_srgb(texture(screen, SCREEN_UV).rgb);
-                    ALBEDO = to_linear(max(shown - vec3(COLOR.r * strength), vec3(0.0)));
-                }
-                """,
-        },
-    };
 
     /// <summary>
     /// Puts an actor's shadow on the floor under it, as 0x800B4B14 does each frame: its radius the model's plus an
@@ -2668,9 +2627,9 @@ void fragment() {
     /// </summary>
     private void PlaceShadow(EventActor actor)
     {
-        if (actor.Shadow is not { } shadow) return;
-        shadow.Visible = actor.Visible && actor.ShadowShown && actor.Parent == null;
-        if (!shadow.Visible) return;
+        if (actor.ShadowRadius <= 0) return;
+        bool shown = actor.Visible && actor.ShadowShown && actor.Parent == null;
+        if (!shown) { Field.PlaceActorShadow(actor.Id, Transform3D.Identity, 0, false); return; }
         var at = actor.Position;
         float floor = Math.Max(FloorHeight(at), at.Y);
         float radius = Math.Max(20, actor.ShadowRadius + (at.Y - floor) / 8);
@@ -2685,9 +2644,10 @@ void fragment() {
         // A point (x, 0, z) of the disc stands on the floor's plane, y rising with x and z by the slopes; a unit
         // above the floor (y is down), so it is not lost in it.
         var basis = new Basis(new Vector3(scale, slopeX * scale, 0), new Vector3(0, scale, 0), new Vector3(0, slopeZ * scale, scale));
-        shadow.GlobalTransform = EventActor.RetailSpace * new Transform3D(basis, new Vector3(at.X, floor - 1, at.Z));
         var light = actor.Light.X < 0 ? new Vector3(128, 128, 128) : actor.Light;
-        shadow.SetInstanceShaderParameter("strength", Math.Clamp((light.X + 2 * light.Y + light.Z) / 4 + 0x40, 0, 255) / 255f);
+        // Retail subtracts the shadow from the screen (semi-transparency mode 2): the engine takes it off the screen's display values.
+        Field.PlaceActorShadow(actor.Id, EventActor.RetailSpace * new Transform3D(basis, new Vector3(at.X, floor - 1, at.Z)),
+            Math.Clamp((light.X + 2 * light.Y + light.Z) / 4 + 0x40, 0, 255) / 255f);
     }
 
     /// <summary>The room's floor height (retail y) under a map position, from the collision map's 32-unit sub-cells.</summary>
@@ -2868,12 +2828,14 @@ void fragment() {
                 if (wait) break;
                 script.Pc++;
             }
-            if (Field == null || !Field.Actors.TryGetValue(script.Group.ToString(), out var node)) continue;
-            node.Position = EventActor.RetailSpace * ((Vector3)script.Position / 16);
+            string group = script.Group.ToString();
+            if (Field == null || !Field.Actors.ContainsKey(group)) continue;
+            // Retail turns y, then x, then z (the engine's own order); its y and z turn the other way in the engine's space.
             float unit = Mathf.Tau / 4096f;
-            var retail = new Basis(Vector3.Up, script.Rotation.Y * unit) * new Basis(Vector3.Right, script.Rotation.X * unit) * new Basis(Vector3.Back, script.Rotation.Z * unit);
-            var flip = new Basis(Vector3.Right, new Vector3(0, -1, 0), new Vector3(0, 0, -1));
-            node.Basis = flip * retail * flip;
+            Field.SetActorPosition(group, EventActor.RetailSpace * ((Vector3)script.Position / 16));
+            Field.RotateActor(group, Vector3.Axis.X, script.Rotation.X * unit, false);
+            Field.RotateActor(group, Vector3.Axis.Y, -script.Rotation.Y * unit, false);
+            Field.RotateActor(group, Vector3.Axis.Z, -script.Rotation.Z * unit, false);
         }
     }
 
@@ -2930,11 +2892,11 @@ void fragment() {
 
     private void Pose(Swing swing)
     {
-        if (Field == null || !Field.Actors.TryGetValue(swing.Group.ToString(), out var node)) return;
+        if (Field == null || !Field.Actors.ContainsKey(swing.Group.ToString())) return;
+        // About retail's x the engine turns the same way; about its y and z, the other way.
         float angle = swing.Angle * Mathf.Tau / 4096f;
-        var axis = swing.Axis == "y" ? Vector3.Up : swing.Axis == "x" ? Vector3.Right : Vector3.Back;
-        var flip = new Basis(Vector3.Right, new Vector3(0, -1, 0), new Vector3(0, 0, -1));
-        node.Basis = flip * new Basis(axis, angle) * flip;
+        var axis = swing.Axis == "y" ? Vector3.Axis.Y : swing.Axis == "x" ? Vector3.Axis.X : Vector3.Axis.Z;
+        Field.RotateActor(swing.Group.ToString(), axis, axis == Vector3.Axis.X ? angle : -angle, false);
     }
 
     // At rest, the next start swings it back.
@@ -2985,70 +2947,6 @@ void fragment() {
         }
     }
 
-    /// <summary>An animated texture image (see MapConversion.TextureFrames): its texture, the area it redraws and its frames.</summary>
-    private sealed class TextureFrames
-    {
-        public ImageTexture Texture = null!;
-        public Image Base = null!, Strip = null!;
-        public Rect2I Area;
-        public int Frames, Ticks, Shown = -1;
-    }
-
-    private readonly List<TextureFrames> _textureFrames = new();
-    private int _textureTick;
-
-    private void ReadTextureFrames(GDictionary textures)
-    {
-        _textureFrames.Clear();
-        _textureTick = 0;
-        // Animations sharing a texture redraw the same image.
-        var bases = new Dictionary<string, Image>();
-        foreach (var value in Document.GetValueOrDefault("texture_frames", new GArray()).AsGodotArray())
-        {
-            var record = value.AsGodotDictionary();
-            string key = record["texture"].AsString();
-            if (textures.GetValueOrDefault(key).AsGodotObject() is not ImageTexture texture) continue;
-            if (!bases.TryGetValue(key, out var image))
-            {
-                image = texture.GetImage();
-                image.ClearMipmaps();
-                bases[key] = image;
-            }
-            var rect = record["rect"].AsGodotArray();
-            Image strip;
-            try { strip = _content.LoadImage(record["image"].AsString()); }
-            catch (System.IO.InvalidDataException error) { Fail(error.Message); return; }
-            _textureFrames.Add(new TextureFrames
-            {
-                Texture = texture, Base = image, Strip = strip, Area = new Rect2I(rect[0].AsInt32(), rect[1].AsInt32(), rect[2].AsInt32(), rect[3].AsInt32()),
-                Frames = Math.Max(1, record["frames"].AsInt32()), Ticks = Math.Max(1, record["ticks_per_frame"].AsInt32()),
-            });
-        }
-    }
-
-    /// <summary>Shows each animated texture's frame for the 60 Hz tick, redrawing a texture only when a frame changes.</summary>
-    private void StepTextureFrames()
-    {
-        _textureTick++;
-        var changed = new HashSet<ImageTexture>();
-        foreach (var frames in _textureFrames)
-        {
-            int frame = _textureTick / frames.Ticks % frames.Frames;
-            if (frame == frames.Shown) continue;
-            frames.Shown = frame;
-            frames.Base.BlitRect(frames.Strip, new Rect2I(0, frames.Area.Size.Y * frame, frames.Area.Size.X, frames.Area.Size.Y), frames.Area.Position);
-            changed.Add(frames.Texture);
-        }
-        foreach (var texture in changed)
-            foreach (var frames in _textureFrames)
-                if (frames.Texture == texture)
-                {
-                    var image = (Image)frames.Base.Duplicate();
-                    image.GenerateMipmaps();
-                    texture.Update(image);
-                    break;
-                }
-    }
 
     /// <summary>
     /// A moving platform (see MapConversion.Platforms): its group, path and where it is now (map units, y down). A lift
@@ -3169,8 +3067,7 @@ void fragment() {
                 platform.Leg = (platform.Leg + 1) % platform.Legs.Count;
             }
             if (riding && ashley != null) ashley.Position += platform.Position - before;
-            if (Field != null && Field.Actors.TryGetValue(platform.Group.ToString(), out var node))
-                node.Position = EventActor.RetailSpace * (platform.Position + new Vector3(0, PlatformDip[platform.Dip], 0));
+            Field?.SetActorPosition(platform.Group.ToString(), EventActor.RetailSpace * (platform.Position + new Vector3(0, PlatformDip[platform.Dip], 0)));
         }
     }
 
@@ -3214,7 +3111,7 @@ void fragment() {
             if (!Field.Actors.TryGetValue(record["id"].AsInt32().ToString(), out var node)) continue;
             int flag = FlagValue(record["flag"].AsInt32());
             bool present = flag >= record["flag_min"].AsInt32() && flag <= record["flag_max"].AsInt32();
-            node.Visible = present;
+            Field.SetActorVisible(record["id"].AsInt32().ToString(), present);
             if (!present) continue;
             var tile = record["tile"].AsGodotArray();
             var crate = new Crate
@@ -3509,7 +3406,7 @@ void fragment() {
     {
         if (Field == null || Failure.Length != 0) return;
         PlayFrames++;
-        if (!EventCamera.Active && !Controlled)
+        if (!_eventCamera && !Controlled)
         {
             float turn = Input.GetAxis("ps_left", "ps_right"), tilt = Input.GetAxis("ps_down", "ps_up");
             if (turn != 0 || tilt != 0)
@@ -3546,15 +3443,11 @@ void fragment() {
             Field.Camera.HOffset = shake.X / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.VOffset = -shake.Y / Installation.MapConversion.UnitsPerMetre;
         }
-        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepSway(); actor.StepLook(); } }
-        // The event camera's roll (opcode e2, 4096 a turn): the view turns clockwise about its axis by it, after the
-        // camera looks at its target.
-        float roll = EventCamera.Active && !Controlled ? EventCamera.Roll * Mathf.Tau / 4096f : 0;
-        var rolled = new Quaternion(Vector3.Back, roll);
-        if (!Field!.CameraViewRotation.IsEqualApprox(rolled)) Field.SetCameraViewRotation(rolled);
+        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) actor.StepLook(); }
+        // The event camera's roll (opcode e2) is the engine's; play has none.
+        if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();
         ShowRoomGroups();
-        StepTextureFrames();
         Field.AdvancePresentation();
         // Enhanced lighting blooms what is bright.
         if (FieldLighting.Enhanced || Field.FieldEnvironment?.Environment.GlowEnabled == true)
@@ -3581,29 +3474,18 @@ void fragment() {
         }
         // Room faces and characters the camera stands close to are drawn as the GTE and GPU would show them.
         DropNearFaces();
-        bool staged = EventCamera.Active && !Controlled;
-        foreach (var actor in Actors.Values) actor.ProjectAsRetail(Field.Camera, staged ? EventCamera.Projection : Gameplay.Projection, staged ? EventCamera.Far : 4096);
-        foreach (var effect in _effects) effect.NearLimit = (staged ? EventCamera.Projection : Gameplay.Projection) / 2 * 4096 / (staged ? EventCamera.Far : 4096);
+        bool staged = _eventCamera && !Controlled;
+        foreach (var actor in Actors.Values) actor.ProjectAsRetail(Field.Camera, staged ? EventProjection : Gameplay.Projection, staged ? _eventFar : 4096);
+        foreach (var effect in _effects) effect.NearLimit = (staged ? EventProjection : Gameplay.Projection) / 2 * 4096 / (staged ? _eventFar : 4096);
         PlaceSky();
         // The simple map shows while Ashley is in hand, the HUD is up and nothing pauses the field.
         // It is put away with the HUD while an action plays (footage: Heal's and the Elixir's casting).
         _minimap.Set(Controlled && HudShown && !_menu.Open && _shortcutFrames < 0 && Battle?.Paused != true && Battle?.Hud?.Acting != true && !_lookAround, Gameplay.Yaw, Battle?.Drawn == true);
-        var fade = (ShaderMaterial)_screen.Material;
-        fade.SetShaderParameter("level", _displayOn ? _fade : 1);
-        fade.SetShaderParameter("white", _fadeWhite && _displayOn);
-        fade.SetShaderParameter("linear", GetTree().Root.UseHdr2D);
-        _screen.Visible = _fade > 0 || !_displayOn;
-        PlaceEffectsView();
     }
 
     private void StepEvent()
     {
         EventFrame++;
-        EventCamera.Step();
-        _overlay.Step();
-        _echo.Step();
-        StepBalloons();
-        foreach (var actor in Actors.Values) actor.Step();
         // Clips' scripts show and hide the held weapon (operations 32 to 35) on their frames.
         if (!Controlled) foreach (var actor in Actors.Values) RunClipScript(actor);
         // Clips with a movement stream carry their actor (an event's getting-up, MAP022's after the vision).
@@ -3620,7 +3502,6 @@ void fragment() {
         }
         FadeTheDead();
         StepMaterialising();
-        _fade = Mathf.Clamp(_fade + _fadeSpeed, 0, 1);
         foreach (var (id, done) in _waits.ToArray())
             if (done()) { _waits.Remove((id, done)); _completions.Add(id); }
         var events = _events!;
@@ -3683,7 +3564,7 @@ void fragment() {
             // Then the LOAD screens: a game loaded from them resumes, and leaving them goes to the title.
             // The GAME OVER picture goes as the screens come.
             FreezeActors(true);
-            _overlay.Clear();
+            Field.ClearScreenPictures();
             _menu.OpenLoad();
             return;
         }
@@ -3700,7 +3581,7 @@ void fragment() {
             Battle?.EndSphere();
             _control = new FieldPlayer(ashley, FloorAt, Stairs) { Set = Battle?.Drawn == true && Battle.Ashley != null ? Battle.Ashley.BattleSet : "base", Crowded = (mover, next) => Battle?.Crowded(mover, next) == true };
             Gameplay.Place(ashley.Position);
-            if (EventCamera.Active) Gameplay.LookAt = EventCamera.LookAtPosition;
+            if (_eventCamera) Gameplay.LookAt = EventLookAt;
         }
         // The game over's LOAD screens run with no one in control.
         if (!Controlled && _menu.Open) { _menu.Step(button => _presses.Contains(button)); _presses.Clear(); return; }
@@ -4740,20 +4621,10 @@ void fragment() {
     public void DimRoom(bool dim)
     {
         if (Field == null) return;
-        var rigs = new HashSet<StandardMaterial3D>();
-        foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
         // Crates are actors to retail, so they stay lit with the characters (Episode 4, 6:01).
-        foreach (var crate in _crates)
-            foreach (var found in crate.Node.FindChildren("*", "MeshInstance3D", true, false))
-                if (((MeshInstance3D)found).Mesh is { } mesh)
-                    for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
-                        if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material) rigs.Add(material);
-        var light = dim ? new Color(0.5f, 0.54f, 1.06f) : new Color(2, 2, 2);
-        foreach (var material in Field.Materials)
-            if (!rigs.Contains(material)) material.AlbedoColor = light with { A = material.AlbedoColor.A };
+        Field.SetFieldLight(dim ? new Color(0.25f, 0.27f, 0.53f) : Colors.White, _crates.ConvertAll(crate => crate.Id));
         // A palette transform's stand-in shaders take the colour from their materials.
-        foreach (var palette in _palettes.Values)
-            foreach (var (material, shader) in palette.Shaders) shader.SetShaderParameter("albedo", material.AlbedoColor);
+        foreach (var (target, palette) in _palettes) ShowPalette(target, palette);
     }
 
     /// <summary>The open container's location number (0x40 and above), which a save from it records.</summary>
@@ -5113,8 +4984,7 @@ void fragment() {
             // The fade an event set for the next room change (6c), else black at 8 levels a frame; 3 is none.
             var (effect, speed) = _transitionFade;
             _transitionFade = (0, 8);
-            _fadeSpeed = effect == 3 ? 1 : Math.Max(1, speed) / 255f;
-            _fadeWhite = effect == 1;
+            FadeScreen(true, effect == 3 ? 255 * EventTicks(1) : Math.Max(1, speed), effect == 1);
             return;
         }
     }
@@ -5127,7 +4997,7 @@ void fragment() {
     {
         var door = _door!;
         if (door["walk_in"].AsBool() && _control != null && Player is { } walker) _control.Step(walker.Facing, true);
-        if (_fade < 1) return;
+        if (Field.ScreenFadeLevel < 1) return;
         _door = null;
         int zone = door["zone"].AsInt32(), map = door["map"].AsInt32();
         var destination = door["destination"].AsGodotArray();
@@ -5144,7 +5014,7 @@ void fragment() {
         LoadRoom(zone == 0 ? Zone : zone, map);
         EnteredMarker = entered;
         // The arriving room's own event may take the screen over; otherwise it fades back in.
-        _fadeSpeed = -8 / 255f;
+        FadeScreen(false, 8, false);
     }
 
     /// <summary>
@@ -5310,11 +5180,7 @@ void fragment() {
             if (Input.IsActionJustPressed(button))
             {
                 SetFlag(16, cursor + 1);
-                foreach (int box in boxes)
-                {
-                    if (Field.Dialogues.TryGetValue("box" + box, out var open)) open.Panel.Modulate = Colors.White;
-                    if (_balloons.TryGetValue(box, out var balloon)) balloon.Modulate = Colors.White;
-                }
+                foreach (int box in boxes) Field.SetDialogueShade("box" + box, Colors.White);
                 _choice = null;
                 _completions.Add(id);
                 return;
@@ -5329,17 +5195,7 @@ void fragment() {
     {
         var (_, boxes, cursor) = _choice!.Value;
         for (int i = 0; i < boxes.Count; i++)
-        {
-            var shade = i == cursor ? Colors.White : new Color(0.5f, 0.5f, 0.5f);
-            _balloons.TryGetValue(boxes[i], out var balloon);
-            if (balloon != null) balloon.Modulate = shade;
-            if (!Field.Dialogues.TryGetValue("box" + boxes[i], out var open)) continue;
-            var panel = open.Panel;
-            panel.Modulate = shade;
-            if (i != cursor) continue;
-            if (balloon != null) Field.DialogueLayer.MoveChild(balloon, -1);
-            Field.DialogueLayer.MoveChild(panel, -1);
-        }
+            Field.SetDialogueShade("box" + boxes[i], i == cursor ? Colors.White : new Color(0.5f, 0.5f, 0.5f), i == cursor);
     }
 
     /// <summary>The actor created with a script id, by the retail lookup.</summary>
@@ -5356,24 +5212,13 @@ void fragment() {
     /// </summary>
     private void PlaceSky()
     {
-        // The dome is the backdrop of a room drawn without its panorama (BATTLE.PRG 0x8008EC48).
-        if (_dome != null) _dome.Visible = !_skyVisible || Field.BackgroundLayers.Count == 0;
+        // The engine's dome is the backdrop of a room drawn without its panorama (BATTLE.PRG 0x8008EC48; its sphere,
+        // 0x8009820C, is the room document's sky_dome).
+        // Retail places the strip by the camera's yaw and pitch (0x8008ECB4, 0x8009147C), 4096 a turn, times the
+        // parallax over 4096, less the event's offset; its yaw is measured in retail space, from half a turn of the
+        // engine's heading and the other way.
         foreach (var layer in Field.BackgroundLayers)
-        {
-            var material = layer.Material;
-            var forward = -Field.Camera.GlobalBasis.Z;
-            float level = new Vector2(forward.X, forward.Z).Length();
-            if (level < 1e-6f || !_skyVisible) { material.SetShaderParameter("horizon", -100000f); continue; }
-            float pitch = Mathf.Atan2(forward.Y, level) * 4096 / Mathf.Tau;
-            float top = pitch * _skyParallax.Y / 4096 - _skyOffset.Y;
-            // The shader stands the panorama's foot on its horizon.
-            material.SetShaderParameter("horizon", top + layer.PixelHeight);
-            // Across (0x8008ECB4, 0x8009147C): x is the camera's yaw (4096 a turn) times the parallax over 4096, less
-            // the event's offset, and a screen pixel p shows the strip's column (p - x) modulo its width.
-            var retailForward = new Vector3(forward.X, -forward.Y, -forward.Z);
-            float yaw = Mathf.PosMod(Mathf.Atan2(retailForward.X, retailForward.Z) * 4096 / Mathf.Tau, 4096);
-            material.SetShaderParameter("horizontal_offset", _skyOffset.X - yaw * _skyParallax.X / 4096);
-        }
+            Field.SetBackgroundAngles(layer, new Vector2(-_skyParallax.X, _skyParallax.Y), _skyOffset, !_skyVisible, 0.5f, -1);
     }
 
     /// <summary>
@@ -5476,44 +5321,7 @@ void fragment() {
         actor.ScriptFrame = frame;
     }
 
-    /// <summary>The canvas layer of overlay layers drawn behind the room.</summary>
-    private const int BehindLayer = -10;
 
-    /// <summary>While an overlay layer is drawn behind the room, the field's background is that canvas.</summary>
-    private void ShowBehind()
-    {
-        if (Field == null) return;
-        if (Field.FieldEnvironment == null)
-        {
-            if (!_overlay.AnyBehind) return;
-            Field.FieldEnvironment = new WorldEnvironment { Environment = new Godot.Environment { BackgroundMode = Godot.Environment.BGMode.ClearColor } };
-            Field.AddChild(Field.FieldEnvironment);
-        }
-        var environment = Field.FieldEnvironment.Environment;
-        environment.BackgroundMode = _overlay.AnyBehind ? Godot.Environment.BGMode.Canvas : Godot.Environment.BGMode.ClearColor;
-        environment.BackgroundCanvasMaxLayer = BehindLayer;
-    }
-
-    /// <summary>
-    /// The room's sky dome (BATTLE.PRG 0x8009820C): a sphere of 409 screen pixels, its corners turned by the camera
-    /// and laid on the 320x240 screen without perspective, so a pixel sees the direction whose view-space x and y are
-    /// its offset from the centre over 409. Its bands are Gouraud-shaded between the zenith, the rings at a height of
-    /// 204 of 457 (up and down), the horizon and the nadir, drawn behind everything.
-    /// </summary>
-    private static MeshInstance3D Dome(Godot.Collections.Array bands)
-    {
-        var shader = new Shader { Code = "shader_type spatial; render_mode unshaded,depth_draw_never,cull_disabled,fog_disabled; uniform vec3 bands[5]; void vertex(){POSITION=vec4(VERTEX.xy,CLIP_SPACE_FAR,1.0);} void fragment(){vec2 p=(SCREEN_UV-0.5)*vec2(224.0*VIEWPORT_SIZE.x/VIEWPORT_SIZE.y,224.0)/409.0; vec3 view=vec3(p.x,-p.y,-sqrt(max(0.0,1.0-dot(p,p)))); float up=normalize(mat3(INV_VIEW_MATRIX)*view).y; const float ring=204.0/457.0; vec3 c; if(up>ring){c=mix(bands[1],bands[0],(up-ring)/(1.0-ring));} else if(up>0.0){c=mix(bands[2],bands[1],up/ring);} else if(up>-ring){c=mix(bands[2],bands[3],-up/ring);} else {c=mix(bands[3],bands[4],(-up-ring)/(1.0-ring));} ALBEDO=c;}" };
-        var material = new ShaderMaterial { Shader = shader, RenderPriority = -128 };
-        var colours = new Vector3[5];
-        for (int i = 0; i < 5; i++)
-        {
-            var band = bands[i].AsGodotArray();
-            var colour = Color.Color8((byte)band[0].AsInt32(), (byte)band[1].AsInt32(), (byte)band[2].AsInt32()).SrgbToLinear();
-            colours[i] = new Vector3(colour.R, colour.G, colour.B);
-        }
-        material.SetShaderParameter("bands", colours);
-        return new MeshInstance3D { Name = "Dome", Mesh = new QuadMesh { Size = new(2, 2) }, MaterialOverride = material, CustomAabb = new Aabb(new(-100000, -100000, -100000), new(200000, 200000, 200000)) };
-    }
 
     /// <summary>Gives the event camera to the shared field camera: retail map units become engine units, and the projection distance a field of view.</summary>
     private void ApplyCamera()
@@ -5526,21 +5334,13 @@ void fragment() {
         // at four times the near clip over that scale. Only in first-person view (the switch at 0x800F19C8, which the
         // renderer takes as its second argument) are near polygons first subdivided, by their group's levels, and the
         // pieces tested: a cut by the pixel stands in for that.
-        bool staged = EventCamera.Active && !Controlled;
-        float reject = 4 * (staged ? EventCamera.Near : 64) * 4096 / (staged ? EventCamera.Far : 4096) / Installation.MapConversion.UnitsPerMetre;
+        bool staged = _eventCamera && !Controlled;
+        float reject = 4 * (staged ? _eventNear : 64) * 4096 / (staged ? _eventFar : 4096) / Installation.MapConversion.UnitsPerMetre;
         float pixelCut = _hideFirstPerson ? reject : 0;
         if (pixelCut != _roomNear)
         {
             _roomNear = pixelCut;
-            var rigs = new HashSet<StandardMaterial3D>();
-            foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
-            foreach (var material in Field.Materials)
-            {
-                if (rigs.Contains(material)) continue;
-                material.DistanceFadeMode = pixelCut > 0 ? BaseMaterial3D.DistanceFadeModeEnum.PixelDither : BaseMaterial3D.DistanceFadeModeEnum.Disabled;
-                material.DistanceFadeMinDistance = pixelCut;
-                material.DistanceFadeMaxDistance = pixelCut + 0.001f;
-            }
+            Field.SetFieldNearCut(pixelCut);
         }
         if (Controlled)
         {
@@ -5562,23 +5362,20 @@ void fragment() {
             Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / Gameplay.Projection));
             Field.Camera.Near = 64 / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.Far = 32768 / Installation.MapConversion.UnitsPerMetre;
-            // The event camera stands with the gameplay one while she plays, so an event that eases from it or hands
-            // it back starts from what the screen shows.
-            if (EventCamera.Active)
+            // The engine's points stand with the gameplay camera while she plays, so an event that eases from them or
+            // hands them back starts from what the screen shows.
+            if (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Eye].Active || Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Target].Active || Field.CameraAnchor != "")
             {
-                EventCamera.Stage(EventCamera.LookAt, Gameplay.LookAt);
-                EventCamera.Stage(EventCamera.Eye, Gameplay.Eye);
-                EventCamera.Snap(EventCamera.LookAt);
-                EventCamera.Snap(EventCamera.Eye);
+                Field.StopCameraPoints();
+                Field.SetCameraAnchor("");
+                Field.CameraEye = EventActor.RetailSpace * Gameplay.Eye;
+                Field.CameraTarget = EventActor.RetailSpace * Gameplay.LookAt;
             }
             return;
         }
-        if (!EventCamera.Active) return;
-        Field.CameraEye = EventActor.RetailSpace * EventCamera.EyePosition;
-        Field.CameraTarget = EventActor.RetailSpace * EventCamera.LookAtPosition;
+        if (!_eventCamera) return;
         Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-        Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / EventCamera.Projection));
-        Field.Camera.Near = Math.Max(0.01f, EventCamera.Near / Installation.MapConversion.UnitsPerMetre);
+        Field.Camera.Near = Math.Max(0.01f, _eventNear / Installation.MapConversion.UnitsPerMetre);
         // Retail's "far" (ec) is no clip: it is the depth at which room polygons turn to their half-size far
         // textures (BATTLE.PRG 0x80098194 patches it, over 8, into the renderer at 0x80097590 and 0x800978F8), so the
         // whole room stays drawn; the town beyond MAP007's window is 3000 to 5000 units out under ec 0x16.
@@ -5654,10 +5451,10 @@ void fragment() {
     /// </summary>
     private void DropNearFaces()
     {
-        bool staged = EventCamera.Active && !Controlled;
+        bool staged = _eventCamera && !Controlled;
         float units = Installation.MapConversion.UnitsPerMetre;
-        float projection = staged ? EventCamera.Projection : Gameplay.Projection, far = staged ? EventCamera.Far : 4096;
-        float reject = 4 * (staged ? EventCamera.Near : 64) * 4096 / far, least = projection / 2 * 4096 / far;
+        float projection = staged ? EventProjection : Gameplay.Projection, far = staged ? _eventFar : 4096;
+        float reject = 4 * (staged ? _eventNear : 64) * 4096 / far, least = projection / 2 * 4096 / far;
         var view = Field.Camera.GlobalTransform.AffineInverse();
         var screen = new Vector2[6];
         foreach (var room in _roomFaces)
@@ -5724,9 +5521,9 @@ void fragment() {
         var groups = Document.GetValueOrDefault("room_groups", new GArray()).AsGodotArray();
         for (int group = 0; group < groups.Count; group++)
         {
-            if (!Field.Actors.TryGetValue(group.ToString(), out var node)) continue;
+            if (!Field.Actors.ContainsKey(group.ToString())) continue;
             var entry = groups[group].AsGodotDictionary();
-            node.Visible = !_hiddenGroups.Contains(group) && !(_hideFirstPerson && entry["first_person"].AsBool()) && (!_cutaway || (entry["mask"].AsInt32() & (1 << octant)) != 0);
+            Field.SetActorVisible(group.ToString(), !_hiddenGroups.Contains(group) && !(_hideFirstPerson && entry["first_person"].AsBool()) && (!_cutaway || (entry["mask"].AsInt32() & (1 << octant)) != 0));
         }
     }
 

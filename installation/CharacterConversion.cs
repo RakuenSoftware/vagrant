@@ -304,7 +304,8 @@ public sealed class CharacterConversion
             // A clip whose script starts it over (operation 1) loops; one without holds its last frame.
             bool loops = false;
             if (scripts != null && index < scripts.Count) foreach (var entry in scripts[index]) loops |= (int)entry![1]! == 1;
-            animations[index].SetMeta("loops", loops);
+            // Event clips loop only so; every other set's clips loop.
+            animations[index].LoopMode = !set.StartsWith("esq", StringComparison.Ordinal) || loops ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
         }
         return clips;
     }

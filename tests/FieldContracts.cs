@@ -1627,7 +1627,7 @@ public partial class FieldContracts : Node
             else if (elapsed % 60 == 0) Tap("ps_circle");
             return;
         }
-        if (elapsed > 60 * 240) { Finish($"the first battle did not end (hostile {battle.HostileCount()}, events {string.Join(" > ", _view.Events)}, node {_view.EventNode}, controlled {_view.Controlled}, settled {_view.Settled}, camera {_view.EventCamera.IdleMask:x})"); return; }
+        if (elapsed > 60 * 240) { Finish($"the first battle did not end (hostile {battle.HostileCount()}, events {string.Join(" > ", _view.Events)}, node {_view.EventNode}, controlled {_view.Controlled}, settled {_view.Settled}, camera {_view.CameraIdle:x})"); return; }
         if (!_view.Controlled) { Steer(Vector2.Zero); if (elapsed % 60 == 0) Tap("ps_circle"); return; }
         if (elapsed == 2 && battle.HostileCount() != 2) { Finish($"MAP003 has {battle.HostileCount()} hostile soldiers, not 2"); return; }
         if (battle.Paused) { if (_sphereFrames >= 32 || _capture.Length == 0) Tap("ps_circle"); return; }

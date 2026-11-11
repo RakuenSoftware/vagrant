@@ -171,6 +171,8 @@ public sealed class MapConversion
             textureFiles[key] = $"{_name}.{key}";
         }
         var textureFrames = TextureFrames(room, textures, images);
+        // Each animation's frames are among the room's textures, by name, for the engine to draw from.
+        foreach (var frames in textureFrames) textureFiles[(string)frames!["strip"]!] = (string)frames["strip"]!;
         // Actors take their light from the floor tile under them: x, z, floor height and the mean colour (128 is unity).
         var light = new JsonArray();
         foreach (var ((x, z, y), (r, g, b, count)) in _floorLight)
@@ -211,7 +213,7 @@ public sealed class MapConversion
             ["room_actors"] = RoomActors(),
             ["crates"] = crates,
             ["crate_turns"] = CrateTurns(), ["crate_rolls"] = CrateRolls(),
-            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_colours"] = SkyColours(room),
+            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
             ["conditions"] = Conditions(),
         };
     }
@@ -424,7 +426,7 @@ public sealed class MapConversion
             // Kinds 0 and 1 stand in one of 24 orientations (see CrateTurns), which the field applies to the model.
             int material = ((model >> 3) & 0x1C) | (_map[record + 13] & 3);
             int orientation = kind < 2 && material < 24 ? material : -1;
-            var surface = new JsonObject { ["texture"] = key, ["blend"] = "opaque", ["cull"] = "back", ["unshaded"] = true, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray() };
+            var surface = new JsonObject { ["texture"] = key, ["blend"] = "opaque", ["cull"] = "back", ["unshaded"] = true, ["vertex_color_srgb"] = true, ["colour_gain"] = 2, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray() };
             int cursor = polygonAt;
             for (int p = 0; p < polygons; p++)
             {
@@ -680,7 +682,7 @@ public sealed class MapConversion
                 result.Add(new JsonObject
                 {
                     ["texture"] = key, ["rect"] = new JsonArray { minU, minV, width, height }, ["frames"] = steps.Count,
-                    ["ticks_per_frame"] = 2 * (_map[record + 7] + 1), ["image"] = name,
+                    ["ticks_per_frame"] = 2 * (_map[record + 7] + 1), ["strip"] = name,
                 });
             }
         }
@@ -1202,7 +1204,7 @@ public sealed class MapConversion
             string surfaceKey = key + "_" + passBlend + (twoSided ? "_both" : "") + suffix;
             if (!surfaces.TryGetValue(surfaceKey, out var surface))
             {
-                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray(), ["faces"] = new JsonArray() };
+                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertex_color_srgb"] = true, ["colour_gain"] = 2, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray(), ["faces"] = new JsonArray() };
                 surfaces[surfaceKey] = surface;
             }
             targets.Add((surface, passGain));

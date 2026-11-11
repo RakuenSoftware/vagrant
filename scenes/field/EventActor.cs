@@ -44,14 +44,19 @@ public sealed class EventActor
         set { if (Parent == null && Scene != null && Scene.Actors.ContainsKey(Id)) Scene.UpdateCharacterDirection(Id, false, Mathf.Wrap(-value * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi)); else _facing = value; }
     }
     private float _facing;
-    public Vector3 Angles;
+    /// <summary>Its extra angles (4096 a turn about retail's x, y and z): the engine's body shape, turned back into retail space.</summary>
+    public Vector3 Angles
+    {
+        get => Scene != null && Scene.TryGetActorShape(Id, out var shape) ? new Vector3(shape.Angles.X, -shape.Angles.Y, -shape.Angles.Z) * 4096 / Mathf.Tau : Vector3.Zero;
+        set => Rotate(value, false, 0);
+    }
     /// <summary>
     /// The scale opcode 2e sets (4096 is 1), easing over its frames, which status waits see. Retail keeps it at the
     /// actor's +0x2C (0x800AABD0) and draws with it: 0x800B28A8 scales the model's matrix by it, and the root offset
     /// is scaled with it, so the actor looks that much bigger or smaller about its place; its size box (0x800B00B0) takes it
     /// too.
     /// </summary>
-    public Vector3 Scale = Vector3.One;
+    public Vector3 Scale => Scene != null && Scene.TryGetActorShape(Id, out var shape) ? shape.Scale : Vector3.One;
     public bool Visible;
     /// <summary>The light colour the actor is drawn with (128 is unity), and whether an event set it explicitly.</summary>
     public Vector3 Light = -Vector3.One;
@@ -63,7 +68,6 @@ public sealed class EventActor
     public int ShadowRadius;
     /// <summary>Whether the room's light map lights it (its model's header, 0x60 bit 16); otherwise it is drawn at 0x80.</summary>
     public bool RoomLit = true;
-    public MeshInstance3D? Shadow;
     /// <summary>Whether its shadow is drawn: 23's bit 6 (kept at +8 bit 15, which 0x800B390C tests before 0x800B4B14), on until a script clears it.</summary>
     public bool ShadowShown = true;
     public EventActor? Parent;
@@ -82,21 +86,7 @@ public sealed class EventActor
     public string MoveClip = "";
     public int MoveFrame;
 
-    private Vector3 _moveTarget;
-    private int _moveFrames;
-    private float _turnTarget;
-    private int _turnFrames;
-    private Vector3 _scaleStart, _scaleEnd;
-    private int _scaleTick, _scaleFrames;
-    private Vector3 _anglesStart, _anglesEnd;
-    private int _anglesTick, _anglesFrames;
     // A walk is a turn toward the destination, a straight glide and a final turn.
-    private int _walkPhase;
-    private float _walkHeading, _walkSpeed, _walkTurnSpeed;
-    private Vector3 _walkTarget;
-    private bool _animationFinished = true;
-    private (string Clip, int Blend)? _queued;
-    private readonly System.Collections.Generic.List<Vector3> _route = new();
 
     public EventActor(string id, int character, Node3D node)
     {
@@ -105,9 +95,6 @@ public sealed class EventActor
         Node = node;
         Skeleton = node.FindChildren("*", "Skeleton3D", true, false) is { Count: > 0 } skeletons ? (Skeleton3D)skeletons[0] : null;
         Player = node.FindChildren("*", "AnimationPlayer", true, false) is { Count: > 0 } players ? (AnimationPlayer)players[0] : null;
-        // The shared field advances a rig's player on its presentation clock (its process mode is manual); advancing it
-        // in the idle step as well would play every clip at twice its speed.
-        if (Player != null) Player.AnimationFinished += _ => _animationFinished = true;
     }
 
     // The rig's meshes as built, each surface's arrays with its corners' bones, for drawing the rig as retail's GTE
@@ -170,7 +157,7 @@ public sealed class EventActor
             foreach (var found in Node.FindChildren("*", "MeshInstance3D", true, false))
             {
                 var instance = (MeshInstance3D)found;
-                if (instance == Shadow || instance.Mesh is not ArrayMesh whole || instance.Skin == null) continue;
+                if (instance.Name == "Shadow" || instance.Mesh is not ArrayMesh whole || instance.Skin == null) continue;
                 int count = whole.GetSurfaceCount();
                 var entry = new Surfaces { Instance = instance, Arrays = new Godot.Collections.Array[count], Vertices = new Vector3[count][], Bones = new int[count][], Faces = new int[count][] };
                 for (int i = 0; i < count; i++)
@@ -359,8 +346,15 @@ public sealed class EventActor
     }
 
     public int Waiting =>
-        (_route.Count > 0 ? Routing : 0) | (_moveFrames > 0 || _walkPhase is 1 or 2 ? Moving : 0) | (_turnFrames > 0 || _walkPhase != 0 ? Turning : 0)
-        | (_scaleTick < _scaleFrames ? Scaling : 0) | (_animationFinished ? 0 : Animating);
+        Activity switch
+        {
+            var doing => ((doing & Wol.Engine.World.ActorActivity.Routing) != 0 ? Routing : 0) | ((doing & Wol.Engine.World.ActorActivity.Scaling) != 0 ? Scaling : 0)
+                | ((doing & (Wol.Engine.World.ActorActivity.Travelling | Wol.Engine.World.ActorActivity.Walking)) != 0 ? Moving : 0)
+                | ((doing & (Wol.Engine.World.ActorActivity.Turning | Wol.Engine.World.ActorActivity.Walking | Wol.Engine.World.ActorActivity.Arriving)) != 0 ? Turning : 0)
+                | ((doing & Wol.Engine.World.ActorActivity.Animating) != 0 ? Animating : 0),
+        };
+
+    private Wol.Engine.World.ActorActivity Activity => Scene != null && Scene.Actors.ContainsKey(Id) ? Scene.Activity(Id) : Wol.Engine.World.ActorActivity.None;
 
     /// <summary>The facing that points from the actor toward a map position.</summary>
     public float FacingToward(Vector3 point)
@@ -369,68 +363,88 @@ public sealed class EventActor
         return Mathf.PosMod(3072 - Mathf.Atan2(dz, dx) * 4096 / Mathf.Tau, 4096);
     }
 
-    /// <summary>Retail 26: with both speeds zero a teleport, otherwise turn, walk and turn to a final heading.</summary>
+    /// <summary>
+    /// Retail 26: with both speeds zero a teleport, otherwise turn, walk and turn to a final heading (none below 0): the
+    /// engine's walk, at retail's rates (frames per 128 units, frames a turn) on its 30 Hz event clock.
+    /// </summary>
     public void Walk(Vector3 target, float heading, int speed, int turnSpeed)
     {
-        if (speed == 0 && turnSpeed == 0)
+        var args = new Godot.Collections.Dictionary
         {
-            Facing = heading >= 0 ? heading : (target - Position).LengthSquared() > 0 ? FacingToward(target) : Facing;
-            Position = target;
-            _moveFrames = _turnFrames = _walkPhase = 0;
-            return;
-        }
-        _walkTarget = target;
-        _walkHeading = heading;
-        _walkSpeed = speed < 0 ? DefaultMoveSpeed : speed;
-        _walkTurnSpeed = turnSpeed < 0 ? DefaultTurnSpeed : turnSpeed;
-        _walkPhase = 1;
-        TurnTo(FacingToward(target), 0, _walkTurnSpeed);
+            ["actor"] = Id, ["destination"] = EngineVector(target), ["frame_rate"] = 30,
+            ["frames_per_unit"] = (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f,
+            ["frames_per_turn"] = turnSpeed < 0 ? DefaultTurnSpeed : turnSpeed,
+        };
+        // Retail tests the bytes as given: both 0 is the teleport, a default (0xff) is not.
+        if (speed == 0 && turnSpeed == 0) args["frames_per_unit"] = args["frames_per_turn"] = 0;
+        if (heading >= 0) args["heading"] = EngineHeading(heading);
+        Command("actor.walk", args);
+    }
+
+    /// <summary>A retail-space point as the engine's.</summary>
+    private static Godot.Collections.Array EngineVector(Vector3 point) { var engine = RetailSpace * point; return new() { engine.X, engine.Y, engine.Z }; }
+
+    /// <summary>A retail facing (4096 a turn) as the engine's heading, which turns the other way.</summary>
+    private static float EngineHeading(float facing) => Mathf.Wrap(-facing * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi);
+
+    /// <summary>Hands the actor a command of the engine's field; an actor not in a field takes the end state at once.</summary>
+    private void Command(string type, Godot.Collections.Dictionary args)
+    {
+        if (Scene == null || !Scene.Actors.ContainsKey(Id)) return;
+        var error = Scene.Present(default, new Wol.Engine.World.FieldCommand(type, args, false), _ => { });
+        if (error != Error.Ok) GD.PushWarning($"{Id}: {type} could not be presented ({error}).");
     }
 
     /// <summary>Retail 2a: walks a route of points, facing each in turn; an empty route ends at once.</summary>
     public void Follow(System.Collections.Generic.IEnumerable<Vector3> route)
     {
-        _route.Clear();
-        _route.AddRange(route);
+        var points = new Godot.Collections.Array();
+        foreach (var point in route) points.Add(EngineVector(point));
+        Command("actor.route", new Godot.Collections.Dictionary { ["actor"] = Id, ["points"] = points, ["speed"] = RouteSpeed / Installation.MapConversion.UnitsPerMetre, ["frame_rate"] = 30 });
     }
 
     /// <summary>Retail 28: a straight glide that keeps the facing.</summary>
     public void Glide(Vector3 target, int speed)
     {
-        float rate = speed < 0 ? DefaultMoveSpeed : speed;
-        _moveTarget = target;
-        _moveFrames = (int)Mathf.Ceil((target - Position).Length() * rate / 128f);
-        if (_moveFrames == 0) Position = target;
+        if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Position = target; return; }
+        Command("actor.glide", new Godot.Collections.Dictionary
+        {
+            ["actor"] = Id, ["destination"] = EngineVector(target), ["frame_rate"] = 30,
+            ["frames_per_unit"] = (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f,
+        });
     }
 
-    /// <summary>Retail 2b: turn to a heading the shortest way, or the way <paramref name="direction"/> forces.</summary>
+    /// <summary>Retail 2b: turn to a heading the shortest way (direction 0), or up (above 0) or down (below 0) the facings.</summary>
     public void TurnTo(float heading, int direction, float speed)
     {
-        float delta = Mathf.PosMod(heading - Facing, 4096);
-        if (direction < 0 || direction == 0 && delta > 2048) delta -= 4096;
-        _turnTarget = Facing + delta;
-        _turnFrames = speed < 0 ? (int)Mathf.Ceil(Mathf.Abs(delta) * DefaultTurnSpeed / 4096f) : (int)Mathf.Ceil(Mathf.Abs(delta) * speed / 4096f);
-        if (_turnFrames == 0) Facing = Mathf.PosMod(_turnTarget, 4096);
+        if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Facing = Mathf.PosMod(heading, 4096); return; }
+        Command("actor.turn", new Godot.Collections.Dictionary
+        {
+            ["actor"] = Id, ["heading"] = EngineHeading(heading), ["direction"] = -Math.Sign(direction), ["frame_rate"] = 30,
+            ["frames_per_turn"] = speed < 0 ? DefaultTurnSpeed : speed,
+        });
     }
 
+    /// <summary>Retail 33: eases its extra angles to new ones (or by them), at a speed in frames a turn (0 at once).</summary>
     public void Rotate(Vector3 angles, bool relative, int speed)
     {
-        _anglesStart = Angles;
-        _anglesEnd = relative ? Angles + angles : angles;
-        float largest = Math.Max(Math.Abs(_anglesEnd.X - Angles.X), Math.Max(Math.Abs(_anglesEnd.Y - Angles.Y), Math.Abs(_anglesEnd.Z - Angles.Z)));
-        _anglesTick = 0;
-        _anglesFrames = speed <= 0 ? 0 : (int)Mathf.Ceil(largest * speed / 4096f);
-        if (_anglesFrames == 0) Angles = _anglesEnd;
+        float unit = Mathf.Tau / 4096;
+        Command("actor.shape", new Godot.Collections.Dictionary
+        {
+            ["actor"] = Id, ["angles"] = new Godot.Collections.Array { angles.X * unit, -angles.Y * unit, -angles.Z * unit }, ["relative"] = relative,
+            ["frames_per_turn"] = Math.Max(0, speed), ["frame_rate"] = 30,
+        });
     }
 
-    public void ScaleTo(Vector3 scale, int frames)
-    {
-        _scaleStart = Scale;
-        _scaleEnd = scale;
-        _scaleTick = 0;
-        _scaleFrames = frames;
-        if (frames == 0) Scale = scale;
-    }
+    /// <summary>Retail 2e: eases its scale (1 its own size) over the frames.</summary>
+    public void ScaleTo(Vector3 scale, int frames) =>
+        Command("actor.shape", new Godot.Collections.Dictionary { ["actor"] = Id, ["scale"] = new Godot.Collections.Array { scale.X, scale.Y, scale.Z }, ["frames"] = frames, ["frame_rate"] = 30 });
+
+    /// <summary>Retail 5d: the body's idle sway, its count climbing to the period (twice the script's byte) and back; 0 stops it.</summary>
+    public void Sway(int period) => Command("actor.sway", new Godot.Collections.Dictionary { ["actor"] = Id, ["period"] = period, ["frame_rate"] = 30 });
+
+    /// <summary>The sway's count now.</summary>
+    public int SwayCount => Scene != null && Scene.TryGetActorShape(Id, out var shape) ? shape.SwayCount : 0;
 
     /// <summary>
     /// Plays a clip, from <paramref name="skipFrames"/> frames in (retail 35). Base and battle clips loop; an event
@@ -440,18 +454,17 @@ public sealed class EventActor
     /// </summary>
     public bool Animate(string clip, int blendFrames, int skipFrames = 0, bool once = false)
     {
-        _queued = null;
-        if (Player == null) return false;
-        if (!HasClip(clip)) return false;
-        var animation = Player.GetAnimation(clip);
-        animation.LoopMode = once || clip.StartsWith("esq", StringComparison.Ordinal) && !animation.GetMeta("loops", false).AsBool() ? Animation.LoopModeEnum.None : Animation.LoopModeEnum.Linear;
-        _animationFinished = animation.LoopMode != Animation.LoopModeEnum.None;
-        Player.Play(clip, blendFrames >= 2 ? blendFrames / 30.0 : 0);
-        if (skipFrames > 0) Player.Seek(Math.Min(animation.Length, skipFrames / Installation.CharacterConversion.FramesPerSecond), true);
-        // The new clip's pose shows at once: left to the next advance, a character placed on a cut stood a frame in
-        // the old clip's pose (its root as far off as that clip had carried it).
-        else Player.Advance(0);
-        return true;
+        if (Player == null || Scene == null || !HasClip(clip)) return false;
+        return Scene.Present(default, new Wol.Engine.World.FieldCommand("actor.play", Clip(clip, blendFrames, skipFrames, once), false), _ => { }) == Error.Ok;
+    }
+
+    /// <summary>A clip's arguments for the engine: its loop as made, or none played once; the blend in 30ths of a second; its start in animation frames.</summary>
+    private Godot.Collections.Dictionary Clip(string clip, int blendFrames, int skipFrames, bool once)
+    {
+        var args = new Godot.Collections.Dictionary { ["actor"] = Id, ["clip"] = clip, ["blend_seconds"] = blendFrames >= 2 ? blendFrames / 30f : 0 };
+        if (once) args["loop"] = false;
+        if (skipFrames > 0) args["start_seconds"] = skipFrames / Installation.CharacterConversion.FramesPerSecond;
+        return args;
     }
 
     /// <summary>Adds an animation set (an event's "esqnnn", Ashley's "btn" and "artna") to the actor's rig.</summary>
@@ -466,53 +479,11 @@ public sealed class EventActor
     }
 
     /// <summary>Retail 32: a clip that starts by itself when the current one reaches its last frame.</summary>
-    public void Queue(string clip, int blendFrames) => _queued = (clip, blendFrames);
-
-    /// <summary>Advances motion by one event frame.</summary>
-    public void Step()
+    public void Queue(string clip, int blendFrames)
     {
-        if (_queued is { } queued && Player != null && (!Player.IsPlaying() || Player.CurrentAnimationPosition >= Player.CurrentAnimationLength - 0.5 / Installation.CharacterConversion.FramesPerSecond))
-            Animate(queued.Clip, queued.Blend);
-        if (_turnFrames > 0)
-        {
-            Facing += (_turnTarget - Facing) / _turnFrames--;
-            if (_turnFrames == 0) Facing = Mathf.PosMod(_turnTarget, 4096);
-        }
-        if (_moveFrames > 0)
-        {
-            Position += (_moveTarget - Position) / _moveFrames--;
-        }
-        if (_route.Count > 0)
-        {
-            var offset = _route[0] - Position;
-            float distance = new Vector2(offset.X, offset.Z).Length();
-            if (distance > 0.5f) Facing = FacingToward(_route[0]);
-            if (distance <= RouteSpeed) { Position = _route[0]; _route.RemoveAt(0); }
-            else Position += offset / distance * RouteSpeed;
-        }
-        if (_scaleTick < _scaleFrames) Scale = _scaleStart.Lerp(_scaleEnd, ++_scaleTick / (float)_scaleFrames);
-        if (_anglesTick < _anglesFrames) Angles = _anglesStart.Lerp(_anglesEnd, ++_anglesTick / (float)_anglesFrames);
-        switch (_walkPhase)
-        {
-            case 1 when _turnFrames == 0:
-                _walkPhase = 2;
-                Glide(_walkTarget, (int)_walkSpeed);
-                break;
-            case 2 when _moveFrames == 0:
-                _walkPhase = 3;
-                if (_walkHeading >= 0) TurnTo(_walkHeading, 0, _walkTurnSpeed);
-                break;
-            case 3 when _turnFrames == 0:
-                _walkPhase = 0;
-                break;
-        }
+        if (Player != null && Scene != null && HasClip(clip)) Command("actor.queue", Clip(clip, blendFrames, 0, false));
     }
 
-    /// <summary>
-    /// Retail 5d: the body's idle sway. While on, a count climbs to the period (twice the script's byte) and falls
-    /// back again, and half of it turns the body about y (BATTLE.PRG's root-bone pass near 0x800b2a40).
-    /// </summary>
-    public int SwayPeriod, SwayCount;
     /// <summary>The flags retail 23 sets (bits 0 and 1 both set draw it).</summary>
     public int Flags;
 
@@ -539,15 +510,6 @@ public sealed class EventActor
         float step = LookSpeed <= 0 ? 0x1000 : LookSpeed;
         Head.Yaw = Mathf.MoveToward(Head.Yaw, want, step);
     }
-    private bool _swayFalling;
-
-    /// <summary>Steps the sway one event frame.</summary>
-    public void StepSway()
-    {
-        if (SwayPeriod == 0) { SwayCount = 0; return; }
-        if (!_swayFalling) { if (++SwayCount >= SwayPeriod) { SwayCount = SwayPeriod; _swayFalling = true; } }
-        else if (--SwayCount <= 0) { SwayCount = 0; _swayFalling = false; }
-    }
 
     /// <summary>Retail space for a node holding a converted rig: a half turn about x and 128 map units per engine unit.</summary>
     public static readonly Transform3D RetailSpace = new(new Basis(Vector3.Right, Mathf.Pi).Scaled(Vector3.One / Installation.MapConversion.UnitsPerMetre), Vector3.Zero);
@@ -569,7 +531,7 @@ public sealed class EventActor
     /// </summary>
     public void Apply()
     {
-        Node.Visible = Visible;
+        if (Scene != null && Scene.Actors.ContainsKey(Id)) Scene.SetActorVisible(Id, Visible); else Node.Visible = Visible;
         if (Parent?.Skeleton is { } skeleton && Parent.SkeletonBone(ParentBone) is >= 0 and var held)
         {
             var bone = skeleton.GlobalTransform * skeleton.GetBoneGlobalPose(held);
@@ -579,11 +541,8 @@ public sealed class EventActor
             return;
         }
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Node.Transform = RetailSpace * Local() * RetailSpace.AffineInverse(); return; }
-        float unit = Mathf.Tau / 4096f;
         Node.Basis = Basis.Identity;
-        // The sway turns the body about y, after the facing.
-        var body = new Basis(Vector3.Up, SwayCount / 2 * unit) * new Basis(Vector3.Back, Angles.Z * unit) * new Basis(Vector3.Up, Angles.Y * unit) * new Basis(Vector3.Right, Angles.X * unit) * Basis.FromScale(Scale);
-        Scene.SetActorBody(Id, RetailSpace.Basis.Orthonormalized() * body * RetailSpace.Basis.Orthonormalized().Inverse());
+        if (Scene.TryGetActorShape(Id, out var shape)) Scene.SetActorBody(Id, shape.Body);
     }
 
     /// <summary>
@@ -631,6 +590,19 @@ public sealed class EventActor
     }
 
     /// <summary>A model bone's position in retail map units, or the actor's position when it has no such bone.</summary>
+    /// <summary>A node that stands on one of its bones (the held weapon for 0x40 to 0x4F), for the engine to follow.</summary>
+    public Node3D BoneAnchor(int bone)
+    {
+        if ((bone & 0xF0) == 0x40 && Skeleton?.GetNodeOrNull<Node3D>("Weapon") is { } mount && mount.GetChildCount() > 0 && mount.GetChild(0) is Node3D weapon) return weapon;
+        int index = SkeletonBone(bone);
+        if (index < 0 || Skeleton == null) return Node;
+        string name = $"Anchor_b{bone}";
+        if (Skeleton.GetNodeOrNull<BoneAttachment3D>(name) is { } kept) return kept;
+        var attachment = new BoneAttachment3D { Name = name, BoneName = Skeleton.GetBoneName(index) };
+        Skeleton.AddChild(attachment);
+        return attachment;
+    }
+
     public Vector3 BonePosition(int bone)
     {
         if (WeaponFrame(bone) is { } weapon) return RetailSpace.AffineInverse() * weapon.Origin;
