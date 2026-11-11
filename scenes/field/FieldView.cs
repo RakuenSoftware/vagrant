@@ -836,7 +836,7 @@ void fragment() {
         Events.Add(_mainEvent);
         if (!_programs.TryGetValue(eventName, out var compiled))
         {
-            var (programs, ids, error) = _world.Compile(events);
+            var (programs, ids, error) = _world.Compile(_content.Field.Data(eventName)!["events"]!.AsArray());
             if (error.Length != 0) { Fail("The room event is invalid: " + error); return; }
             _programs[eventName] = compiled = (programs, ids);
         }

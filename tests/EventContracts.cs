@@ -42,12 +42,10 @@ public partial class EventContracts : Node
                 try { result = new EventConversion(name, data, offset, battle).Export(); }
                 catch (System.IO.InvalidDataException error) { unusable.Add($"{name} ({error.Message})"); return; }
                 catch (Exception error) when (error is not InvalidOperationException) { throw new InvalidOperationException($"{name}: {error}"); }
-                string json = result["events"]!.ToJsonString();
                 if (name == dump) GD.Print("EVENT_DUMP " + result.ToJsonString());
                 if (find.Length > 0 && System.Text.RegularExpressions.Regex.Unescape(result.ToJsonString()).Contains(find, StringComparison.OrdinalIgnoreCase)) GD.Print($"EVENT: \"{find}\" is in {name}");
-                var events = Json.ParseString(json).AsGodotArray();
                 // Every flow compiles onto the field's event world, as the field compiles it when the event starts.
-                var (_, _, invalid) = new Wol.Games.Vagrant.Scenes.Field.EventWorld().Compile(events);
+                var (_, _, invalid) = new Wol.Games.Vagrant.Scenes.Field.EventWorld().Compile(result["events"]!.AsArray());
                 if (invalid.Length != 0) throw new InvalidOperationException($"{name}: {invalid}");
                 if (result["untranslated"]!.AsArray().Count > 0) unusable.Add($"{name} (untranslated {result["untranslated"]![0]})");
                 foreach (var entry in result["unpresented"]!.AsArray())

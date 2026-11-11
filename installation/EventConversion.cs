@@ -450,7 +450,8 @@ public sealed class EventConversion
         int section = -1;
         for (int k = 0; k < _skips.Count; k++)
             if (pc > _skips[k].Open && pc < _skips[k].Close) { section = k; _flowSkips.Add(k); break; }
-        if (section >= 0) args["skip"] = section;
+        // A wait presents nothing; its batch names its section (below).
+        if (section >= 0 && type != "wait") args["skip"] = section;
         if (type == "wait" && _skips.Count > 0)
             _batch.Add(new JsonObject { ["type"] = "event.section", ["args"] = new JsonObject { ["skip"] = section }, ["await"] = false });
         _batch.Add(new JsonObject { ["type"] = type, ["args"] = args, ["await"] = true });
