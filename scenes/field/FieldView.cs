@@ -2180,6 +2180,7 @@ void fragment() {
         // Drawn as the Settings choose: the disc's textures as they are, or enhanced.
         CharacterQuality.Apply(node, _content.Character(character).GetValueOrDefault("head_bone", -1).AsInt32());
         actor.ShadowRadius = _content.Character(character).GetValueOrDefault("shadow", 0).AsInt32();
+        actor.RoomLit = _content.Character(character).GetValueOrDefault("room_lit", true).AsBool();
         if (actor.ShadowRadius > 0)
         {
             actor.Shadow = new MeshInstance3D { Name = "Shadow", Mesh = ShadowDisc, MaterialOverride = ShadowShade, TopLevel = true, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
@@ -2444,7 +2445,7 @@ void fragment() {
             if (!_fading.TryGetValue(actor, out var fade))
             {
                 if (actor.Player is { } player && player.IsPlaying()) continue;
-                fade = (0, actor.Tinted ? actor.Light : FloorLight(actor.Position));
+                fade = (0, actor.Tinted ? actor.Light : FloorLight(actor));
             }
             int frames = fade.Frames + 1;
             _fading[actor] = (frames, fade.Light);
@@ -2481,7 +2482,7 @@ void fragment() {
             var state = _materialising[actor];
             if (!actor.Node.IsInsideTree()) { _materialising.Remove(actor); continue; }
             if (!_palettes.TryGetValue(actor.Id, out var palette)) _palettes[actor.Id] = palette = new Palette();
-            var light = state.Tinted ? state.Light : actor.Parent != null ? actor.Parent.Light : FloorLight(actor.Position);
+            var light = state.Tinted ? state.Light : actor.Parent != null ? actor.Parent.Light : FloorLight(actor);
             int frames = state.Frames;
             int mode = state.Mode;
             float step(int fifths) => Math.Clamp(fifths, 0, 31) / 31f;
@@ -3414,10 +3415,13 @@ void fragment() {
     /// The light on a character where it stands: the room's light map (BATTLE.PRG 0x80098b38) gives the colour of the
     /// first record whose rectangle holds the point and whose triangle (wound as the GTE's NCLIP of corners 0, 2, 1
     /// finds it positive) contains it, mixed from its corners by area, or the map's own colour; installations without
-    /// the map take the floor tile's baked light.
+    /// the map take the floor tile's baked light. A character whose model the map does not light (0x648 bit 16 clear,
+    /// 0x800B371C) is drawn at 0x80.
     /// </summary>
-    private Vector3 FloorLight(Vector3 position)
+    private Vector3 FloorLight(EventActor actor)
     {
+        if (!actor.RoomLit) return new Vector3(128, 128, 128);
+        var position = actor.Position;
         if (Document.GetValueOrDefault("light_map").VariantType == Variant.Type.Dictionary)
         {
             var map = Document["light_map"].AsGodotDictionary();
@@ -3582,7 +3586,7 @@ void fragment() {
         if (!Controlled) Battle?.StepNumbers();
         foreach (var actor in Actors.Values)
         {
-            if (!actor.Tinted) Light(actor, actor.Parent != null ? actor.Parent.Light : FloorLight(actor.Position));
+            if (!actor.Tinted) Light(actor, actor.Parent != null ? actor.Parent.Light : FloorLight(actor));
             actor.Apply();
         }
         FadeTheDead();

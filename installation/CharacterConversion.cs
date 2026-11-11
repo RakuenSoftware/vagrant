@@ -267,7 +267,11 @@ public sealed class CharacterConversion
         // The radius of the shadow under it (the header's u16 at 0x64, which BATTLE.PRG keeps at the actor's 0x64C and
         // 0x800B4B14 draws by); a weapon has none.
         int shadow = _weaponTexture < 0 && _model.Length >= 0x66 ? Word(_model, 0x64) : 0;
-        return new JsonObject { ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow };
+        // Whether the room's light map lights it: bit 16 of the header's word at 0x60, which BATTLE.PRG keeps at the
+        // actor's 0x648 and the actor renderer tests (0x800B371C) before taking the map's colour (0x8008C458); without
+        // it the character is drawn at 0x80. 23 models have it clear, among them the Ghost (1A) and the dragons.
+        bool roomLit = _weaponTexture >= 0 || _model.Length < 0x64 || (Long(_model, 0x60) & 0x10000) != 0;
+        return new JsonObject { ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit };
     }
 
     /// <summary>

@@ -43,6 +43,8 @@ public sealed class EventActor
     public bool Tinted;
     /// <summary>The radius of the shadow under it (its model's), and the disc that draws it; none at 0.</summary>
     public int ShadowRadius;
+    /// <summary>Whether the room's light map lights it (its model's header, 0x60 bit 16); otherwise it is drawn at 0x80.</summary>
+    public bool RoomLit = true;
     public MeshInstance3D? Shadow;
     /// <summary>Whether its shadow is drawn: 23's bit 6 (kept at +8 bit 15, which 0x800B390C tests before 0x800B4B14), on until a script clears it.</summary>
     public bool ShadowShown = true;
