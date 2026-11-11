@@ -141,6 +141,8 @@ public sealed class FieldBattle
         public Vector3 Range;
         public int Reach;
         public bool Hostile, Marked, Drawn, Dead;
+        /// <summary>A crate taken as a target: BATTLE.PRG gives each crate an actor and a fighter record named "Cube" (0x8007647C, 1 of 1 HP).</summary>
+        public bool Cube;
         /// <summary>What it may drop when felled (its record's drop table) and its room record's three items.</summary>
         public GDictionary? Drops;
         public Godot.Collections.Array? DropItems;
@@ -1336,6 +1338,21 @@ public sealed class FieldBattle
             if (!limbs && InSphere(Ashley!, c)) parts.Add(-1);
             if (parts.Count > 0) _targets.Add((c, parts));
         }
+        // The crates the sphere reaches are targets too, each taken whole and named by its fighter record (Episode 4,
+        // 6:01: "Cube", the stack's bottom crate lit). The stand-in's place is 150 under the crate's middle, where an
+        // actor without bones is aimed at and struck.
+        if (_view.Field != null)
+            foreach (var crate in _view.Crates)
+            {
+                var middle = new Vector3(crate.X * 128 + 64, crate.Bottom - 64, crate.Z * 128 + 64);
+                if (!_view.Field.Actors.TryGetValue(crate.Id, out var node) || !Reaches(Ashley!, middle)) continue;
+                var cube = new Combatant
+                {
+                    Actor = new EventActor(crate.Id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
+                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true,
+                };
+                _targets.Add((cube, new List<int> { -1 }));
+            }
         // With nothing in range the sphere still shows, for as long as the message under CAUTION (retail footage).
         if (_targets.Count == 0) { _view.Message(_view.RetailMessage(0), header: 1, lines: 4); ShowRange(true); _emptySphere = 30; return; }
         player.Halt();
@@ -1473,6 +1490,33 @@ public sealed class FieldBattle
             _flash = 0;
             return;
         }
+        if (who.Cube)
+        {
+            // A crate: its name alone, then the blow (footage: "Cube", "TARGET: Single EGD/LIT"); every crate in reach
+            // is a TARGET on its side of the screen, and the chosen one is lit at once, with no red flash.
+            _view.SystemBox.Open(4, 0);
+            _view.SystemBox.Text = SystemBox.Fill(text["target"].AsGodotDictionary(), new[]
+            {
+                who.Name, "", Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", 0), "",
+            }).Trim(' ');
+            string label = text.GetValueOrDefault("whole_target", "#TARGET").AsString().TrimStart('#');
+            bool chosenSide = LeftOf(who);
+            var same = new List<string>();
+            var others = new List<string>();
+            int index = 0;
+            foreach (var (c, _) in _targets)
+            {
+                if (!c.Cube) continue;
+                if (LeftOf(c) != chosenSide) { others.Add(label); continue; }
+                if (c == who) index = same.Count;
+                same.Add(label);
+            }
+            _hud?.Targets(chosenSide ? (others.Count > 0 ? others : null) : same, chosenSide ? -1 : index, chosenSide ? same : (others.Count > 0 ? others : null), chosenSide ? index : -1);
+            _hud?.AimedAt(Aim(who, -1), Project);
+            Highlight(who, -2);
+            _flash = 0;
+            return;
+        }
         // The chosen part's own hit points, and the chance to hit it.
         string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, HitChance(Ashley!, who, limb) });
         // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), physical, the target's class,
@@ -1484,20 +1528,23 @@ public sealed class FieldBattle
         }).Trim(' ');
         // Each side of the screen lists the parts of an enemy standing on that side of Ashley: the chosen one's, and on
         // the other side the first other enemy there (retail footage); the chosen list has its part lit.
-        bool Left(Combatant c)
-        {
-            var camera = _view.Field?.Camera;
-            if (camera == null || !camera.IsInsideTree()) return false;
-            return camera.UnprojectPosition(c.Actor.Node.GlobalPosition).X < camera.UnprojectPosition(Ashley!.Actor.Node.GlobalPosition).X;
-        }
-        bool chosenLeft = Left(who);
+        bool chosenLeft = LeftOf(who);
         List<string>? other = null;
         foreach (var (c, otherParts) in _targets)
-            if (c != who && Left(c) != chosenLeft) { other = otherParts.ConvertAll(part => PartName(c, part)); break; }
+            if (c != who && LeftOf(c) != chosenLeft) { other = otherParts.ConvertAll(part => PartName(c, part)); break; }
         var mine = parts.ConvertAll(part => PartName(who, part));
         _hud?.Targets(chosenLeft ? other : mine, chosenLeft ? -1 : _part, chosenLeft ? mine : other, chosenLeft ? _part : -1);
         _hud?.AimedAt(Aim(who, limb), Project);
         Highlight(who, limb);
+    }
+
+    /// <summary>Whether a target stands left of Ashley on the screen (the side its parts are listed on); a crate by its middle.</summary>
+    private bool LeftOf(Combatant c)
+    {
+        var camera = _view.Field?.Camera;
+        if (camera == null || !camera.IsInsideTree()) return false;
+        var at = c.Cube ? EventActor.RetailSpace * Aim(c, -1) : c.Actor.Node.GlobalPosition;
+        return camera.UnprojectPosition(at).X < camera.UnprojectPosition(Ashley!.Actor.Node.GlobalPosition).X;
     }
 
     // Target mode lights the chosen part: an added pass over the target's model, cyan where a vertex's bone belongs
@@ -1510,6 +1557,15 @@ public sealed class FieldBattle
     /// <summary>Lights <paramref name="limb"/> of <paramref name="who"/>'s model (none with a null target).</summary>
     private void Highlight(Combatant? who, int limb)
     {
+        // A crate is drawn in grey and teal rather than with the added pass (see FieldView.LightCrate).
+        if (who is { Cube: true })
+        {
+            if (_highlighted != null) SetHighlight(_highlighted, null);
+            _highlighted = null;
+            _view.LightCrate(who.Actor.Id, 1);
+            return;
+        }
+        _view.LightCrate(null, 0);
         if (_highlighted != null && _highlighted != who?.Actor) SetHighlight(_highlighted, null);
         if (who != null && _highlighted == null) _flash = 24;
         _highlighted = who?.Actor;
@@ -1558,8 +1614,9 @@ public sealed class FieldBattle
     /// <summary>The lit part pulses on the 30 Hz clock.</summary>
     private void PulseHighlight()
     {
-        if (_highlighted == null) return;
         float pulse = 0.6f + 0.4f * Mathf.Sin(_tick * Mathf.Tau / 16);
+        if (_phase == Phase.Sphere && _target < _targets.Count && _targets[_target].Who is { Cube: true } crate) _view.LightCrate(crate.Actor.Id, pulse);
+        if (_highlighted == null) return;
         if (_flash > 0) _flash--;
         float flash = _flash / 24f;
         // Ashley glows cyan with the target's red flash (retail footage).
@@ -1774,6 +1831,10 @@ public sealed class FieldBattle
         int limb = _victimLimb;
         target.Engaged = true;
         attacker.Risk = Math.Min(100, attacker.Risk + attacker.Cost);
+        // A crate takes the blow's flash and nothing else: no number, and it stays where it stands (footage, 6:02).
+        // BATTLE.PRG treats a crate whose record has +0x954 bit 16 (every kind but 2 and 4) apart (0x80085F04); what
+        // that changes is not followed.
+        if (target.Cube) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
         int chance = Math.Min(100, HitChance(attacker, target, limb, vary: true) + (attacker == Ashley ? 10 : 0));
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
         int bone = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Bone : -1;

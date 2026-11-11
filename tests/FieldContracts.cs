@@ -50,6 +50,9 @@ public partial class FieldContracts : Node
     private bool _carry;
     private int _carryStep, _carryCrates;
     private string _carryTiles = "";
+    /// <summary>With <c>--cube</c>, Ashley draws her weapon facing the nearest crate, opens the attack sphere on it ("Cube") and strikes it, which leaves it standing.</summary>
+    private bool _cube;
+    private int _cubeStep, _cubeRisk, _cubeRiskBefore;
     /// <summary>With <c>--status=N</c>, Ashley takes status effect N once she is the player's, for the HUD to show it.</summary>
     private int _status = -1;
     private int _shortcutStep;
@@ -109,6 +112,7 @@ public partial class FieldContracts : Node
             if (argument == "--fight") _fight = true;
             if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--carry") _carry = true;
+            if (argument == "--cube") _cube = true;
             if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
@@ -493,6 +497,48 @@ public partial class FieldContracts : Node
                     if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates) { Finish("Cross did not set the block down"); return; }
                     GD.Print($"FIELD: blocks stood at {_carryTiles}, now at {CrateTiles()}");
                     Finish(CrateTiles() == _carryTiles ? "the block was set down where it was lifted from, not behind her" : "");
+                    return;
+            }
+            return;
+        }
+        if (_cube && _view.Controlled && _view.Player is { } striker && _view.Battle is { Ashley: { } cubeStriker } cubeBattle)
+        {
+            if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+            switch (++_cubeStep)
+            {
+                case 1:
+                {
+                    _carryCrates = new List<(string, int, int, int, float, int)>(_view.Crates).Count;
+                    _carryTiles = CrateTiles();
+                    (int X, int Z)? nearest = null;
+                    foreach (var crate in _view.Crates)
+                        if (nearest == null || new Vector2(crate.X * 128 + 64 - striker.Position.X, crate.Z * 128 + 64 - striker.Position.Z).Length() < new Vector2(nearest.Value.X * 128 + 64 - striker.Position.X, nearest.Value.Z * 128 + 64 - striker.Position.Z).Length())
+                            nearest = (crate.X, crate.Z);
+                    if (nearest == null) { Finish("the room has no crate to strike"); return; }
+                    striker.Facing = striker.FacingToward(new Vector3(nearest.Value.X * 128 + 64, striker.Position.Y, nearest.Value.Z * 128 + 64));
+                    break;
+                }
+                case 10: Tap("ps_circle"); break;
+                case 60: Tap("ps_circle"); break;
+                case 75:
+                {
+                    Capture("cube_sphere");
+                    string readout = _view.SystemBox.Text;
+                    GD.Print($"FIELD: the sphere on the crate reads \"{readout.Replace('\n', '/')}\"");
+                    if (!cubeBattle.Paused) { Finish("Circle with the weapon drawn did not open the sphere on the crate"); return; }
+                    if (!readout.StartsWith("Cube", StringComparison.Ordinal)) { Finish($"the sphere did not name the crate Cube: \"{readout}\""); return; }
+                    _cubeRisk = cubeStriker.Risk;
+                    _cubeRiskBefore = cubeStriker.Risk;
+                    Tap("ps_circle");
+                    break;
+                }
+                case 85: Capture("cube_strike"); break;
+                case > 75 and < 160: _cubeRisk = Math.Max(_cubeRisk, cubeStriker.Risk); break;
+                case 160:
+                    Capture("cube_after");
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates || CrateTiles() != _carryTiles) { Finish("striking the crate moved or broke it"); return; }
+                    // RISK rises with the blow and falls back soon after (footage: RISK 1, then ZERO).
+                    Finish(_cubeRisk <= _cubeRiskBefore ? "striking the crate did not raise her RISK" : "");
                     return;
             }
             return;

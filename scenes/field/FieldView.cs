@@ -1912,6 +1912,25 @@ void fragment() {
     /// <summary>Palette transforms by what they cover: "room", or an actor's reference.</summary>
     private readonly Dictionary<string, Palette> _palettes = new();
 
+    /// <summary>The crate the attack sphere has chosen and how it is drawn.</summary>
+    private string? _litCrate;
+    private readonly Palette _crateLight = new() { Scale = 0, Grey = 1 };
+
+    /// <summary>
+    /// Draws a crate as the attack sphere's chosen target, or puts the one lit back (null): its colours turn to their
+    /// grey with teal added, <paramref name="pulse"/> its strength (Episode 4, 6:01: the lit crate's red falls about
+    /// 11 of 255 and its green and blue rise about 16; the teal is added before the room's warm light, so it is set
+    /// to give that after it).
+    /// </summary>
+    public void LightCrate(string? id, float pulse)
+    {
+        if (_litCrate != null && _litCrate != id) ShowPalette(_litCrate, _palettes.GetValueOrDefault(_litCrate) ?? new Palette());
+        _litCrate = id;
+        if (id == null) return;
+        _crateLight.Offset = new Vector3(0, 0.17f, 0.13f) * pulse;
+        ShowPalette(id, _crateLight);
+    }
+
     /// <summary>
     /// Starts a retail palette operation from the state now shown: 0, 10 and 14 add the change to the current colours,
     /// 1 halves them first, 2 and 3 take their grey (3 halved), 4 and 9 add it to the original colours, 5 halves them,
@@ -4713,6 +4732,12 @@ void fragment() {
         if (Field == null) return;
         var rigs = new HashSet<StandardMaterial3D>();
         foreach (var rig in Field.Rigs.Values) rigs.UnionWith(rig.Materials);
+        // Crates are actors to retail, so they stay lit with the characters (Episode 4, 6:01).
+        foreach (var crate in _crates)
+            foreach (var found in crate.Node.FindChildren("*", "MeshInstance3D", true, false))
+                if (((MeshInstance3D)found).Mesh is { } mesh)
+                    for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+                        if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material) rigs.Add(material);
         var light = dim ? new Color(0.5f, 0.54f, 1.06f) : new Color(2, 2, 2);
         foreach (var material in Field.Materials)
             if (!rigs.Contains(material)) material.AlbedoColor = light with { A = material.AlbedoColor.A };

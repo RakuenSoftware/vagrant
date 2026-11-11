@@ -58,7 +58,7 @@ public sealed class RetailInstallation
                 files["dialogue_font"] = "dialogue_font.json";
                 File.WriteAllText(Path.Combine(stage, "system_font.json"), dialogue.ExportPlain(stage, files).ToJsonString());
                 files["system_font"] = "system_font.json";
-                File.WriteAllText(Path.Combine(stage, "battle_text.json"), dialogue.ExportBattleText().ToJsonString());
+                File.WriteAllText(Path.Combine(stage, "battle_text.json"), dialogue.ExportBattleText(disc.ReadFile("SLUS_010.40")).ToJsonString());
                 files["battle_text"] = "battle_text.json";
 
                 progress("Converting the HUD…");

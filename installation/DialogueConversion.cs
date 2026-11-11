@@ -113,6 +113,9 @@ public sealed class DialogueConversion
     // BATTLE.PRG's field text tables: one at 0x800EA868 of halfword offsets in halfwords from itself, and the field
     // messages' at 0x800EBDDC (0x800CB40C picks from it).
     private const int TextTable = unchecked((int)0x800EA868) - Battle, MessageTable = unchecked((int)0x800EBDDC) - Battle;
+    // The name a crate's fighter record takes as a target ("Cube"), which BATTLE.PRG 0x8007647C copies from the
+    // executable (loaded at 0x8000F800 past its 0x800-byte header).
+    private const int CubeName = unchecked((int)0x8004FDD0) - unchecked((int)0x8000F800);
     // The field menu's table (0x800EB9DC): its commands (0 to 9: MAGIC, BREAK ARTS, BATTLE ABILITIES, ITEMS, STATUS,
     // MAP, DATA, OPTIONS, SCORE, QUICK MANUAL), then "This command cannot be used" (11) and its reasons (13 to 21).
     private const int MenuTable = unchecked((int)0x800EB9DC) - Battle;
@@ -126,9 +129,9 @@ public sealed class DialogueConversion
     /// 1 to 10 the chests' and doors': bound by magic, locked with a key, locked, unlocked with a key), and the menu
 /// table's announcements (23 to 30: Spell, Special Attack, Break Art, Item Effect and Trap, each with its name in
 /// quotes, and "Mastered the spell"). A string
-    /// the game fills in (ff n) is a string token at its place.
+    /// the game fills in (ff n) is a string token at its place. The executable gives the name a crate is aimed at by.
     /// </summary>
-    public JsonObject ExportBattleText()
+    public JsonObject ExportBattleText(byte[] executable)
     {
         string Ascii(int at)
         {
@@ -164,6 +167,7 @@ public sealed class DialogueConversion
             ["messages"] = messages,
             ["menu"] = Table(MenuTable, 0, 9), ["menu_refusal"] = Entry(MenuTable, 11), ["menu_reasons"] = Table(MenuTable, 13, 21),
             ["announcements"] = Table(MenuTable, 23, 30),
+            ["cube"] = Decode(executable, CubeName).Text,
         };
     }
 
