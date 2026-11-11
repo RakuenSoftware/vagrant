@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json.Nodes;
 using Godot;
 using Wol.Games.Vagrant.Installation;
@@ -24,11 +25,10 @@ public sealed class FieldContent
     private const long MusicSectors = 0x8004A6C0, SoundFileMap = 0x8004B1B0, SoundSectors = 0x8004A530, EffectSectors = 0x8004A9E0;
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
 
-    private readonly Func<string, byte[]> _read;
-    /// <summary>Every file the installation keeps from the disc.</summary>
-    private readonly List<string> _paths = new();
-    private readonly Func<string, bool> _exists;
-    private readonly Func<long, string> _pathAt;
+    /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
+    private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, string> _paths = new();
+    private readonly string _disc;
     private readonly byte[] _battle, _executable;
     private readonly Dictionary<string, JsonObject?> _data = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Image> _images = new(StringComparer.Ordinal);
@@ -43,24 +43,80 @@ public sealed class FieldContent
     /// <summary>The event sound banks an event file starts with: those of the room or event that first leads to it.</summary>
     private readonly Dictionary<string, (int[] Slots, int Selected, int[] Animations, int AnimationSelected)> _parentBanks = new(StringComparer.Ordinal);
 
-    /// <summary>Where converted rigs are kept between sessions (null to keep none): see <see cref="RetailContent"/>.</summary>
+    /// <summary>
+    /// Where what is decoded slowly (rooms, rigs) is kept between sessions, under this build's identity so that a new
+    /// build decodes afresh; older builds' folders are removed. Null when it cannot be written.
+    /// </summary>
     private readonly string? _cache;
-    /// <summary>A file the installation converted (the rooms, Ashley's rig), verified, by its asset name; null when it has none.</summary>
-    private readonly Func<string, byte[]?> _installed;
 
-    public FieldContent(Func<string, byte[]> read, Func<string, bool> exists, Func<long, string> pathAt, IEnumerable<string> paths, string? cache = null, Func<string, byte[]?>? installed = null)
+    /// <summary>The installation at <paramref name="root"/> (see <see cref="RetailInstallation"/>).</summary>
+    public FieldContent(string root)
     {
-        _cache = cache;
-        _installed = installed ?? (_ => null);
-        _paths.AddRange(paths);
-        _read = read;
-        _exists = exists;
-        _pathAt = pathAt;
-        _battle = read("BATTLE/BATTLE.PRG");
-        _executable = read("SLUS_010.40");
+        var installation = new RetailInstallation(root);
+        if (!File.Exists(installation.RecordPath)) throw new FileNotFoundException("Vagrant Story has not been installed from your disc yet.");
+        var record = JsonNode.Parse(File.ReadAllText(installation.RecordPath)) as JsonObject;
+        if ((string?)record?["volume"] != RetailDisc.VolumeIdentifier || record["sectors"] is not JsonObject sectors)
+            throw new InvalidDataException("The installation is incomplete. Install from your disc again.");
+        foreach (var (path, sector) in sectors)
+        {
+            _sectors[path] = (long)sector!;
+            _paths[(long)sector!] = path;
+        }
+        _disc = installation.DiscPath;
+        _cache = Cache(installation.CachePath);
+        _battle = Read("BATTLE/BATTLE.PRG");
+        _executable = Read("SLUS_010.40");
         // Ashley fights with her weapon's battle set (she has every category's, below).
         _battleSets[0] = BattleSet(0, Data("player")!["weapon"]!);
     }
+
+    private static string? Cache(string root)
+    {
+        try
+        {
+            string build = typeof(FieldContent).Assembly.ManifestModule.ModuleVersionId.ToString("N");
+            Directory.CreateDirectory(Path.Combine(root, build));
+            foreach (string old in Directory.GetDirectories(root)) if (Path.GetFileName(old) != build) Directory.Delete(old, true);
+            return Path.Combine(root, build);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>The disc files already checked against the retail digest, as they stood when checked.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Length, DateTime Written)> Checked = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A disc file as the installation keeps it, rejected unless it is still the retail file: a Form 1 file by its
+    /// digest, a streamed one (its raw sectors) by the digest of each sector past its address header.
+    /// </summary>
+    public string DiscFile(string path)
+    {
+        string file = Path.Combine(_disc, path);
+        var info = new FileInfo(file);
+        if (!_sectors.ContainsKey(path) || !info.Exists) throw new InvalidDataException($"The installation is missing {path}. Install from your disc again.");
+        if (Checked.TryGetValue(file, out var seen) && seen == (info.Length, info.LastWriteTimeUtc)) return file;
+        string digest;
+        if (RetailDisc.Catalog.StreamDigests.TryGetValue(path, out var stream))
+        {
+            using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+            byte[] raw = System.IO.File.ReadAllBytes(file);
+            int size = Wol.Engine.Install.PlayStationDisc.RawSectorSize;
+            for (int at = 0; at + size <= raw.Length; at += size) hash.AppendData(raw, at + 16, size - 16);
+            digest = raw.Length % size == 0 && Convert.ToHexStringLower(hash.GetHashAndReset()) == stream ? stream : "";
+        }
+        else digest = RetailDisc.Catalog.FileDigests.GetValueOrDefault(path, "-") is var expected && Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.IO.File.ReadAllBytes(file))) == expected ? expected : "";
+        if (digest.Length == 0) throw new InvalidDataException($"The installed {path} is damaged. Install from your disc again.");
+        Checked[file] = (info.Length, info.LastWriteTimeUtc);
+        return file;
+    }
+
+    /// <summary>A verified disc file's bytes.</summary>
+    public byte[] Read(string path) => System.IO.File.ReadAllBytes(DiscFile(path));
+
+    private bool Exists(string path) => _sectors.ContainsKey(path);
+
+    private string PathAt(long sector) => _paths.TryGetValue(sector, out var path) ? path : throw new InvalidDataException($"No file on the disc starts at sector {sector}.");
 
     private long Word(long address) => BitConverter.ToUInt32(_executable, (int)(2048 + address - 0x80010000));
     private int Byte(long address) => _executable[(int)(2048 + address - 0x80010000)];
@@ -76,7 +132,7 @@ public sealed class FieldContent
     private string WeaponAsset(JsonNode weapon)
     {
         int model = (int)weapon["model"]!, palette = _battle[(int)(MaterialPalettes - 0x80068800) + (int)weapon["material"]!];
-        if (model <= 0 || !_exists($"OBJ/{model:X2}.WEP")) return "";
+        if (model <= 0 || !Exists($"OBJ/{model:X2}.WEP")) return "";
         return $"weapon_{model:X2}_{palette}";
     }
 
@@ -93,29 +149,35 @@ public sealed class FieldContent
             _ when name.StartsWith("event_", StringComparison.Ordinal) => Event(name["event_".Length..]),
             _ when name.StartsWith("effect_", StringComparison.Ordinal) && int.TryParse(name["effect_".Length..], out int id) => Effect(id),
             _ when name.StartsWith("area_", StringComparison.Ordinal) && name != "area_names" && int.TryParse(name["area_".Length..], out int scene) =>
-                _exists($"SMALL/SCEN{scene:d3}.ARM") ? AreaMapConversion.Export(_read($"SMALL/SCEN{scene:d3}.ARM")) : null,
-            "area_names" => new JsonObject { ["list"] = AreaMapConversion.Names(_read("MENU/MENU5.PRG")) },
+                Exists($"SMALL/SCEN{scene:d3}.ARM") ? AreaMapConversion.Export(Read($"SMALL/SCEN{scene:d3}.ARM")) : null,
+            "area_names" => new JsonObject { ["list"] = AreaMapConversion.Names(Read("MENU/MENU5.PRG")) },
+            "title_layout" => new TitleConversion(Read("TITLE/TITLE.PRG")).Export(_images),
+            "dialogue_font" => new DialogueConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Export(_images),
+            "system_font" => new DialogueConversion(Read("BATTLE/SYSTEM.DAT"), _battle).ExportPlain(_images),
+            "dialogue_balloons" => new DialogueConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Balloons(_images),
+            "battle_text" => new DialogueConversion(Read("BATTLE/SYSTEM.DAT"), _battle).ExportBattleText(_executable),
+            "hud" => new HudConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Export(_images),
             "map_menu" => MapMenu(),
             "inventory" => Inventory(),
             "player" => Player(),
-            "item_names" => new JsonObject { ["list"] = InventoryConversion.Names(_read("MENU/ITEMNAME.BIN")) },
-            "item_help" => new JsonObject { ["list"] = InventoryConversion.Help(_read("MENU/ITEMHELP.BIN")) },
+            "item_names" => new JsonObject { ["list"] = InventoryConversion.Names(Read("MENU/ITEMNAME.BIN")) },
+            "item_help" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/ITEMHELP.BIN")) },
             // SETUP's pages (MENU/MENU12.BIN, laid out as ITEMHELP.BIN is): their words, help and refusals.
-            "setup_menu" => new JsonObject { ["list"] = InventoryConversion.Help(_read("MENU/MENU12.BIN")) },
-            "gadget_bag" => InventoryConversion.GadgetBag(_read("MENU/MENUB.PRG")),
+            "setup_menu" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/MENU12.BIN")) },
+            "gadget_bag" => InventoryConversion.GadgetBag(Read("MENU/MENUB.PRG")),
             "item_menu" => ItemMenu(),
-            "equip_labels" => InventoryConversion.EquipLabels(_read("MENU/MAINMENU.PRG")),
-            "container_menu" => InventoryConversion.ContainerMenu(_read("MENU/MENUD.PRG")),
+            "equip_labels" => InventoryConversion.EquipLabels(Read("MENU/MAINMENU.PRG")),
+            "container_menu" => InventoryConversion.ContainerMenu(Read("MENU/MENUD.PRG")),
             "memory_card" => MemoryCard(),
             "results" => Results(),
-            "consumables" => InventoryConversion.Consumables(_read("MENU/MAINMENU.PRG"), _executable),
+            "consumables" => InventoryConversion.Consumables(Read("MENU/MAINMENU.PRG"), _executable),
             "abilities" => InventoryConversion.Abilities(_executable),
             "spells" => InventoryConversion.Spells(_executable),
             "trap_actions" => InventoryConversion.TrapActions(_executable),
-            "battle_abilities" => InventoryConversion.BattleAbilitiesMenu(_read("MENU/MENU2.PRG"), _executable),
-            "break_arts" => InventoryConversion.BreakArtsMenu(_read("MENU/MENU1.PRG")),
-            "status_menu" => InventoryConversion.StatusMenu(_read("MENU/MENU4.PRG"), _battle),
-            "magic_menu" => InventoryConversion.MagicMenu(_read("MENU/MENU0.PRG"), _battle),
+            "battle_abilities" => InventoryConversion.BattleAbilitiesMenu(Read("MENU/MENU2.PRG"), _executable),
+            "break_arts" => InventoryConversion.BreakArtsMenu(Read("MENU/MENU1.PRG")),
+            "status_menu" => InventoryConversion.StatusMenu(Read("MENU/MENU4.PRG"), _battle),
+            "magic_menu" => InventoryConversion.MagicMenu(Read("MENU/MENU0.PRG"), _battle),
             "combining" => Combining(),
             "manual" => Manual(),
             "ending" => Ending(),
@@ -131,10 +193,10 @@ public sealed class FieldContent
         if (_images.TryGetValue(name, out var image)) return image;
         // Images come with the document that names them.
         // A room's are "field_zzzz_mmm.key", "field_zzzz_mmm.sky" and "field_zzzz_mmm_key_framesn".
-        if (name.StartsWith("field_", StringComparison.Ordinal) && _installed(name) is { } png)
+        if (name.StartsWith("field_", StringComparison.Ordinal) && Cached(name + ".png") is { } png && System.IO.File.Exists(png))
         {
             var picture = new Image();
-            if (picture.LoadPngFromBuffer(png) != Error.Ok) throw new InvalidDataException($"The installed {name} could not be read.");
+            if (picture.LoadPngFromBuffer(System.IO.File.ReadAllBytes(png)) != Error.Ok) throw new InvalidDataException($"The cached {name} could not be read.");
             return _images[name] = picture;
         }
         if (name.StartsWith("field_", StringComparison.Ordinal) && name.Length >= 14) Data(name[..14]);
@@ -142,9 +204,15 @@ public sealed class FieldContent
         else if (name.StartsWith("manual_", StringComparison.Ordinal)) Data("manual");
         else if (name.StartsWith("ending_", StringComparison.Ordinal)) Data("ending");
         else if (name.StartsWith("hud_page_", StringComparison.Ordinal) && int.TryParse(name["hud_page_".Length..], out int clut))
-            _images[name] = new HudConversion(_read("BATTLE/SYSTEM.DAT"), _battle).Page(clut);
+            _images[name] = new HudConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Page(clut);
         else if (name.StartsWith("hud_second_", StringComparison.Ordinal) && name["hud_second_".Length..].Split('_') is [var px, var py] && int.TryParse(px, out int secondX) && int.TryParse(py, out int secondY))
-            _images[name] = new HudConversion(_read("BATTLE/SYSTEM.DAT"), _battle).SecondPage(secondX, secondY);
+            _images[name] = new HudConversion(Read("BATTLE/SYSTEM.DAT"), _battle).SecondPage(secondX, secondY);
+        else if (name.StartsWith("hud_", StringComparison.Ordinal)) Data("hud");
+        else if (name is "publisher" or "developer" || name.StartsWith("title_", StringComparison.Ordinal)) Data("title_layout");
+        else if (name == "loading") _images[name] = TitleConversion.Loading(_executable);
+        else if (name == "dialogue_font_image") Data("dialogue_font");
+        else if (name == "system_font_image") Data("system_font");
+        else if (name == "dialogue_paper") Data("dialogue_balloons");
         else if (name == "item_menu_backdrop") Data("item_menu");
         else if (name == "map_backdrop") Data("map_menu");
         else if (name == "memory_card_pictures") Data("memory_card");
@@ -161,36 +229,36 @@ public sealed class FieldContent
     /// <summary>The map screen (MENU5.PRG) and its backdrop (MENU/MAPBG.BIN, <see cref="AreaMapConversion.Backdrop"/>).</summary>
     private JsonObject MapMenu()
     {
-        _images["map_backdrop"] = AreaMapConversion.Backdrop(_read("MENU/MAPBG.BIN"));
-        return AreaMapConversion.Menu(_read("MENU/MENU5.PRG"));
+        _images["map_backdrop"] = AreaMapConversion.Backdrop(Read("MENU/MAPBG.BIN"));
+        return AreaMapConversion.Menu(Read("MENU/MENU5.PRG"));
     }
 
     private JsonObject ItemMenu()
     {
-        _images["item_menu_backdrop"] = InventoryConversion.Backdrop(_read("MENU/MENUBG.BIN"));
-        return new JsonObject { ["strings"] = InventoryConversion.MenuStrings(_read("MENU/MENU3.PRG"), 0x6BB8), ["backdrop"] = "item_menu_backdrop" };
+        _images["item_menu_backdrop"] = InventoryConversion.Backdrop(Read("MENU/MENUBG.BIN"));
+        return new JsonObject { ["strings"] = InventoryConversion.MenuStrings(Read("MENU/MENU3.PRG"), 0x6BB8), ["backdrop"] = "item_menu_backdrop" };
     }
 
     /// <summary>The memory card screens' text, tables and save pictures (<see cref="MemoryCardConversion"/>).</summary>
     private JsonObject MemoryCard()
     {
-        _images["memory_card_pictures"] = MemoryCardConversion.Pictures(_read("MENU/SPMCIMG.BIN"), _read("MENU/MCDATA.BIN"));
-        return MemoryCardConversion.Export(_read("MENU/MCMAN.BIN"), _executable, _battle, _read("MENU/MENU7.PRG"));
+        _images["memory_card_pictures"] = MemoryCardConversion.Pictures(Read("MENU/SPMCIMG.BIN"), Read("MENU/MCDATA.BIN"));
+        return MemoryCardConversion.Export(Read("MENU/MCMAN.BIN"), _executable, _battle, Read("MENU/MENU7.PRG"));
     }
 
     /// <summary>The CONGRATULATIONS screen's tables and lettering (<see cref="ResultsConversion"/>).</summary>
     private JsonObject Results()
     {
-        var rank = _read("SMALL/RANK.DIS");
+        var rank = Read("SMALL/RANK.DIS");
         _images["results_sheet"] = ResultsConversion.Sheet(rank, 0);
         _images["results_reel"] = ResultsConversion.Sheet(rank, 2);
-        return ResultsConversion.Export(_read("MENU/MENUF.PRG"));
+        return ResultsConversion.Export(Read("MENU/MENUF.PRG"));
     }
 
     private JsonObject Inventory()
     {
         // New Game gives her the inventory in TITLE.PRG; her equipped weapon's blade carries its material.
-        var inventory = new InventoryConversion(_read("TITLE/TITLE.PRG")).Export();
+        var inventory = new InventoryConversion(Read("TITLE/TITLE.PRG")).Export();
         foreach (var blade in inventory["blades"]!.AsArray()) blade!["asset"] = WeaponAsset(blade);
         foreach (var piece in inventory["armour"]!.AsArray())
             if ((int)piece!["id"]! is >= 127 and <= 142) piece["asset"] = WeaponAsset(piece);
@@ -200,7 +268,7 @@ public sealed class FieldContent
     private JsonObject Player()
     {
         // Ashley, the player, is model 0 in every room; no event creates her. Her starting record is in INITBTL.PRG.
-        var player = MapConversion.CharacterRecord(_read("BATTLE/INITBTL.PRG"), MapConversion.AshleyRecord);
+        var player = MapConversion.CharacterRecord(Read("BATTLE/INITBTL.PRG"), MapConversion.AshleyRecord);
         var inventory = Data("inventory")!;
         foreach (var weapon in inventory["weapons"]!.AsArray())
         {
@@ -215,7 +283,7 @@ public sealed class FieldContent
     private JsonObject Combining()
     {
         // Combining makes blades of any kind in any metal; the field names their models by the material's palette.
-        var combining = InventoryConversion.Combining(_read("MENU/BLADE.SYD"), _read("MENU/MENUC.PRG"), _executable, _read("MENU/SHIELD.SYD"), _read("MENU/ARMOR.SYD"));
+        var combining = InventoryConversion.Combining(Read("MENU/BLADE.SYD"), Read("MENU/MENUC.PRG"), _executable, Read("MENU/SHIELD.SYD"), Read("MENU/ARMOR.SYD"));
         var palettes = new JsonArray();
         for (int material = 0; material < 8; material++) palettes.Add((int)_battle[(int)(MaterialPalettes - 0x80068800) + material]);
         combining["palettes"] = palettes;
@@ -227,7 +295,7 @@ public sealed class FieldContent
         // The Quick Manual's topics (SMALL/HELP01.HF0 to HELP14.HF0).
         var topics = new JsonArray();
         for (int topic = 1; topic <= ManualConversion.Topics; topic++)
-            topics.Add(ManualConversion.Export(_read($"SMALL/HELP{topic:d2}.HF0"), _read($"SMALL/HELP{topic:d2}.HF1"), $"manual_{topic:d2}", _images));
+            topics.Add(ManualConversion.Export(Read($"SMALL/HELP{topic:d2}.HF0"), Read($"SMALL/HELP{topic:d2}.HF1"), $"manual_{topic:d2}", _images));
         return new JsonObject { ["topics"] = topics };
     }
 
@@ -238,10 +306,10 @@ public sealed class FieldContent
         for (int n = EndingConversion.FirstIllustration; n <= EndingConversion.LastIllustration; n++)
         {
             string asset = $"ending_illust_{n:d2}";
-            _images[asset] = EndingConversion.Tim(EndingConversion.Decompress(_read($"ENDING/ILLUST{n:d2}.BIN")));
+            _images[asset] = EndingConversion.Tim(EndingConversion.Decompress(Read($"ENDING/ILLUST{n:d2}.BIN")));
             illustrations.Add(asset);
         }
-        return new JsonObject { ["illustrations"] = illustrations, ["credits"] = EndingConversion.Credits(_read("ENDING/ENDING.PRG")) };
+        return new JsonObject { ["illustrations"] = illustrations, ["credits"] = EndingConversion.Credits(Read("ENDING/ENDING.PRG")) };
     }
 
     /// <summary>Every room the disc has, by name ("z001_m00"): each zone's maps, in its list's order.</summary>
@@ -254,26 +322,45 @@ public sealed class FieldContent
     }
 
     /// <summary>
-    /// Converts a room for the installation: its document and its pictures, by asset name. What the conversion kept
-    /// of the room is dropped again, so that converting every room does not hold them all.
+    /// Decodes a room into the cache, then lets go of it again, so that preparing every room does not hold them all.
     /// </summary>
-    public (JsonObject Document, List<(string Name, Image Image)> Images)? ConvertRoom(string name)
+    public void CacheRoom(string name)
     {
-        if (Data("field_" + name) is not { } document) return null;
-        var images = new List<(string, Image)>();
-        foreach (var (key, image) in _images)
-            if (key.StartsWith("field_" + name, StringComparison.Ordinal)) images.Add((key, image));
-        foreach (var (key, _) in images) _images.Remove(key);
+        Data("field_" + name);
+        foreach (var key in new List<string>(_images.Keys))
+            if (key.StartsWith("field_" + name, StringComparison.Ordinal)) _images.Remove(key);
         _data.Remove("field_" + name);
         _rooms.Remove(name);
-        return (document, images);
+    }
+
+    /// <summary>A file in the cache by name (rooms and their pictures under rooms/); null without a cache.</summary>
+    private string? Cached(string name) => _cache == null ? null : Path.Combine(_cache, name.StartsWith("field_", StringComparison.Ordinal) ? "rooms" : "", name);
+
+    /// <summary>Writes a cache file whole or not at all, so that a session stopped while writing leaves nothing half made.</summary>
+    private static void Keep(string file, Action<string> write)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        string partial = file + "." + Guid.NewGuid().ToString("N") + ".partial";
+        write(partial);
+        System.IO.File.Move(partial, file, true);
+    }
+
+    /// <summary>Whether a room loads quickly: it, and the rig of each of its characters, already in the cache.</summary>
+    public bool IsCached(int zone, int map)
+    {
+        string room = $"field_z{zone:d3}_m{map:d2}";
+        if (Cached(room + ".json") is not { } file || !System.IO.File.Exists(file) || _cache == null) return false;
+        var document = JsonNode.Parse(System.IO.File.ReadAllBytes(file));
+        foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => (int)actor!["character"]!)))
+            if (Directory.GetFiles(_cache, $"character_{character:X2}_*.glb").Length == 0) return false;
+        return true;
     }
 
     /// <summary>Whether the disc has a room: its zone, and a map of that index in the zone's list with a file.</summary>
     public bool HasRoom(int zone, int map)
     {
-        if (!_exists($"MAP/ZONE{zone:d3}.ZND")) return false;
-        byte[] znd = _read($"MAP/ZONE{zone:d3}.ZND");
+        if (!Exists($"MAP/ZONE{zone:d3}.ZND")) return false;
+        byte[] znd = Read($"MAP/ZONE{zone:d3}.ZND");
         // A slot of the zone's room list with no sector is empty (ZONE000 lists such a room).
         return map >= 0 && map < BitConverter.ToInt32(znd, 4) / 8 && BitConverter.ToUInt32(znd, BitConverter.ToInt32(znd, 0) + map * 8) != 0;
     }
@@ -284,21 +371,21 @@ public sealed class FieldContent
     private JsonObject? Room(string name)
     {
         if (name.Length != 8 || !int.TryParse(name[1..4], out int zone) || !int.TryParse(name[6..8], out int map) || !HasRoom(zone, map)) return null;
-        byte[] znd = _read($"MAP/ZONE{zone:d3}.ZND");
+        byte[] znd = Read($"MAP/ZONE{zone:d3}.ZND");
         int mpdList = BitConverter.ToInt32(znd, 0);
-        string mpdPath = _pathAt(BitConverter.ToUInt32(znd, mpdList + map * 8));
-        byte[] mpd = _read(mpdPath);
+        string mpdPath = PathAt(BitConverter.ToUInt32(znd, mpdList + map * 8));
+        byte[] mpd = Read(mpdPath);
         var room = new MapConversion("field_" + name, znd, mpd);
-        // A room the installation converted is read as it was made; what its conversion leaves behind (the room for
-        // its local events and sound bank, its characters' unit files and battle sets) is made again from it.
-        if (_installed("field_" + name) is { } installed && JsonNode.Parse(installed) is JsonObject kept)
+        // A room in the cache is read as it was made; what its decoding leaves behind (the room for its local events
+        // and sound bank, its characters' unit files and battle sets) is made again from it.
+        if (Cached($"field_{name}.json") is { } cachedRoom && System.IO.File.Exists(cachedRoom) && JsonNode.Parse(System.IO.File.ReadAllBytes(cachedRoom)) is JsonObject kept)
         {
             _rooms[name] = room;
             _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
             foreach (var actor in kept["room_actors"]!.AsArray())
             {
                 int character = (int)actor!["character"]!;
-                _units.TryAdd(character, _pathAt((uint)(long)actor["unit_sector"]!));
+                _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
                 _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));
             }
             return kept;
@@ -306,14 +393,14 @@ public sealed class FieldContent
         room.AddObjects(_battle);
         // A room's sky is BG/<map number>OP01A, where the disc has one.
         string sky = $"BG/{Path.GetFileNameWithoutExtension(mpdPath)[3..]}OP01A";
-        if (_exists(sky + ".TIM")) room.AddSky(_read(sky + ".TIM"), _read(sky + ".FAR"));
+        if (Exists(sky + ".TIM")) room.AddSky(Read(sky + ".TIM"), Read(sky + ".FAR"));
         var document = room.Export(_images);
         _rooms[name] = room;
         _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
         foreach (var actor in document["room_actors"]!.AsArray())
         {
             int character = (int)actor!["character"]!;
-            _units.TryAdd(character, _pathAt((uint)(long)actor["unit_sector"]!));
+            _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
             _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));
             actor["stats"]!["weapon"]!["asset"] = WeaponAsset(actor["stats"]!["weapon"]!);
             if (actor["stats"]!["shield"] is { } carried && (int)carried["id"]! != 0) carried["asset"] = WeaponAsset(carried);
@@ -333,6 +420,12 @@ public sealed class FieldContent
         // The zone loads its music (ZND byte 24) into music slot 3 before the room's event starts.
         int music = znd[24];
         if (music != 0) document["music"] = new JsonObject { ["3"] = $"music_{music:d3}" };
+        if (Cached($"field_{name}.json") is { } cache)
+        {
+            foreach (var (key, image) in _images)
+                if (key.StartsWith("field_" + name, StringComparison.Ordinal)) Keep(Cached(key + ".png")!, partial => image.SavePng(partial));
+            Keep(cache, partial => System.IO.File.WriteAllText(partial, document.ToJsonString()));
+        }
         return document;
     }
 
@@ -349,16 +442,16 @@ public sealed class FieldContent
         if (name.StartsWith("evt", StringComparison.Ordinal))
         {
             string path = $"EVENT/{name[3..]}.EVT";
-            if (!_exists(path)) return null;
-            (data, offset) = (_read(path), 0);
+            if (!Exists(path)) return null;
+            (data, offset) = (Read(path), 0);
         }
         else
         {
             string roomName = name[..8];
             if (Data("field_" + roomName) is not { } document) return null;
             var room = _rooms[roomName];
-            byte[] znd = _read($"MAP/ZONE{int.Parse(roomName[1..4]):d3}.ZND");
-            data = _read(_pathAt(BitConverter.ToUInt32(znd, BitConverter.ToInt32(znd, 0) + int.Parse(roomName[6..8]) * 8)));
+            byte[] znd = Read($"MAP/ZONE{int.Parse(roomName[1..4]):d3}.ZND");
+            data = Read(PathAt(BitConverter.ToUInt32(znd, BitConverter.ToInt32(znd, 0) + int.Parse(roomName[6..8]) * 8)));
             if (name.Length > 8)
             {
                 // A local event plays with the banks the room's script left.
@@ -404,14 +497,14 @@ public sealed class FieldContent
 
     /// <summary>A visual effect (EFFECT/Ennn.P with its textures and palettes): its blocks, with its atlas among the images.</summary>
     private JsonObject? Effect(int id) =>
-        id is < 0 or >= 320 ? null : EffectConversion.Export(id, path => _exists(path) ? _read(path) : null, $"effect_{id:d3}", _images);
+        id is < 0 or >= 320 ? null : EffectConversion.Export(id, path => Exists(path) ? Read(path) : null, $"effect_{id:d3}", _images);
 
     /// <summary>A full-screen overlay's layers, their images among the images.</summary>
     public JsonObject Overlay(int id)
     {
         string name = $"overlay_{id:d3}";
         if (_data.TryGetValue(name, out var known)) return known!;
-        var overlay = new OverlayConversion(name, _read(OverlayConversion.PathFor(_pathAt, _battle, id))).Export(_images);
+        var overlay = new OverlayConversion(name, Read(OverlayConversion.PathFor(PathAt, _battle, id))).Export(_images);
         _data[name] = overlay;
         return overlay;
     }
@@ -426,7 +519,7 @@ public sealed class FieldContent
 
     /// <summary>Whether the disc has a character model or weapon ("character_XX", "weapon_XX_p").</summary>
     public bool HasModel(string name) =>
-        name.StartsWith("weapon_", StringComparison.Ordinal) ? name.Length > 9 && _exists($"OBJ/{name[7..9]}.WEP")
+        name.StartsWith("weapon_", StringComparison.Ordinal) ? name.Length > 9 && Exists($"OBJ/{name[7..9]}.WEP")
         : Character(name) != null;
 
     /// <summary>A weapon's model as binary glTF: OBJ/&lt;id&gt;.WEP in one of its palettes ("weapon_XX_p").</summary>
@@ -434,7 +527,7 @@ public sealed class FieldContent
     {
         if (_weapons.TryGetValue(name, out var model)) return model;
         string[] parts = name.Split('_');
-        var weapon = CharacterConversion.Weapon(name, _read($"OBJ/{parts[1]}.WEP"), int.Parse(parts[2]));
+        var weapon = CharacterConversion.Weapon(name, Read($"OBJ/{parts[1]}.WEP"), int.Parse(parts[2]));
         weapon.Export();
         return _weapons[name] = weapon.Model;
     }
@@ -460,13 +553,13 @@ public sealed class FieldContent
     private string? Unit(int character)
     {
         if (_units.TryGetValue(character, out var known)) return known;
-        if (_exists($"OBJ/{character:X2}.SHP")) return null;
+        if (Exists($"OBJ/{character:X2}.SHP")) return null;
         if (_unitIndex == null)
         {
             _unitIndex = new Dictionary<int, string>();
-            var paths = _paths.FindAll(path => path.StartsWith("MAP/", StringComparison.Ordinal) && path.EndsWith(".ZUD", StringComparison.Ordinal));
+            var paths = new List<string>(System.Linq.Enumerable.Where(_sectors.Keys, path => path.StartsWith("MAP/", StringComparison.Ordinal) && path.EndsWith(".ZUD", StringComparison.Ordinal)));
             paths.Sort(StringComparer.Ordinal);
-            foreach (string path in paths) _unitIndex.TryAdd(_read(path)[0], path);
+            foreach (string path in paths) _unitIndex.TryAdd(Read(path)[0], path);
         }
         if (!_unitIndex.TryGetValue(character, out var found)) return null;
         _units[character] = found;
@@ -482,13 +575,13 @@ public sealed class FieldContent
         {
             // A unit file is two id words, then offset and size pairs: the model (SHP), weapon (WEP), shield,
             // an extra animation set, and the character's own animation set, common and battle moves together.
-            byte[] unit = _read(unitPath);
+            byte[] unit = Read(unitPath);
             int modelAt = BitConverter.ToInt32(unit, 8), modelSize = BitConverter.ToInt32(unit, 12);
             if (modelAt + modelSize > unit.Length) throw new InvalidDataException($"{unitPath} is malformed.");
             return unit[modelAt..(modelAt + modelSize)];
         }
         string model = $"OBJ/{character:X2}.SHP";
-        return _exists(model) ? _read(model) : null;
+        return Exists(model) ? Read(model) : null;
     }
 
     /// <summary>A rig definition's clips that move their actor, made when an older definition has none.</summary>
@@ -506,7 +599,7 @@ public sealed class FieldContent
         bool own = false;
         if (Unit(character) is { } unitPath)
         {
-            byte[] unit = _read(unitPath);
+            byte[] unit = Read(unitPath);
             int seqAt = BitConverter.ToInt32(unit, 40), seqSize = BitConverter.ToInt32(unit, 44);
             int extraAt = BitConverter.ToInt32(unit, 32), extraSize = BitConverter.ToInt32(unit, 36);
             if (seqAt + seqSize > unit.Length || extraAt + extraSize > unit.Length) throw new InvalidDataException($"{unitPath} is malformed.");
@@ -515,20 +608,13 @@ public sealed class FieldContent
             if (extraSize > 0) animations.Add(("base", unit, extraAt));
             if (seqSize > 0) { animations.Add(("base", unit, seqAt)); own = true; }
         }
-        if (!own && _exists(baseSet)) { animations.Add(("base", _read(baseSet), 0)); own = true; }
+        if (!own && Exists(baseSet)) { animations.Add(("base", Read(baseSet), 0)); own = true; }
         if (!own && FamilySet(character) is { } family) animations.Add(("base", family.Unit, family.At));
-        if (_battleSets.TryGetValue(character, out var battleSet) && _exists(battleSet)) animations.Add(("battle", _read(battleSet), 0));
+        if (_battleSets.TryGetValue(character, out var battleSet) && Exists(battleSet)) animations.Add(("battle", Read(battleSet), 0));
         // Event animation sets are not part of the rig: an event's set is added when the event first plays from it.
         var conversion = new CharacterConversion(name, shape, animations) { ScriptLengths = _battle[ScriptLengthsAt..(ScriptLengthsAt + 70)] };
         // A rig built before, from the same unit file and battle set, is kept in the cache: its definition and model
         // as they were made, and only its skeleton rebuilt, for the event sets added to it later.
-        // Ashley's rig, the same in every game, the installation converts.
-        if (character == 0 && _installed("rig_" + name) is { } rig && _installed("rig_" + name + "_definition") is { } made && JsonNode.Parse(made) is JsonObject defined)
-        {
-            conversion.Prepare();
-            _conversions[character] = (conversion, defined);
-            return (defined, rig);
-        }
         string? cached = _cache == null ? null : Path.Combine(_cache, $"{name}_{(Unit(character) ?? "obj").Replace('/', '_')}_{(_battleSets.GetValueOrDefault(character) ?? "none").Replace('/', '_')}");
         if (cached != null && File.Exists(cached + ".json") && File.Exists(cached + ".glb") && JsonNode.Parse(File.ReadAllText(cached + ".json")) is JsonObject kept)
         {
@@ -539,8 +625,8 @@ public sealed class FieldContent
         var definition = conversion.Export();
         if (cached != null)
         {
-            File.WriteAllBytes(cached + ".glb", conversion.Model);
-            File.WriteAllText(cached + ".json", definition.ToJsonString());
+            Keep(cached + ".glb", partial => System.IO.File.WriteAllBytes(partial, conversion.Model));
+            Keep(cached + ".json", partial => System.IO.File.WriteAllText(partial, definition.ToJsonString()));
         }
         _conversions[character] = (conversion, definition);
         return (definition, conversion.Model);
@@ -561,11 +647,11 @@ public sealed class FieldContent
             if (model != character && (_battle[(int)(ModelAliases - 0x80068800) + model] == character || model == alias)) family.Add(model);
         if (family.Count == 0) return null;
         var paths = new List<string>();
-        foreach (var path in _paths) if (path.StartsWith("MAP/", StringComparison.Ordinal) && path.EndsWith(".ZUD", StringComparison.Ordinal)) paths.Add(path);
+        foreach (var path in _sectors.Keys) if (path.StartsWith("MAP/", StringComparison.Ordinal) && path.EndsWith(".ZUD", StringComparison.Ordinal)) paths.Add(path);
         paths.Sort(StringComparer.Ordinal);
         foreach (string path in paths)
         {
-            byte[] unit = _read(path);
+            byte[] unit = Read(path);
             int seqAt = BitConverter.ToInt32(unit, 40), seqSize = BitConverter.ToInt32(unit, 44);
             if (family.Contains(unit[0]) && seqSize > 0 && seqAt + seqSize <= unit.Length) return (unit, seqAt);
         }
@@ -591,13 +677,13 @@ public sealed class FieldContent
         {
             string file = set[0] == 'b' ? $"OBJ/00_BT{set[2]}.SEQ" : $"OBJ/00BT{set[3]}B0{set[4]}.SEQ";
             var (conversion, definition) = _conversions[character];
-            if (_exists(file)) clips.AddRange(conversion.Clips(set, _read(file), 0, definition["events"]!.AsObject(), Movement(definition)));
+            if (Exists(file)) clips.AddRange(conversion.Clips(set, Read(file), 0, definition["events"]!.AsObject(), Movement(definition)));
             return clips;
         }
         if (!set.StartsWith("esq", StringComparison.Ordinal) || !int.TryParse(set[3..], out int id)) return clips;
         string path = $"OBJ/E{id:X3}.ESQ";
-        if (!_exists(path)) return clips;
-        byte[] esq = _read(path);
+        if (!Exists(path)) return clips;
+        byte[] esq = Read(path);
         int entries = BitConverter.ToInt32(esq, 0), start = 4 + entries * 12;
         int alias = _battle[(int)(ModelAliases - 0x80068800) + character];
         foreach (int owner in new[] { character, alias })
@@ -617,7 +703,7 @@ public sealed class FieldContent
     public (byte[] Sequence, byte[] Bank)? Music(string name)
     {
         if (!name.StartsWith("music_", StringComparison.Ordinal) || !int.TryParse(name[6..], out int music)) return null;
-        return (_read(_pathAt(Word(MusicSectors + music * 4))), _read(_pathAt(Word(SoundSectors + Byte(SoundFileMap + music) * 4))));
+        return (Read(PathAt(Word(MusicSectors + music * 4))), Read(PathAt(Word(SoundSectors + Byte(SoundFileMap + music) * 4))));
     }
 
     /// <summary>
@@ -639,8 +725,8 @@ public sealed class FieldContent
             if (!_roomBanks.ContainsKey(kind[4..])) Data($"field_z{kind[4..7]}_m{kind[7..]}");
             bank = _roomBanks.GetValueOrDefault(kind[4..]);
         }
-        else if (kind.StartsWith("fx", StringComparison.Ordinal) && _exists($"EFFECT/E{kind[2..]}.P")) bank = EffectConversion.SoundBank(_read($"EFFECT/E{kind[2..]}.P"));
-        else if (kind.StartsWith("se", StringComparison.Ordinal) && int.TryParse(kind[2..], out int file)) bank = _read(_pathAt(Word(EffectSectors + file * 4)));
+        else if (kind.StartsWith("fx", StringComparison.Ordinal) && Exists($"EFFECT/E{kind[2..]}.P")) bank = EffectConversion.SoundBank(Read($"EFFECT/E{kind[2..]}.P"));
+        else if (kind.StartsWith("se", StringComparison.Ordinal) && int.TryParse(kind[2..], out int file)) bank = Read(PathAt(Word(EffectSectors + file * 4)));
         else if (kind.StartsWith("c", StringComparison.Ordinal) && kind.Length == 3)
         {
             // A character's own sounds sit in its model's sound section (offset 0x128, from 0xF8), laid out as an

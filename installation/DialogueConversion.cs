@@ -62,14 +62,10 @@ public sealed class DialogueConversion
     }
 
     /// <summary>Writes the font image and returns its definition, in the shape the field presentation builds a bitmap font from.</summary>
-    public JsonObject Export(string directory, IDictionary<string, string> files)
-    {
+    public JsonObject Export(IDictionary<string, Image> images) =>
         // The sheet holds two sets of the glyphs, 9 rows of 12 apart: an upright one, and below it the hand-lettered
         // italic capitals the field's balloons and its HUD print in.
-        var font = Sheet(directory, files, "dialogue_font", LetteredRow, _palette, _widths);
-        ExportBalloons(directory, files);
-        return font;
-    }
+        Sheet(images, "dialogue_font", LetteredRow, _palette, _widths);
 
     /// <summary>
     /// Writes the upright set the field's system box prints in (box type 4: the messages, such as "No target in
@@ -77,13 +73,13 @@ public sealed class DialogueConversion
     /// to their core (14 and 15), as the second ramp of the font table's next row (VRAM (848, 223)) runs from dark to
     /// white. The advances are the fixed-width set's (all 6; BATTLE.PRG 0x83010). Returns its definition.
     /// </summary>
-    public JsonObject ExportPlain(string directory, IDictionary<string, string> files)
+    public JsonObject ExportPlain(IDictionary<string, Image> images)
     {
         int fontOffset = (int)BitConverter.ToUInt32(_system, 28), palette = fontOffset + (223 * 64 + 16) * 2;
-        return Sheet(directory, files, "system_font", 0, _system[palette..(palette + 32)], _battle[(WidthTableOffset - Glyphs)..WidthTableOffset]);
+        return Sheet(images, "system_font", 0, _system[palette..(palette + 32)], _battle[(WidthTableOffset - Glyphs)..WidthTableOffset]);
     }
 
-    private JsonObject Sheet(string directory, IDictionary<string, string> files, string name, int row, byte[] palette, byte[] widths)
+    private JsonObject Sheet(IDictionary<string, Image> images, string name, int row, byte[] palette, byte[] widths)
     {
         int rows = (Glyphs + Columns - 1) / Columns;
         var image = Image.CreateEmpty(Columns * Cell, rows * Cell, false, Image.Format.Rgba8);
@@ -95,8 +91,7 @@ public sealed class DialogueConversion
                 byte value = (byte)((level << 3) | (level >> 2));
                 image.SetPixel(x, y, Color.Color8(value, value, value, index == 0 ? (byte)0 : (byte)255));
             }
-        image.SavePng(Path.Combine(directory, name + ".png"));
-        files[name + "_image"] = name + ".png";
+        images[name + "_image"] = image;
         var glyphs = new JsonObject();
         for (int code = 0; code < Glyphs; code++)
         {
@@ -205,7 +200,8 @@ public sealed class DialogueConversion
         return new JsonObject { ["parts"] = partList, ["vertices"] = vertexList, ["polygons"] = polygons };
     }
 
-    private void ExportBalloons(string directory, IDictionary<string, string> files)
+    /// <summary>The speech balloons' shapes, and the paper they are drawn on among the images.</summary>
+    public JsonObject Balloons(IDictionary<string, Image> images)
     {
         int page = (int)BitConverter.ToUInt32(_system, 4), fontOffset = (int)BitConverter.ToUInt32(_system, 28);
         int pageWidth = BitConverter.ToInt16(_system, page + 4) * 4;
@@ -219,8 +215,7 @@ public sealed class DialogueConversion
                 int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
                 tile.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2))));
             }
-        tile.SavePng(Path.Combine(directory, "dialogue_paper.png"));
-        files["dialogue_paper"] = "dialogue_paper.png";
+        images["dialogue_paper"] = tile;
 
         var shapes = new JsonArray();
         for (int index = 0; index < BalloonShapes; index++)
@@ -229,8 +224,7 @@ public sealed class DialogueConversion
             if (at <= 0 || at >= _battle.Length) throw new InvalidDataException("A speech balloon shape is missing.");
             shapes.Add(Balloon(_battle, at));
         }
-        File.WriteAllText(Path.Combine(directory, "dialogue_balloons.json"), new JsonObject { ["paper"] = "dialogue_paper", ["shapes"] = shapes }.ToJsonString());
-        files["dialogue_balloons"] = "dialogue_balloons.json";
+        return new JsonObject { ["paper"] = "dialogue_paper", ["shapes"] = shapes };
     }
 
     /// <summary>The character a pixel of horizontal offset is written as; the dialogue font gives it a one-pixel advance.</summary>

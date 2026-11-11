@@ -26,7 +26,7 @@ public partial class InstallContracts : Node
         {
             if (disc.Length == 0 || scratch.Length == 0) throw new InvalidOperationException("pass --disc= and --scratch=");
             Run(disc, Path.GetFullPath(scratch));
-            GD.Print("INSTALL_CONTRACTS_OK: non-disc, CHD and modified images rejected; retail disc installs; rejection keeps the previous installation");
+            GD.Print("INSTALL_CONTRACTS_OK: non-disc, CHD and modified images rejected; retail disc installs; rejection keeps the previous installation; files kept byte for byte");
             GetTree().Quit(0);
         }
         catch (Exception error)
@@ -67,9 +67,14 @@ public partial class InstallContracts : Node
         File.WriteAllBytes(chd, new byte[16]);
         Rejects(installation, chd, "chdman");
 
-        var manifest = installation.Install(disc, _ => { });
-        string before = File.ReadAllText(installation.ManifestPath);
-        string generation = (string)manifest["content_dir"]!;
+        installation.Install(disc, _ => { });
+        string before = File.ReadAllText(installation.RecordPath);
+        foreach (string path in RetailDisc.Catalog.FileDigests.Keys)
+            if (Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(installation.DiscPath, path)))) != RetailDisc.Catalog.FileDigests[path])
+                throw new InvalidOperationException($"the installed {path} is not the disc's file byte for byte");
+        foreach (string entry in Directory.GetFileSystemEntries(root))
+            if (Path.GetFileName(entry) is not ("disc" or "cache" or RetailInstallation.RecordName))
+                throw new InvalidOperationException($"the installation holds {Path.GetFileName(entry)} besides the disc's files and the cache");
 
         // One changed byte inside TITLE.PRG's data must reject the image even though its identity matches.
         string image = disc.EndsWith(".cue", StringComparison.OrdinalIgnoreCase) ? Path.ChangeExtension(disc, ".bin") : disc;
@@ -91,14 +96,15 @@ public partial class InstallContracts : Node
         {
             File.Delete(modified);
         }
-        if (File.ReadAllText(installation.ManifestPath) != before) throw new InvalidOperationException("a rejected install replaced the manifest");
-        if (Directory.GetDirectories(Path.Combine(root, "content")).Length != 1 || !Directory.Exists(Path.Combine(root, generation)))
-            throw new InvalidOperationException("a rejected install left partial content behind or removed the previous generation");
+        if (File.ReadAllText(installation.RecordPath) != before || Directory.Exists(Path.Combine(root, "staging")))
+            throw new InvalidOperationException("a rejected install replaced the installation or left a partial one behind");
 
-        File.AppendAllText(Path.Combine(root, generation, "publisher.png"), "x");
+        content.Reload();
+        if (!content.Installed) throw new InvalidOperationException("the installation does not open: " + content.Failure);
+        File.AppendAllText(Path.Combine(installation.DiscPath, "TITLE", "TITLE.PRG"), "x");
         content.Reload();
         if (content.Installed || !content.Failure.Contains("damaged", StringComparison.Ordinal))
-            throw new InvalidOperationException("a damaged installed asset was accepted: " + content.Failure);
+            throw new InvalidOperationException("a damaged installed file was accepted: " + content.Failure);
         Directory.Delete(root, true);
     }
 }

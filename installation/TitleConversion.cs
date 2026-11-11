@@ -187,10 +187,10 @@ public sealed class TitleConversion
     private const int LoadingOffset = 0x39950;
 
     /// <summary>
-    /// Writes the picture retail shows while it loads, "NOW LOADING..." in glowing blue on black, from the verified
+    /// The picture retail shows while it loads, "NOW LOADING..." in glowing blue on black, from the verified
     /// executable (SLUS_010.40 at 0x39950: 126 by 20); it stands in the middle of the 320 by 240 screen.
     /// </summary>
-    public static void ExportLoading(byte[] executable, string directory, IDictionary<string, string> files)
+    public static Image Loading(byte[] executable)
     {
         int width = BitConverter.ToUInt16(executable, LoadingOffset), height = BitConverter.ToUInt16(executable, LoadingOffset + 2);
         if (width == 0 || height == 0 || LoadingOffset + 4 + width * height * 2 > executable.Length) throw new InvalidDataException("The loading picture is missing from the executable.");
@@ -198,21 +198,13 @@ public sealed class TitleConversion
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
                 image.SetPixel(x, y, ToColor(BitConverter.ToUInt16(executable, LoadingOffset + 4 + (y * width + x) * 2), true));
-        Error error = image.SavePng(Path.Combine(directory, "loading.png"));
-        if (error != Error.Ok) throw new IOException($"Could not write loading.png: {error}");
-        files["loading"] = "loading.png";
+        return image;
     }
 
-    /// <summary>Writes every title image into <paramref name="directory"/> and returns the layout document.</summary>
-    public JsonObject Export(string directory, IDictionary<string, string> files)
+    /// <summary>Makes every title image, among <paramref name="images"/>, and returns the layout document.</summary>
+    public JsonObject Export(IDictionary<string, Image> images)
     {
-        void Save(Image image, string name)
-        {
-            string path = Path.Combine(directory, name);
-            Error error = image.SavePng(path);
-            if (error != Error.Ok) throw new IOException($"Could not write {name}: {error}");
-            files[name.Replace(".png", "")] = name;
-        }
+        void Save(Image image, string name) => images[name.Replace(".png", "")] = image;
 
         Save(IndexedImage(PublisherOffset + 32, 256, 48, PublisherOffset), "publisher.png");
         Save(IndexedImage(DeveloperOffset, 128, 13, DeveloperOffset + 128 * 13 / 2), "developer.png");
@@ -231,7 +223,7 @@ public sealed class TitleConversion
         for (int palette = 0; palette < 4; palette++)
         {
             var colours = new JsonArray();
-            for (int entry = 0; entry < 16; entry++) colours.Add(Word(PaletteTableOffset + (palette * 16 + entry) * 2));
+            for (int entry = 0; entry < 16; entry++) colours.Add((int)Word(PaletteTableOffset + (palette * 16 + entry) * 2));
             palettes.Add(colours);
         }
 

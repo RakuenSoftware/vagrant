@@ -82,7 +82,7 @@ public partial class Startup : Control
         {
             Text = "This game runs only from your own copy of Vagrant Story (US, SLUS-01040).\n"
                 + "Choose your disc image (BIN or CUE). Its files are checked against the retail disc, "
-                + "and the game's content is converted from it on this computer. Nothing from the disc is included with this game.",
+                + "and copied to this computer as the disc holds them. Nothing from the disc is included with this game.",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         });
         var row = new HBoxContainer();
@@ -151,9 +151,7 @@ public partial class Startup : Control
     {
         try
         {
-            var installation = new RetailInstallation(_content.GlobalRoot);
-            var manifest = installation.Install(disc, progress);
-            installation.RemoveStaleGenerations((string)manifest["content_dir"]!);
+            new RetailInstallation(_content.GlobalRoot).Install(disc, progress);
             _content.CallDeferred(RetailContent.MethodName.Reload);
             return "";
         }

@@ -88,16 +88,13 @@ public sealed class HudConversion
         return image;
     }
 
-    /// <summary>Writes the HUD page through each palette and returns the asset names by palette.</summary>
-    public JsonObject Export(string directory, IDictionary<string, string> files)
+    /// <summary>Makes the HUD page through each palette, among the images, and returns the asset names by palette.</summary>
+    public JsonObject Export(IDictionary<string, Image> images)
     {
         var assets = new JsonObject();
         foreach (var (name, x) in new[] { ("digits", 832), ("labels", 864), ("cursor", 896) })
         {
-            var image = Page(x);
-            string file = $"hud_{name}.png";
-            image.SavePng(Path.Combine(directory, file));
-            files["hud_" + name] = file;
+            images["hud_" + name] = Page(x);
             assets[name] = "hud_" + name;
         }
         // BATTLE MODE, from section 1's page through its palette in section 7's third block, (960, 66) 64 by 158.
@@ -114,8 +111,7 @@ public sealed class HudConversion
                 int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
                 banner.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
             }
-        banner.SavePng(Path.Combine(directory, "hud_battle_mode.png"));
-        files["hud_battle_mode"] = "hud_battle_mode.png";
+        images["hud_battle_mode"] = banner;
         // The chain timing's "!" (BATTLE.PRG 0x800970BC): 22 by 32 at (0xC0, 0) of the same page, through the palette at
         // (960, 221).
         var cue = Image.CreateEmpty(22, 32, false, Image.Format.Rgba8);
@@ -128,8 +124,7 @@ public sealed class HudConversion
                 int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
                 cue.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
             }
-        cue.SavePng(Path.Combine(directory, "hud_chain_cue.png"));
-        files["hud_chain_cue"] = "hud_chain_cue.png";
+        images["hud_chain_cue"] = cue;
         // The enemies' balloons (BATTLE.PRG 0x80095C18): the page's top 64 rows through the palette at (992, 220), the
         // rounded and jagged balloons, the small one, their dots and marks.
         var emotes = Image.CreateEmpty(256, 64, false, Image.Format.Rgba8);
@@ -141,8 +136,7 @@ public sealed class HudConversion
                 int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
                 emotes.SetPixel(u, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
             }
-        emotes.SavePng(Path.Combine(directory, "hud_emotes.png"));
-        files["hud_emotes"] = "hud_emotes.png";
+        images["hud_emotes"] = emotes;
         assets["emotes"] = "hud_emotes";
         assets["battle_mode"] = "hud_battle_mode";
         assets["chain_cue"] = "hud_chain_cue";

@@ -9,7 +9,7 @@ The shared engine's `PlayStationDisc` (wol-engine `runtime/install/PlayStationDi
 
 The engine verifies each file against the catalog before handing it over. Streamed files are hashed over raw sector bytes 16–2352, excluding the address header.
 
-`RetailInstallation` writes a complete `content/<generation>/` and only then atomically replaces `manifest.json`, so a rejected or failed install keeps the previous installation. `RetailContent` re-verifies every asset digest when it loads.
+`RetailInstallation` keeps one installation: every disc file byte for byte under `disc/` and the disc's sector record in `install.json`. A new install is verified and copied into `staging/` and replaces the old one only when complete, so a rejected disc keeps the previous installation. `FieldContent` re-verifies each disc file against the retail digest the first time a session reads it. The title's pictures, fonts and HUD are decoded from those files when first needed; the opening movie is decoded once with FFmpeg into `cache/`.
 
 `TitleConversion` reproduces the retail VRAM upload of the title overlay (`TITLE/TITLE.PRG`):
 
@@ -52,7 +52,7 @@ It counts 60 Hz display frames as the retail title counts vertical blanks:
 
 ## Added Settings item
 
-Settings follows Sound on the wheel, which therefore has five words; words resting off the drum (rows 0 and 128) are dropped before a rotation so that the fifth word never keeps travelling. Its lettering is composed at install time (`TitleConversion.ComposeSettings`):
+Settings follows Sound on the wheel, which therefore has five words; words resting off the drum (rows 0 and 128) are dropped before a rotation so that the fifth word never keeps travelling. Its lettering is composed from the disc's (`TitleConversion.ComposeSettings`):
 
 - The capital S and the small E, T, I and N are the disc's own glyphs.
 - The title has no small S or G, so these are the disc's capital S and G, area-reduced to small-capital height and set one column apart.
