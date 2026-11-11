@@ -46,6 +46,10 @@ public partial class FieldContracts : Node
     private bool _fight;
     /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
     private bool _shortcuts;
+    /// <summary>With <c>--carry</c>, Ashley lifts the nearest block (kinds 4 to 6), turns about with it and sets it down.</summary>
+    private bool _carry;
+    private int _carryStep, _carryCrates;
+    private string _carryTiles = "";
     /// <summary>With <c>--status=N</c>, Ashley takes status effect N once she is the player's, for the HUD to show it.</summary>
     private int _status = -1;
     private int _shortcutStep;
@@ -104,6 +108,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
             if (argument == "--shortcuts") _shortcuts = true;
+            if (argument == "--carry") _carry = true;
             if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
@@ -453,6 +458,41 @@ public partial class FieldContracts : Node
                 case 380:
                     Capture("shortcut_after");
                     Finish(_view.MenuOpen ? "leaving the ITEMS shortcut's page left the menu open" : "");
+                    return;
+            }
+            return;
+        }
+        if (_carry && _view.Controlled && _view.Player is { } carrier)
+        {
+            if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+            switch (++_carryStep)
+            {
+                case 1:
+                {
+                    _carryCrates = new List<(string, int, int, int, float, int)>(_view.Crates).Count;
+                    _carryTiles = CrateTiles();
+                    (int X, int Z)? block = null;
+                    foreach (var crate in _view.Crates)
+                        if (crate.Kind >= 4 && (block == null || new Vector2(crate.X * 128 + 64 - carrier.Position.X, crate.Z * 128 + 64 - carrier.Position.Z).Length() < new Vector2(block.Value.X * 128 + 64 - carrier.Position.X, block.Value.Z * 128 + 64 - carrier.Position.Z).Length()))
+                            block = (crate.X, crate.Z);
+                    if (block == null) { Finish("the room has no block to carry"); return; }
+                    carrier.Facing = carrier.FacingToward(new Vector3(block.Value.X * 128 + 64, carrier.Position.Y, block.Value.Z * 128 + 64));
+                    break;
+                }
+                case 20: Capture("carry_before"); Tap("ps_cross"); break;
+                case 70:
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates - 1) { Finish("Cross at the block did not lift it"); return; }
+                    Capture("carry_lifted");
+                    // She turns about with it and sets it down behind where it stood.
+                    carrier.Facing = Mathf.PosMod(carrier.Facing + 2048, 4096);
+                    break;
+                case 110: Capture("carry_turned"); break;
+                case 130: Tap("ps_cross"); break;
+                case 180:
+                    Capture("carry_set");
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates) { Finish("Cross did not set the block down"); return; }
+                    GD.Print($"FIELD: blocks stood at {_carryTiles}, now at {CrateTiles()}");
+                    Finish(CrateTiles() == _carryTiles ? "the block was set down where it was lifted from, not behind her" : "");
                     return;
             }
             return;
@@ -1386,6 +1426,15 @@ public partial class FieldContracts : Node
     }
     private bool _leftBattle;
     private string _pressed = "";
+
+    /// <summary>Where the room's crates stand, in order, for the carry check.</summary>
+    private string CrateTiles()
+    {
+        var tiles = new List<string>();
+        foreach (var crate in _view.Crates) tiles.Add($"{crate.X},{crate.Z}");
+        tiles.Sort(StringComparer.Ordinal);
+        return string.Join(" ", tiles);
+    }
 
     /// <summary>Taps a button for a few frames.</summary>
     private void Tap(string action)
