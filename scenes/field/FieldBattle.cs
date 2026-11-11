@@ -131,6 +131,34 @@ public sealed class FieldBattle
 
         public bool Has(int status) => Statuses.ContainsKey(status);
 
+        /// <summary>Restores up to <paramref name="amount"/> hit points, never past its most; returns what it restored.</summary>
+        public int Heal(int amount) { int healed = Math.Clamp(amount, 0, MaxHp - Hp); Hp += healed; return healed; }
+
+        /// <summary>Restores up to <paramref name="amount"/> magic points, never past its most; returns what it restored.</summary>
+        public int Restore(int amount) { int restored = Math.Clamp(amount, 0, MaxMp - Mp); Mp += restored; return restored; }
+
+        /// <summary>Sets <paramref name="status"/> for its whole <see cref="Duration"/>.</summary>
+        public void Afflict(int status) => Statuses[status] = Duration(status);
+
+        /// <summary>
+        /// A cure effect: 27 paralysis, 28 poison, 29 curse, 30 numbness, 31 the magic cancel (every raising and
+        /// lowering status), 32 paralysis, poison and numbness together. Returns whether it cured anything.
+        /// </summary>
+        public bool Cure(int effect)
+        {
+            int before = Statuses.Count;
+            switch (effect)
+            {
+                case 27: Statuses.Remove(Paralysis); break;
+                case 28: Statuses.Remove(Poison); break;
+                case 29: Statuses.Remove(Curse); break;
+                case 30: Statuses.Remove(Numbness); break;
+                case 31: foreach (int status in new List<int>(Statuses.Keys)) if (status is <= 12 or >= 19) Statuses.Remove(status); break;
+                case 32: foreach (int status in new[] { Paralysis, Poison, Numbness }) Statuses.Remove(status); break;
+            }
+            return Statuses.Count < before;
+        }
+
         /// <summary>A stat with its statuses: a tenth less for a lowering one (or curse), a tenth more for a raising one.</summary>
         public int Scaled(int value, int lower, int raise) =>
             value * (100 - (Has(lower) ? 10 : 0) - (Has(Curse) ? 10 : 0) + (Has(raise) ? 10 : 0)) / 100;
@@ -671,21 +699,17 @@ public sealed class FieldBattle
                     case 58:
                     {
                         int damage = reckoning switch { 4 => _lastDamage * factor / 10, 5 => (Ashley.MaxHp - Ashley.Hp) * Math.Max(1, factor) / 10, _ => _lastDamage } + _chain;
-                        target.Hp = Math.Max(0, target.Hp - damage);
-                        Number(target, damage.ToString());
                         _lastDamage = damage;
-                        if (target.Hp == 0 && !target.Dead) { target.Dead = true; Play(target, Death, 4, once: true); Felled?.Invoke(target, id); Defeated?.Invoke(target); }
+                        Strike(target, damage, id, flinch: false);
                         break;
                     }
                     case 62:
                     {
-                        int heal = Math.Min(Ashley.MaxHp - Ashley.Hp, _lastDamage * Math.Max(1, factor) / 10 + _chain);
-                        Ashley.Hp += heal;
-                        Number(Ashley, "+" + heal);
+                        Number(Ashley, "+" + Ashley.Heal(_lastDamage * Math.Max(1, factor) / 10 + _chain));
                         break;
                     }
                     case 63:
-                        Ashley.Mp = Math.Min(Ashley.MaxMp, Ashley.Mp + _lastDamage * Math.Max(1, factor) / 10 + _chain);
+                        Ashley.Restore(_lastDamage * Math.Max(1, factor) / 10 + _chain);
                         break;
                 }
             }
@@ -694,17 +718,16 @@ public sealed class FieldBattle
                 switch (kind)
                 {
                     case 58 when reckoning == 10:
-                        if (_attacker is { } source) { int back = _lastDamage * factor / 10; source.Hp = Math.Max(0, source.Hp - back); Number(source, back.ToString()); }
+                        if (_attacker is { } source) Strike(source, _lastDamage * factor / 10, flinch: false);
                         break;
                     case 42:
                     {
-                        int eased = _lastDamage * factor / 10;
-                        Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + eased);
+                        Ashley.Heal(_lastDamage * factor / 10);
                         Number(Ashley, "Guard");
                         break;
                     }
                     case 41:
-                        Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + _lastDamage * factor / 10);
+                        Ashley.Heal(_lastDamage * factor / 10);
                         break;
                 }
             }
@@ -951,16 +974,7 @@ public sealed class FieldBattle
         _view.PlayEffect(art.GetValueOrDefault("visual", 0).AsInt32(), Ashley!.Actor, target.Actor);
         if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(Ashley!, target, limb, vary: true) + 10)) { Number(target, "Miss"); return; }
         int damage = Damage(Ashley!, target, limb) * (factor * 10 + 100) / 100;
-        target.Hp = Math.Max(0, target.Hp - damage);
-        Number(target, damage.ToString());
-        if (target.Hp == 0 && !target.Dead)
-        {
-            target.Dead = true;
-            Play(target, Death, 4, once: true);
-            Felled?.Invoke(target, 184);
-            Defeated?.Invoke(target);
-        }
-        else if (Play(target, FlinchFront, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        Strike(target, damage, 184);
     }
 
     /// <summary>
@@ -997,7 +1011,7 @@ public sealed class FieldBattle
                 if (hit == 3 && _random.RandiRange(0, 99) >= HitChance(caster, target, -1, vary: true) - guard) continue;
                 if (hit == 5 && _random.RandiRange(0, 99) >= Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard) { Number(target, "Miss"); continue; }
                 if (hit != 3 && hit != 5 && _random.RandiRange(0, 99) >= 100 - guard) { Number(target, "Miss"); continue; }
-                target.Statuses[kind] = Duration(kind);
+                target.Afflict(kind);
                 Number(target, spell["name"].AsString());
                 continue;
             }
@@ -1132,8 +1146,8 @@ public sealed class FieldBattle
     /// A trap's action on Ashley (<see cref="Installation.InventoryConversion.TrapActions"/>), at the room's trap
     /// level. Its damage is <see cref="TrapDamage"/>'s, on one of her limbs at random (how retail picks the limb was not
     /// read); a heal panel heals the same value before defence: a tenth of her most hit points times the effect's
-    /// factor, plus ten for each level and ten more. A status trap sets its status (15 paralysis, 16 poison, 18 curse); the cure panel (32, 29) clears them
-    /// and numbness.
+    /// factor, plus ten for each level and ten more. A status trap sets its status (15 paralysis, 16 poison, 18 curse); the cure panels
+    /// clear by <see cref="Combatant.Cure"/> (32 paralysis, poison and numbness, 29 curse).
     /// </summary>
     public void Trap(GDictionary action, int level)
     {
@@ -1156,16 +1170,14 @@ public sealed class FieldBattle
                 }
                 case 62:
                 {
-                    int heal = Math.Min(ashley.MaxHp - ashley.Hp, strength);
-                    ashley.Hp += heal;
-                    Number(ashley, "+" + heal);
+                    Number(ashley, "+" + ashley.Heal(strength));
                     break;
                 }
                 case Paralysis or Poison or Curse:
-                    ashley.Statuses[kind] = Duration(kind);
+                    ashley.Afflict(kind);
                     break;
-                case 32 or 29:
-                    foreach (int status in new[] { Paralysis, Poison, Numbness, Curse }) ashley.Statuses.Remove(status);
+                case >= 27 and <= 32:
+                    ashley.Cure(kind);
                     break;
             }
         }
@@ -1197,19 +1209,28 @@ public sealed class FieldBattle
         target.Shield.Gain(damage / 10 * (target.Shield.Has(9) ? 95 : 100) / 100);
     }
 
-    /// <summary>A spell's or action's damage: off the hit points, then death (70) at none, or a flinch.</summary>
-    public void Strike(Combatant target, int damage)
+    /// <summary>
+    /// Damage off the hit points, its number shown (to at most 999), then death (70) at none (Ashley's ends the
+    /// battle; an enemy's is counted as felled by the action <paramref name="felledBy"/>, -1 for none), or else a
+    /// flinch from the front or back unless <paramref name="flinch"/> is false. Returns whether the target is dead.
+    /// </summary>
+    public bool Strike(Combatant target, int damage, int felledBy = -1, bool flinch = true, bool front = true)
     {
         target.Hp = Math.Max(0, target.Hp - damage);
-        Number(target, damage.ToString());
-        if (target.Hp == 0 && !target.Dead)
+        Number(target, Math.Min(999, damage).ToString());
+        if (target.Dead) return true;
+        if (target.Hp == 0)
         {
             target.Dead = true;
             Play(target, Death, 4, once: true);
-            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
+            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return true; }
+            if (felledBy >= 0) Felled?.Invoke(target, felledBy);
             Defeated?.Invoke(target);
+            return true;
         }
-        else if (Play(target, target == Ashley ? AshleyFlinchFront : FlinchFront, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        int flinched = target == Ashley ? (front ? AshleyFlinchFront : AshleyFlinchBack) : front ? FlinchFront : FlinchBack;
+        if (flinch && Play(target, flinched, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        return false;
     }
 
     /// <summary>
@@ -1841,7 +1862,6 @@ public sealed class FieldBattle
         if (_random.RandiRange(0, 99) >= chance) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
         _view.PlayResident(1, attacker.Actor, target.Actor, bone);
         int damage = Damage(attacker, target, limb);
-        target.Hp = Math.Max(0, target.Hp - damage);
         _lastDamage = damage;
         _lastStruck = target;
 
@@ -1854,22 +1874,11 @@ public sealed class FieldBattle
                 target.Limbs[i].Armour.Wear(damage * share / 100);
             }
         Wear(attacker, target, damage);
-        Number(target, Math.Min(999, damage).ToString());
         var toward = (attacker.Actor.Position - target.Actor.Position) with { Y = 0 };
         float facing = target.Actor.Facing * Mathf.Tau / 4096f;
         bool front = new Vector3(-Mathf.Sin(facing), 0, -Mathf.Cos(facing)).Dot(toward) >= 0;
-        if (target.Hp == 0)
-        {
-            target.Dead = true;
-            Play(target, Death, 4, once: true);
-            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
-            if (attacker == Ashley) Felled?.Invoke(target, 1);
-            Defeated?.Invoke(target);
-            return;
-        }
+        if (Strike(target, damage, attacker == Ashley ? 1 : -1, front: front)) return;
         if (target == Ashley) { _player?.Halt(); _stagger = 15; }
-        int flinch = target == Ashley ? (front ? AshleyFlinchFront : AshleyFlinchBack) : front ? FlinchFront : FlinchBack;
-        if (Play(target, flinch, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
         target.Timer = Math.Max(target.Timer, 30);
     }
 
@@ -2042,15 +2051,15 @@ public sealed class FieldBattle
             foreach (int status in new List<int>(c.Statuses.Keys))
                 if (c.Statuses[status] > 0 && --c.Statuses[status] == 0) c.Statuses.Remove(status);
             if (c.Has(Poison) && _tick % 60 == 0) { int harm = Math.Max(1, c.Hp / 20 + _random.RandiRange(0, 5)); c.Hp = Math.Max(1, c.Hp - harm); Number(c, harm.ToString()); }
-            if (c.Has(Regen) && _tick % 150 == 0) c.Hp = Math.Min(c.MaxHp, c.Hp + Math.Max(1, c.MaxHp / 20 - 2 + _random.RandiRange(0, 4)));
+            if (c.Has(Regen) && _tick % 150 == 0) c.Heal(Math.Max(1, c.MaxHp / 20 - 2 + _random.RandiRange(0, 4)));
         }
         // A crippled body slows RISK's fall with the weapon sheathed.
         int risk = Drawn || Crippled(Ashley, 3) ? 60 : 15, magic = Drawn ? 90 : 30, health = Drawn ? 120 : 60;
         if (_tick % risk == 0) Ashley.Risk = Math.Max(0, Ashley.Risk - 1);
-        if (_tick % magic == 0) Ashley.Mp = Math.Min(Ashley.MaxMp, Ashley.Mp + 1);
+        if (_tick % magic == 0) Ashley.Restore(1);
         if (_tick % health == 0)
         {
-            Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + 1);
+            Ashley.Heal(1);
             if (Ashley.Limbs.Count > 0)
             {
                 var limb = Ashley.Limbs[(int)(_tick / health % Ashley.Limbs.Count)];

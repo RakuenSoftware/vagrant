@@ -56,7 +56,7 @@ public sealed partial class ResultsScreen : Control
 
     private Texture2D? _sheet, _reelSheet, _labels;
     private GDictionary _tables = new();
-    private int[] _widths = Array.Empty<int>(), _columns = Array.Empty<int>(), _kerning = Array.Empty<int>();
+    private Runtime.HudLettering? _lettering;
     private readonly List<Quad> _plain = new(), _glow = new();
     private Control _glowLayer = null!;
     private readonly RandomNumberGenerator _random = new();
@@ -82,12 +82,7 @@ public sealed partial class ResultsScreen : Control
         _reelSheet = reelSheet;
         _tables = tables ?? new GDictionary();
         _labels = labels;
-        if (font != null)
-        {
-            _widths = font["widths"].AsInt32Array();
-            _columns = font["columns"].AsInt32Array();
-            _kerning = font["kerning"].AsInt32Array();
-        }
+        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
         MouseFilter = MouseFilterEnum.Ignore;
         AnchorRight = 1;
         AnchorBottom = 1;
@@ -364,15 +359,15 @@ public sealed partial class ResultsScreen : Control
     {
         foreach (var quad in _plain) Emit(this, quad);
         // The prompt: PRESS BUTTON in the HUD lettering, sliding in from the right, the Circle button bobbing beside it.
-        if (_labels == null || _widths.Length == 0 || _slide <= 0 || _state == 3) return;
+        if (_labels == null || _lettering == null || _slide <= 0 || _state == 3) return;
         var (unit, offset) = FieldView.Pin(Size, 1);
         DrawSetTransform(offset);
         float x = 214 + 288 - 6 * Math.Min(_slide, 48);
         int frame = _timer & 15;
         float bob = frame < 9 ? 193 + frame / 2 : 199 - frame / 4;
         DrawTextureRectRegion(_labels, new Rect2(new Vector2(x, bob - 2) * unit, new Vector2(16, 16) * unit), new Rect2(32, 130, 16, 16), Color.Color8(0xF0, 0x90, 0xB0));
-        BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _tables.GetValueOrDefault("press", "PRESS").AsString(), new Vector2(x + 18, 187), unit, Prompt);
-        BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _tables.GetValueOrDefault("button", "BUTTON").AsString(), new Vector2(x + 18, 197), unit, Prompt);
+        _lettering!.Draw(this, _tables.GetValueOrDefault("press", "PRESS").AsString(), new Vector2(x + 18, 187), unit, Prompt);
+        _lettering!.Draw(this, _tables.GetValueOrDefault("button", "BUTTON").AsString(), new Vector2(x + 18, 197), unit, Prompt);
         DrawSetTransform(Vector2.Zero);
     }
 }

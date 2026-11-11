@@ -103,7 +103,7 @@ public sealed partial class MemoryCardMenu : Control
     /// <summary>The screens' stage (Opening, Slots, Checking, Files, Back, Overwrite, Saving, Saved, Leaving), and whether everything has come to rest.</summary>
     public string Showing => Visible ? _stage + (Settled() ? "" : "*") : "";
 
-    private string Text(int index) => index < _strings.Count ? SystemBox.Fill(_strings[index].AsGodotDictionary()) : "";
+    private string Text(int index) => SystemBox.Entry(_strings, index);
 
     /// <summary>
     /// Starts saving, for a save of <paramref name="location"/> (a save point's or container's location number). From
@@ -443,10 +443,6 @@ public sealed partial class MemoryCardMenu : Control
         item.DrawSetTransform(offset, 0, unit);
     }
 
-    private void Sprite(Texture2D? texture, Rect2 source, Vector2 at, Color? tint = null)
-    {
-        if (texture != null) DrawTextureRectRegion(texture, new Rect2(at, source.Size), source, tint ?? Colors.White);
-    }
 
     private void Print(string text, float x, float y, Color? colour = null)
     {
@@ -455,16 +451,12 @@ public sealed partial class MemoryCardMenu : Control
         for (int i = 0; i < lines.Length; i++) DrawString(_font, new Vector2(x, y + 12 + 13 * i), lines[i], HorizontalAlignment.Left, -1, 12, colour ?? Colors.White);
     }
 
-    private static void Quad(CanvasItem item, float x0, float y0, float x1, float y1, Color left, Color right) =>
-        item.DrawPolygon(new[] { new Vector2(x0, y0), new Vector2(x1, y0), new Vector2(x1, y1), new Vector2(x0, y1) }, new[] { left, right, right, left });
 
-    private static void Fall(CanvasItem item, float x0, float y0, float x1, float y1, Color top, Color bottom) =>
-        item.DrawPolygon(new[] { new Vector2(x0, y0), new Vector2(x1, y0), new Vector2(x1, y1), new Vector2(x0, y1) }, new[] { top, top, bottom, bottom });
 
     private void Digits(int value, int places, float x, float y)
     {
         for (int divisor = (int)Math.Pow(10, places - 1); divisor > 0; divisor /= 10, x += 5)
-            Sprite(_digits, new Rect2(value / divisor % 10 * 6, 0, 6, 10), new Vector2(x, y));
+            FieldView.Sprite(this, _digits, new Rect2(value / divisor % 10 * 6, 0, 6, 10), new Vector2(x, y), Vector2.One);
     }
 
     public override void _Draw()
@@ -484,8 +476,8 @@ public sealed partial class MemoryCardMenu : Control
             // The files scroll within the three rows from y 72.
             if (e.File >= 0 && (e.Y < 72 || e.Y > 152)) continue;
             Side(this, e.File >= 0 ? 1 : id is 3 or 4 ? 0 : 2);
-            Quad(this, e.X + 2, e.Y + 2, e.X + 2 + e.Width, e.Y + 2 + e.Height, new Color(0, 0, 0, 0.5f), new Color(0, 0, 0, 0.5f));
-            Quad(this, e.X, e.Y, e.X + e.Width, e.Y + e.Height, BarColour(8 - e.Outer, e.Inner), BarColour(e.Outer, e.Inner));
+            FieldView.Band(this, new Vector2(e.X + 2, e.Y + 2), new Vector2(e.X + 2 + e.Width, e.Y + 2 + e.Height), new Color(0, 0, 0, 0.5f), new Color(0, 0, 0, 0.5f), Vector2.One);
+            FieldView.Band(this, new Vector2(e.X, e.Y), new Vector2(e.X + e.Width, e.Y + e.Height), BarColour(8 - e.Outer, e.Inner), BarColour(e.Outer, e.Inner), Vector2.One);
             Print(e.Text, e.X + 6, e.Y);
             if (e.File >= 0) DrawFile(e);
         }
@@ -496,14 +488,14 @@ public sealed partial class MemoryCardMenu : Control
         for (int i = 1; i < 4; i++) DrawRect(new Rect2(0, 187 - i, 320, 1), new Color(0, 0, 0, 1 - i * 0.25f));
         DrawRect(new Rect2(0, 187, 320, 60), Colors.Black);
         Side(this, 0);
-        Sprite(_labels, new Rect2(64, 145, 33, 7), new Vector2(10, 181));
+        FieldView.Sprite(this, _labels, new Rect2(64, 145, 33, 7), new Vector2(10, 181), Vector2.One);
         // The cursor, pulsing brighter.
         if (CursorAt() is { } at)
         {
             int pulse = _frames & 15;
             float bright = 1 + (pulse switch { 0 => 0, 1 => 56, 2 => 112, _ => 128 - 8 * pulse }) / 128f;
             Side(this, _stage == Stage.Overwrite ? 0 : _stage == Stage.Slots ? 2 : 1);
-            Sprite(_cursor, new Rect2(32, 48, 16, 16), at, new Color(bright, bright, bright));
+            FieldView.Sprite(this, _cursor, new Rect2(32, 48, 16, 16), at, Vector2.One, new Color(bright, bright, bright));
         }
         Side(this, 0);
         Print(_message, 16, 192);
@@ -524,18 +516,18 @@ public sealed partial class MemoryCardMenu : Control
         {
             float front = 64 + (320 + 16 - 64) * _stageFrames / (float)(_saving ? SaveFrames : LoadFrames);
             var pink = _saving ? Color.Color8(255, 0, 127) : Color.Color8(224, 255, 0);
-            Quad(_glow, Math.Max(64, front - 48), y, front, y + 32, Colors.Black, pink);
-            Quad(_glow, front, y, front + 16, y + 32, pink, Colors.Black);
+            FieldView.Band(_glow, new Vector2(Math.Max(64, front - 48), y), new Vector2(front, y + 32), Colors.Black, pink, Vector2.One);
+            FieldView.Band(_glow, new Vector2(front, y), new Vector2(front + 16, y + 32), pink, Colors.Black, Vector2.One);
         }
         else if (_stage == Stage.Saved && _stageFrames <= 16 && _result > 0)
         {
             int k = _stageFrames - 1;
             int c = k switch { 0 => 56, 1 => 112, _ => Math.Max(0, 120 - 8 * k) };
             var flash = _saving ? Color.Color8((byte)c, 0, (byte)(c / 2)) : Color.Color8((byte)(c - c / 8), (byte)c, 0);
-            Fall(_glow, 64, y - 8, 320, y, Colors.Black, flash);
-            Fall(_glow, 64, y, 320, y + 32, flash, flash);
+            FieldView.Band(_glow, new Vector2(64, y - 8), new Vector2(320, y), Colors.Black, flash, Vector2.One, true);
+            FieldView.Band(_glow, new Vector2(64, y), new Vector2(320, y + 32), flash, flash, Vector2.One, true);
             // The message box, drawn over the rows, covers what would fall below y 184.
-            if (y + 32 < 184) Fall(_glow, 64, y + 32, 320, Math.Min(184, y + 40), flash, flash.Lerp(Colors.Black, Math.Min(8, 184 - y - 32) / 8f));
+            if (y + 32 < 184) FieldView.Band(_glow, new Vector2(64, y + 32), new Vector2(320, Math.Min(184, y + 40)), flash, flash.Lerp(Colors.Black, Math.Min(8, 184 - y - 32) / 8f), Vector2.One, true);
         }
         _glow.DrawSetTransform(Vector2.Zero);
     }
@@ -562,33 +554,33 @@ public sealed partial class MemoryCardMenu : Control
         if (location >= 48) location = -3;
         var cell = location < 0 ? new Vector2(0, (~location) * 32) : new Vector2(64 * (1 + (location >> 3 & 1) + 2 * (location >> 4 & 3)), (location & 7) * 32);
         float shade = (128 - (8 - e.Outer) * 8) / 128f;
-        Sprite(_pictures, new Rect2(cell, new Vector2(64, 32)), new Vector2(x - 64, y), new Color(shade, shade, shade));
-        Sprite(_digits, new Rect2(242, 0, 13, 8), new Vector2(x - 22, y));
+        FieldView.Sprite(this, _pictures, new Rect2(cell, new Vector2(64, 32)), new Vector2(x - 64, y), Vector2.One, new Color(shade, shade, shade));
+        FieldView.Sprite(this, _digits, new Rect2(242, 0, 13, 8), new Vector2(x - 22, y), Vector2.One);
         Digits(e.File + 1, 2, x - 9, y);
         if (save == null) Print(Text(_saving ? 20 : 19), x + 6, y + 10, _saving ? null : Dim);
         else
         {
             Print(Text(save.GetValueOrDefault("location", 0).AsInt32() + 41), x + 6, y + 4);
             float line = y + 4;
-            Sprite(_words, new Rect2(224, 120, 17, 8), new Vector2(172, line));
-            Sprite(_digits, new Rect2(248, 8, 3, 8), new Vector2(189, line));
+            FieldView.Sprite(this, _words, new Rect2(224, 120, 17, 8), new Vector2(172, line), Vector2.One);
+            FieldView.Sprite(this, _digits, new Rect2(248, 8, 3, 8), new Vector2(189, line), Vector2.One);
             int map = save.GetValueOrDefault("map_percent", 0).AsInt32();
             Digits(map, map == 100 ? 3 : 2, 192, line);
-            Sprite(_labels, new Rect2(170, 76, 10, 10), new Vector2(map == 100 ? 207 : 202, line - 1));
-            Sprite(_words, new Rect2(128, 56, 22, 8), new Vector2(217, line));
-            Sprite(_digits, new Rect2(248, 8, 3, 8), new Vector2(239, line));
+            FieldView.Sprite(this, _labels, new Rect2(170, 76, 10, 10), new Vector2(map == 100 ? 207 : 202, line - 1), Vector2.One);
+            FieldView.Sprite(this, _words, new Rect2(128, 56, 22, 8), new Vector2(217, line), Vector2.One);
+            FieldView.Sprite(this, _digits, new Rect2(248, 8, 3, 8), new Vector2(239, line), Vector2.One);
             Digits(save.GetValueOrDefault("save_count", 0).AsInt32(), 4, 242, line);
-            Sprite(_words, new Rect2(224, 112, 26, 8), new Vector2(267, line));
-            Sprite(_digits, new Rect2(248, 8, 3, 8), new Vector2(293, line));
+            FieldView.Sprite(this, _words, new Rect2(224, 112, 26, 8), new Vector2(267, line), Vector2.One);
+            FieldView.Sprite(this, _digits, new Rect2(248, 8, 3, 8), new Vector2(293, line), Vector2.One);
             Digits(save.GetValueOrDefault("clear_count", 0).AsInt32(), 2, 296, line);
             line += 13;
             long seconds = save.GetValueOrDefault("frames", 0).AsInt64() / 60;
             int hours = (int)Math.Min(100, seconds / 3600);
-            Sprite(_words, new Rect2(104, 56, 19, 8), new Vector2(240, line));
+            FieldView.Sprite(this, _words, new Rect2(104, 56, 19, 8), new Vector2(240, line), Vector2.One);
             Digits(hours, hours == 100 ? 3 : 2, hours == 100 ? 263 : 268, line);
-            Sprite(_digits, new Rect2(248, 8, 3, 8), new Vector2(279, line));
+            FieldView.Sprite(this, _digits, new Rect2(248, 8, 3, 8), new Vector2(279, line), Vector2.One);
             Digits((int)(seconds / 60 % 60), 2, 282, line);
-            Sprite(_digits, new Rect2(248, 8, 3, 8), new Vector2(293, line));
+            FieldView.Sprite(this, _digits, new Rect2(248, 8, 3, 8), new Vector2(293, line), Vector2.One);
             Digits((int)(seconds % 60), 2, 296, line);
             Gauge(88, line, 0, save.GetValueOrDefault("hp", 0).AsInt32(), save.GetValueOrDefault("max_hp", 0).AsInt32());
             Gauge(158, line, 1, save.GetValueOrDefault("mp", 0).AsInt32(), save.GetValueOrDefault("max_mp", 0).AsInt32());
@@ -605,13 +597,13 @@ public sealed partial class MemoryCardMenu : Control
         var colour = stat == 0 ? Color.Color8(45, 224, 207) : Color.Color8(220, 120, 159);
         var near = colour.Lerp(Color.Color8(255, 240, 158), fill / 64f);
         DrawRect(new Rect2(x, y + 8, 66, 5), Color.Color8(0, 40, 64));
-        if (fill > 0) Quad(this, x + 1, y + 9, x + 1 + fill, y + 12, near, colour);
-        Sprite(_labels, stat == 0 ? new Rect2(144, 0, 16, 9) : new Rect2(160, 0, 18, 9), new Vector2(x, y));
+        if (fill > 0) FieldView.Band(this, new Vector2(x + 1, y + 9), new Vector2(x + 1 + fill, y + 12), near, colour, Vector2.One);
+        FieldView.Sprite(this, _labels, stat == 0 ? new Rect2(144, 0, 16, 9) : new Rect2(160, 0, 18, 9), new Vector2(x, y), Vector2.One);
         int valueDigits = value.ToString().Length, maximumDigits = maximum.ToString().Length;
         float at = x + 1 - valueDigits * 6 + 55 - maximumDigits * 5;
-        foreach (char digit in value.ToString()) { Sprite(_digits, new Rect2((digit - '0') * 8 + 64, 0, 7, 12), new Vector2(at, y - 1)); at += 6; }
-        Sprite(_digits, new Rect2(32, 9, 5, 7), new Vector2(at + 1, y));
+        foreach (char digit in value.ToString()) { FieldView.Sprite(this, _digits, new Rect2((digit - '0') * 8 + 64, 0, 7, 12), new Vector2(at, y - 1), Vector2.One); at += 6; }
+        FieldView.Sprite(this, _digits, new Rect2(32, 9, 5, 7), new Vector2(at + 1, y), Vector2.One);
         at += 6;
-        foreach (char digit in maximum.ToString()) { Sprite(_digits, new Rect2((digit - '0') * 6, 0, 6, 10), new Vector2(at, y)); at += 5; }
+        foreach (char digit in maximum.ToString()) { FieldView.Sprite(this, _digits, new Rect2((digit - '0') * 6, 0, 6, 10), new Vector2(at, y), Vector2.One); at += 5; }
     }
 }

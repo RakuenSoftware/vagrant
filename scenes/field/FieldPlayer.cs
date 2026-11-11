@@ -33,8 +33,6 @@ public sealed class FieldPlayer
     private readonly EventActor _actor;
     private readonly Func<Vector3, float?> _floor;
     private readonly Func<Vector3, bool> _stairs;
-    private float _turnRemaining;
-    private int _turnFrames;
     private float _heading = -1;
     private int _animation = -1;
     private State _state = State.Ground;
@@ -75,7 +73,8 @@ public sealed class FieldPlayer
     public void Halt()
     {
         Moving = false;
-        _turnFrames = 0;
+        // A turn under way stops where it is.
+        _actor.TurnOver(_actor.Facing, 0);
         _heading = -1;
         _animation = -1;
         _push = _edge = 0;
@@ -105,12 +104,10 @@ public sealed class FieldPlayer
             case State.Air:
                 if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
                 else _velocity = Vector3.Zero;
-                StepTurn();
                 StepAir();
                 return;
         }
         if (heading is { } target) Face(target);
-        StepTurn();
         if (jump)
         {
             if (heading is { } leap) { Launch(walk ? 1 : 2, Motion(leap, speed)); return; }
@@ -211,21 +208,12 @@ public sealed class FieldPlayer
         _animation = Idle;
     }
 
-    /// <summary>Starts a turn to a new facing: the shortest way round, a twelfth of what remains each frame.</summary>
+    /// <summary>Starts a turn to a new facing: the shortest way round, evenly over 12 frames (the engine's turn).</summary>
     private void Face(float heading)
     {
         if (heading == _heading) return;
         _heading = heading;
-        _turnRemaining = Mathf.PosMod(heading - _actor.Facing + 2048, 4096) - 2048;
-        _turnFrames = 12;
-    }
-
-    private void StepTurn()
-    {
-        if (_turnFrames <= 0) return;
-        float step = _turnRemaining / _turnFrames--;
-        _actor.Facing = Mathf.PosMod(_actor.Facing + step, 4096);
-        _turnRemaining -= step;
+        _actor.TurnOver(heading, 12);
     }
 
     /// <summary>

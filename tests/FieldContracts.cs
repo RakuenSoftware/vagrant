@@ -1753,17 +1753,20 @@ public partial class FieldContracts : Node
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
     }
 
-    private void Capture(string name)
+    private void Capture(string name) => Capture(this, _capture, name);
+
+    /// <summary>Saves the window as shown (sRGB, with HDR 2D's linear buffer encoded) to a folder, unless headless or none is given.</summary>
+    public static void Capture(Node node, string folder, string name)
     {
-        if (_capture.Length == 0 || DisplayServer.GetName() == "headless") return;
-        Directory.CreateDirectory(_capture);
-        var image = GetViewport().GetTexture().GetImage();
-        if (GetTree().Root.UseHdr2D)
+        if (folder.Length == 0 || DisplayServer.GetName() == "headless") return;
+        Directory.CreateDirectory(folder);
+        var image = node.GetViewport().GetTexture().GetImage();
+        if (node.GetTree().Root.UseHdr2D)
             for (int y = 0; y < image.GetHeight(); y++)
                 for (int x = 0; x < image.GetWidth(); x++)
                     image.SetPixel(x, y, image.GetPixel(x, y).LinearToSrgb());
         image.Convert(Image.Format.Rgba8);
-        image.SavePng(Path.Combine(_capture, name + ".png"));
+        image.SavePng(Path.Combine(folder, name + ".png"));
     }
 
     private void Finish(string error)

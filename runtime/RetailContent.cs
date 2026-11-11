@@ -301,7 +301,6 @@ public partial class RetailContent : Node
         return (document, textures);
     }
 
-    public static Color ToColor(ushort value) => TitleConversion.ToColor(value, false);
 
     /// <summary>Opens the installation, rejecting it when a disc file it needs is missing or no longer the retail file.</summary>
     public void Reload()

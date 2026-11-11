@@ -58,11 +58,11 @@ public sealed partial class ItemMenu : Control
     public sealed record Stats(int Dp, int MaxDp, int Pp, int MaxPp, string DpWord, string PpWord, int Page, string[] Pages, string[] Labels, int[] Values,
         string OrgEqp, (string Label, int Org, int Eqp, int Now)[] Rows, bool Ranged);
     private static readonly int[] Ease = { 0, 1, 2, 4, 8, 16, 32, 56, 80, 104, 128, 152, 176, 200, 224, 248 };
-    private static readonly Rect2 Pointer = new(31, 44, 17, 20), InformationWord = new(93, 151, 52, 7), MenuWord = new(64, 64, 36, 10);
+    private static readonly Rect2 MenuWord = new(64, 64, 36, 10);
 
     private Texture2D? _backdrop, _menuPage, _chosenIcons, _icons, _arrowsLive, _arrowsIdle, _button, _labels, _cursor, _rowIcons;
     private Font? _system;
-    private int[] _widths = Array.Empty<int>(), _columns = Array.Empty<int>(), _kerning = Array.Empty<int>();
+    private Runtime.HudLettering? _lettering;
 
     private string _header = "", _title = "", _count = "";
     private IReadOnlyList<Row> _rows = Array.Empty<Row>();
@@ -133,12 +133,7 @@ public sealed partial class ItemMenu : Control
         _digits = Page("hud_digits");
         _cursor = Page("hud_cursor");
         _system = content.Has("system_font") ? content.BitmapFont("system_font") : null;
-        if (content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font)
-        {
-            _widths = font["widths"].AsInt32Array();
-            _columns = font["columns"].AsInt32Array();
-            _kerning = font["kerning"].AsInt32Array();
-        }
+        _lettering = _labels != null && content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font ? new Runtime.HudLettering(_labels, font) : null;
         MouseFilter = MouseFilterEnum.Ignore;
         AnchorRight = 1;
         AnchorBottom = 1;
@@ -408,10 +403,9 @@ public sealed partial class ItemMenu : Control
     /// </summary>
     private void DrawStats(Stats stats, Vector2 unit, Action<string, float, float, bool> text, Action<float, float, float, Color, Color> bar)
     {
-        if (_labels == null || _widths.Length == 0) return;
-        float Width(string word) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, word, new Vector2(-1000, -1000), unit) + 1000;
+        if (_labels == null || _lettering == null) return;
         void Capitals(string word, float x, float y, bool right = false, Color? tint = null) =>
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, word, new Vector2(right ? x - Width(word) : x, y), unit, tint);
+            _lettering!.Draw(this, word, new Vector2(right ? x - _lettering!.Width(word) : x, y), unit, tint);
         if (_digits != null)
         {
             Capitals(stats.DpWord, 10, 31);
@@ -434,10 +428,9 @@ public sealed partial class ItemMenu : Control
     /// </summary>
     private void DrawPage(int page, string[] pages, bool[]? enabled, string[] labels, int[] values, Vector2 unit, Action<float, float, float, Color, Color> bar)
     {
-        if (_labels == null || _widths.Length == 0) return;
-        float Width(string text) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(-1000, -1000), unit) + 1000;
+        if (_labels == null || _lettering == null) return;
         void Capitals(string text, float x, float y, bool right = false) =>
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(right ? x - Width(text) : x, y), unit);
+            _lettering!.Draw(this, text, new Vector2(right ? x - _lettering!.Width(text) : x, y), unit);
         // The page header.
         bar(24, 49, 135, MenuList.ChosenLight, MenuList.ChosenDark);
         if (_button != null) DrawTextureRectRegion(_button, new Rect2(new Vector2(16, 46) * unit, new Vector2(16, 16) * unit), new Rect2(16, 128, 16, 16));
@@ -487,10 +480,9 @@ public sealed partial class ItemMenu : Control
     /// </summary>
     private void OrgEqp(string word, (string Label, int Org, int Eqp, int Now)[] rows, bool ranged, Vector2 unit, bool known = true)
     {
-        if (_labels == null || _widths.Length == 0) return;
-        float Width(string text) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(-1000, -1000), unit) + 1000;
+        if (_labels == null || _lettering == null) return;
         void Capitals(string text, float x, float y, bool right = false, Color? tint = null) =>
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(right ? x - Width(text) : x, y), unit, tint);
+            _lettering!.Draw(this, text, new Vector2(right ? x - _lettering!.Width(text) : x, y), unit, tint);
         Side(2);
         float top = ranged ? 126 : 146;
         Capitals(word, 252, top);
@@ -524,8 +516,7 @@ public sealed partial class ItemMenu : Control
     /// </summary>
     private void DrawStatus(Status status, Vector2 unit, Action<Texture2D?, Rect2, Vector2, Color?> sprite)
     {
-        if (_labels == null || _digits == null || _widths.Length == 0) return;
-        float Width(string text) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(-1000, -1000), unit) + 1000;
+        if (_labels == null || _digits == null || _lettering == null) return;
         Side(0);
         BattleHud.Block(this, _labels, _digits, 2, status.Risk, 100, unit, status.Known);
         BattleHud.Block(this, _labels, _digits, 1, status.Mp, status.MaxMp, unit, status.Known);
@@ -551,20 +542,19 @@ public sealed partial class ItemMenu : Control
                 DrawLine(new Vector2(8, 38 + i + 0.5f) * unit, new Vector2(96 - i, 38 + i + 0.5f) * unit, from, unit.Y);
             }
             sprite(_button, new Rect2(16, 128, 16, 16), new Vector2(8, 36), null);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, "STATUS", new Vector2(28, 38), unit, status.Chosen < status.Limbs.Count ? null : new Color(0.5f, 0.5f, 0.5f));
+            _lettering!.Draw(this, "STATUS", new Vector2(28, 38), unit, status.Chosen < status.Limbs.Count ? null : new Color(0.5f, 0.5f, 0.5f));
         }
         else
         {
             void Bar(float x, float y, float width, Color from, Color to) =>
-                DrawPolygon(new[] { new Vector2(x, y) * unit, new Vector2(x + width, y) * unit, new Vector2(x + width, y + 12) * unit, new Vector2(x, y + 12) * unit }, new[] { from, to, to, from });
+                FieldView.Band(this, new Vector2(x, y), new Vector2(x + width, y + 12), from, to, unit);
             DrawPage(defences.Page, defences.Pages, defences.Enabled, defences.Labels, defences.Values, unit, Bar);
         }
         // The character's name on the header bar at the top right (MENU4: a row at (180, 18), 140 wide).
         if (status.Name.Length > 0)
         {
             Side(2);
-            DrawPolygon(new[] { new Vector2(180, 18) * unit, new Vector2(320, 18) * unit, new Vector2(320, 30) * unit, new Vector2(180, 30) * unit },
-                new[] { MenuList.HeaderLight, MenuList.HeaderDark, MenuList.HeaderDark, MenuList.HeaderLight });
+            FieldView.Band(this, new Vector2(180, 18), new Vector2(320, 30), MenuList.HeaderLight, MenuList.HeaderDark, unit);
             if (_system != null)
             {
                 DrawSetTransform(_pin, 0, unit);
@@ -600,12 +590,12 @@ public sealed partial class ItemMenu : Control
             string name = limb.Name.TrimStart('#');
             bool dim = defences != null && i != status.Chosen;
             Color? shade = dim ? new Color(0.5f, 0.5f, 0.5f) : null;
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, name, new Vector2(216 - Width(name), y), unit, shade);
+            _lettering!.Draw(this, name, new Vector2(216 - _lettering!.Width(name), y), unit, shade);
             var c = limb.Condition < status.ConditionColours.Length ? status.ConditionColours[limb.Condition] : Colors.White;
             if (dim) c = new Color(c.R / 2, c.G / 2, c.B / 2);
             DrawRect(new Rect2(new Vector2(216, y + 2) * unit, new Vector2(7, 7) * unit), c);
             DrawRect(new Rect2(new Vector2(217, y + 3) * unit, new Vector2(5, 5) * unit), new Color(Math.Min(1, c.R * 2), Math.Min(1, c.G * 2), Math.Min(1, c.B * 2)));
-            if (limb.Condition < status.Conditions.Length) BattleHud.Letter(this, _labels, _widths, _columns, _kerning, status.Conditions[limb.Condition], new Vector2(224, y), unit, shade);
+            if (limb.Condition < status.Conditions.Length) _lettering!.Draw(this, status.Conditions[limb.Condition], new Vector2(224, y), unit, shade);
         }
         var rows = new (string, int, int, int)[status.Stats.Length];
         for (int i = 0; i < rows.Length; i++) rows[i] = (status.Stats[i].Label, status.Stats[i].Org, status.Stats[i].Eqp, status.Stats[i].Eqp);
@@ -648,17 +638,16 @@ public sealed partial class ItemMenu : Control
     /// </summary>
     private void DrawCounts(Container c, Vector2 unit, bool both)
     {
-        if (_labels == null || _widths.Length == 0) return;
-        float Width(string word) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, word, new Vector2(-4000, -4000), unit) + 4000;
-        void Word(string word, float x, float y, Color? tint = null) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, word, new Vector2(x, y), unit, tint);
+        if (_labels == null || _lettering == null) return;
+        void Word(string word, float x, float y, Color? tint = null) => _lettering!.Draw(this, word, new Vector2(x, y), unit, tint);
         var blue = Color.Color8(0x50, 0x70, 0xFF);
         void Count(int count, int limit, float countRight, float limitRight, float y)
         {
             string a = count.ToString(), b = limit.ToString();
-            Word(a, countRight - Width(a), y, blue);
+            Word(a, countRight - _lettering!.Width(a), y, blue);
             Word(c.Slash, countRight, y);
             // A limit of three digits starts just after the slash.
-            Word(b, Math.Max(limitRight - Width(b), countRight + Width(c.Slash)), y);
+            Word(b, Math.Max(limitRight - _lettering!.Width(b), countRight + _lettering!.Width(c.Slash)), y);
         }
         if (both)
         {
@@ -668,7 +657,7 @@ public sealed partial class ItemMenu : Control
             {
                 float y = 98 + 12 * i;
                 Count(c.BagCounts[i], c.BagLimits[i], 77, 110, y);
-                Word(c.Categories[i], 159 - Width(c.Categories[i]) / 2, y);
+                Word(c.Categories[i], 159 - _lettering!.Width(c.Categories[i]) / 2, y);
                 Count(c.BoxCounts[i], c.BoxLimits[i], 207, 247, y);
             }
             return;
@@ -685,10 +674,6 @@ public sealed partial class ItemMenu : Control
     public override void _Draw()
     {
         var unit = FieldView.Pin(Size, 1).Unit;
-        void Sprite(Texture2D? texture, Rect2 source, Vector2 at, Color? tint = null)
-        {
-            if (texture != null) DrawTextureRectRegion(texture, new Rect2(at * unit, source.Size * unit), source, tint ?? Colors.White);
-        }
         // Black over the whole window, beyond the 4:3 screen too.
         DrawSetTransform(Vector2.Zero);
         DrawRect(new Rect2(Vector2.Zero, Size), Colors.Black);
@@ -697,19 +682,19 @@ public sealed partial class ItemMenu : Control
         Side(1);
         // The backdrop, a step brighter each frame for eight frames.
         float fade = Math.Min(8, _frames) / 8f;
-        Sprite(_backdrop, new Rect2(0, 0, 192, 240), new Vector2(64, 0), new Color(fade, fade, fade));
+        FieldView.Sprite(this, _backdrop, new Rect2(0, 0, 192, 240), new Vector2(64, 0), unit, new Color(fade, fade, fade));
         // Ashley, over the backdrop and under everything else. Her view is 320 by 256 about (160, 112), its x scaled
         // by 9/8: the picture's width over its height is 640/576, so that 160 columns either side see 160/576 of the
         // depth.
         if (_shown && _stage != null) DrawTextureRect(_stage.GetTexture(), new Rect2(new Vector2(0, 112 - 128) * unit, new Vector2(320, 256) * unit), false);
         int menuSlide = Math.Min(12, _frames * 2);
         Side(2);
-        if (MenuWordShown) Sprite(_menuPage, MenuWord, new Vector2(276, menuSlide - 6));
+        if (MenuWordShown) FieldView.Sprite(this, _menuPage, MenuWord, new Vector2(276, menuSlide - 6), unit);
         Side(0);
 
         // A slot's list puts the strip and STATUS away, but for the chosen category's icon at the left; the
         // container's first menu has neither.
-        if (_mode == Mode.List) Sprite(_chosenIcons, new Rect2(120 + 16 * _category, 128, 16, 16), new Vector2(0, 14));
+        if (_mode == Mode.List) FieldView.Sprite(this, _chosenIcons, new Rect2(120 + 16 * _category, 128, 16, 16), new Vector2(0, 14), unit);
         else if (_mode == Mode.Slots && !_strip) { }
         else if (_mode is Mode.ContainerTop or Mode.Header or Mode.Data or Mode.Setup or Mode.Status) { }
         else
@@ -718,10 +703,10 @@ public sealed partial class ItemMenu : Control
             // MENU3 slides the strip down to y 16.
             float iconsY = Math.Min(4, _frames) * 8 - 16;
             for (int i = 0; i < 8; i++)
-                Sprite(i == _category ? _chosenIcons : _icons, new Rect2(120 + 16 * i, 128, 16, 16), new Vector2(((i + 1) & 7) * 16 + 32, iconsY));
+                FieldView.Sprite(this, i == _category ? _chosenIcons : _icons, new Rect2(120 + 16 * i, 128, 16, 16), new Vector2(((i + 1) & 7) * 16 + 32, iconsY), unit);
             int wobble = _browsing ? (_frames % 12) switch { < 3 => 0, < 6 => 1, < 9 => 2, _ => 1 } : 0;
-            Sprite(_browsing ? _arrowsLive : _arrowsIdle, new Rect2(0, 48, 16, 16), new Vector2(16 - wobble, iconsY));
-            Sprite(_browsing ? _arrowsLive : _arrowsIdle, new Rect2(16, 48, 16, 16), new Vector2(162 + wobble, iconsY + 1));
+            FieldView.Sprite(this, _browsing ? _arrowsLive : _arrowsIdle, new Rect2(0, 48, 16, 16), new Vector2(16 - wobble, iconsY), unit);
+            FieldView.Sprite(this, _browsing ? _arrowsLive : _arrowsIdle, new Rect2(16, 48, 16, 16), new Vector2(162 + wobble, iconsY + 1), unit);
 
             // STATUS, sliding in from the left.
             float statusX = -Ease[Math.Max(0, 10 - Math.Min(10, _frames))];
@@ -730,7 +715,7 @@ public sealed partial class ItemMenu : Control
                 var from = Color.Color8(64, 56, 32).Lerp(Color.Color8(16, 16, 8), i / 9f);
                 DrawLine(new Vector2(statusX + 8, 38 + i + 0.5f) * unit, new Vector2(statusX + 96 - i, 38 + i + 0.5f) * unit, from, unit.Y);
             }
-            if (_mode == Mode.ContainerList && _container != null && _labels != null && _widths.Length > 0)
+            if (_mode == Mode.ContainerList && _container != null && _labels != null && _lettering != null)
             {
                 // A transfer list's buttons: Square STATUS and Triangle CANCEL, then Cross END a row lower, each on its
                 // olive band.
@@ -740,20 +725,20 @@ public sealed partial class ItemMenu : Control
                     DrawLine(new Vector2(statusX + 8, 54 + i + 0.5f) * unit, new Vector2(statusX + 76 - i, 54 + i + 0.5f) * unit, shade, unit.Y);
                     DrawLine(new Vector2(statusX + 80, 38 + i + 0.5f) * unit, new Vector2(statusX + 150 - i, 38 + i + 0.5f) * unit, shade, unit.Y);
                 }
-                Sprite(_button, new Rect2(0, 128, 16, 16), new Vector2(statusX + 80, 36));
-                Sprite(_button, new Rect2(48, 128, 16, 16), new Vector2(statusX + 8, 52));
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _container.Buttons[1], new Vector2(statusX + 100, 38), unit);
+                FieldView.Sprite(this, _button, new Rect2(0, 128, 16, 16), new Vector2(statusX + 80, 36), unit);
+                FieldView.Sprite(this, _button, new Rect2(48, 128, 16, 16), new Vector2(statusX + 8, 52), unit);
+                _lettering!.Draw(this, _container.Buttons[1], new Vector2(statusX + 100, 38), unit);
                 // END is dim while the confirmation is up.
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _container.Buttons[2], new Vector2(statusX + 28, 54), unit, _container.Confirm != null ? new Color(0.5f, 0.5f, 0.5f) : null);
+                _lettering!.Draw(this, _container.Buttons[2], new Vector2(statusX + 28, 54), unit, _container.Confirm != null ? new Color(0.5f, 0.5f, 0.5f) : null);
             }
-            Sprite(_button, new Rect2(16, 128, 16, 16), new Vector2(statusX + 8, 36));
+            FieldView.Sprite(this, _button, new Rect2(16, 128, 16, 16), new Vector2(statusX + 8, 36), unit);
             // Lit (0x80) while a thing is chosen whose status it can show, dim (0x40) otherwise.
-            if (_labels != null && _widths.Length > 0)
+            if (_labels != null && _lettering != null)
             {
                 // In a transfer list it is lit only on a piece of equipment.
                 bool lit = _mode == Mode.ContainerList ? _container?.Confirm == null && _rows.Count > 0 && _category < 6 : _category != Options;
                 var tint = lit ? Colors.White : new Color(0.5f, 0.5f, 0.5f);
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, "STATUS", new Vector2(statusX + 28, 38), unit, tint);
+                _lettering!.Draw(this, "STATUS", new Vector2(statusX + 28, 38), unit, tint);
             }
         }
 
@@ -761,7 +746,7 @@ public sealed partial class ItemMenu : Control
         void Bar(float x, float y, float width, Color from, Color to)
         {
             float top = y;
-            DrawPolygon(new[] { new Vector2(x, top) * unit, new Vector2(x + width, top) * unit, new Vector2(x + width, top + 12) * unit, new Vector2(x, top + 12) * unit }, new[] { from, to, to, from });
+            FieldView.Band(this, new Vector2(x, top), new Vector2(x + width, top + 12), from, to, unit);
         }
         void Text(string text, float x, float y, bool right = false, Color? colour = null, Font? font = null)
         {
@@ -776,36 +761,35 @@ public sealed partial class ItemMenu : Control
         // six short of the row's end, a space before it, then the slash and the count (retail footage).
         void Count(string text, float right, float y)
         {
-            if (_labels == null || _widths.Length == 0) return;
-            float Width(string word) => BattleHud.Letter(this, _labels, _widths, _columns, _kerning, word, new Vector2(-1000, 0), unit) + 1000;
+            if (_labels == null || _lettering == null) return;
             int slash = text.IndexOf('/');
             string held = slash < 0 ? text : text[..(slash + 1)], limit = slash < 0 ? "" : text[(slash + 1)..].Trim();
             float end = right - 6;
             if (limit.Length > 0)
             {
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, limit, new Vector2(end - Width(limit), y + 1), unit);
-                end -= Width(limit) + 6;
+                _lettering!.Draw(this, limit, new Vector2(end - _lettering!.Width(limit), y + 1), unit);
+                end -= _lettering!.Width(limit) + 6;
             }
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, held, new Vector2(end - Width(held), y + 1), unit);
+            _lettering!.Draw(this, held, new Vector2(end - _lettering!.Width(held), y + 1), unit);
         }
         float slide = Ease[Math.Max(0, 10 - Math.Min(10, _frames))];
         Side(2);
         void Row(Row row, float x, float y, float width, bool chosen, bool held = false)
         {
             Bar(x, y, width, chosen ? MenuList.ChosenLight : MenuList.BarDark, chosen ? MenuList.ChosenDark : MenuList.BarLight);
-            if (row.Icon >= 0 && _labels != null) Sprite(_labels, new Rect2(row.Icon % 16 * 16, 98 + row.Icon / 16 * 16, 16, 16), new Vector2(x + 3, y - 5), new Color(0.42f, 1.25f, 1.2f));
-            if (row.Icon >= 0 && row.Material is >= 1 and <= 7 && _labels != null) Sprite(_labels, MaterialLetters[row.Material - 1], new Vector2(x + 13, y - 3), MaterialTint);
+            if (row.Icon >= 0 && _labels != null) FieldView.Sprite(this, _labels, new Rect2(row.Icon % 16 * 16, 98 + row.Icon / 16 * 16, 16, 16), new Vector2(x + 3, y - 5), unit, new Color(0.42f, 1.25f, 1.2f));
+            if (row.Icon >= 0 && row.Material is >= 1 and <= 7 && _labels != null) FieldView.Sprite(this, _labels, MaterialLetters[row.Material - 1], new Vector2(x + 13, y - 3), unit, MaterialTint);
             // SET (16 by 13 at (80, 129)) or EQP (16 by 16 at (96, 128)) stands 24 left of the icon (retail footage:
             // the container's BLADES), from the HUD page through the gold palette at (976, 223).
-            if (row.Badge == 1) Sprite(_chosenIcons, new Rect2(80, 129, 16, 13), new Vector2(x - 21, y - 4));
-            else if (row.Badge == 2) Sprite(_chosenIcons, new Rect2(96, 128, 16, 16), new Vector2(x - 21, y - 5));
+            if (row.Badge == 1) FieldView.Sprite(this, _chosenIcons, new Rect2(80, 129, 16, 13), new Vector2(x - 21, y - 4), unit);
+            else if (row.Badge == 2) FieldView.Sprite(this, _chosenIcons, new Rect2(96, 128, 16, 16), new Vector2(x - 21, y - 5), unit);
             Text(row.Name, x + (row.Icon >= 0 ? 22 : 6), y, colour: held ? ChosenName : row.Greyed ? MenuList.Greyed : null);
             if (row.Count >= 0 && _digits != null)
             {
                 // A thing's count in the HUD's small digits (6 wide, 5 apart), ending at x 310 (retail footage).
                 string digits = row.Count.ToString();
                 for (int k = 0; k < digits.Length; k++)
-                    Sprite(_digits, new Rect2((digits[k] - '0') * 6, 0, 6, 10), new Vector2(309 - 5 * (digits.Length - k), y + 1));
+                    FieldView.Sprite(this, _digits, new Rect2((digits[k] - '0') * 6, 0, 6, 10), new Vector2(309 - 5 * (digits.Length - k), y + 1), unit);
             }
         }
         if (_mode == Mode.Slots)
@@ -817,13 +801,13 @@ public sealed partial class ItemMenu : Control
             {
                 float y = 34 + 16 * i;
                 Row(_rows[i], 169 + slide, y, 151, i == _chosen);
-                if (i < _slotLabels.Length && _labels != null && _widths.Length > 0)
+                if (i < _slotLabels.Length && _labels != null && _lettering != null)
                 {
-                    float width = BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _slotLabels[i], new Vector2(-1000, 0), unit) + 1000;
-                    BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _slotLabels[i], new Vector2(159 + slide - width, y + 1), unit);
+                    float width = _lettering!.Width(_slotLabels[i]);
+                    _lettering!.Draw(this, _slotLabels[i], new Vector2(159 + slide - width, y + 1), unit);
                 }
             }
-            if (_chosen >= 0 && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(155, 34 + 16 * _chosen - 10));
+            if (_chosen >= 0 && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(155, 34 + 16 * _chosen - 10), unit);
         }
         else if (_mode == Mode.List)
         {
@@ -836,8 +820,8 @@ public sealed partial class ItemMenu : Control
             if (_rows.Count > 0) Row(_rows[0], 155, 18, 165, _chosen == 0);
             for (int i = Math.Max(1, _first); i < _rows.Count && i < _first + 7; i++)
                 Row(_rows[i], 169, 34 + 16 * (i - Math.Max(1, _first)), 151, i == _chosen);
-            if (_chosen == 0) Sprite(_cursor, Pointer, new Vector2(141, 18 - 10));
-            else if (_chosen >= Math.Max(1, _first) && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(155, 34 + 16 * (_chosen - Math.Max(1, _first)) - 10));
+            if (_chosen == 0) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(141, 18 - 10), unit);
+            else if (_chosen >= Math.Max(1, _first) && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(155, 34 + 16 * (_chosen - Math.Max(1, _first)) - 10), unit);
             if (_stats is { } stats) { Side(0); DrawStats(stats, unit, (text, x, y, right) => Text(text, x, y, right), Bar); }
         }
         else if (_mode == Mode.Header)
@@ -849,11 +833,11 @@ public sealed partial class ItemMenu : Control
             }
             // Answers (the container's YES and NO as it is left) from x 194 at y 148, the pointer at the chosen one.
             for (int i = 0; i < _rows.Count; i++) Row(_rows[i], 194, 148 + 16 * i, 126, i == _chosen);
-            if (_chosen >= 0 && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(180, 148 + 16 * _chosen - 10));
+            if (_chosen >= 0 && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(180, 148 + 16 * _chosen - 10), unit);
             if (_headerCaution.Length > 0)
             {
                 Side(0);
-                Sprite(_labels, CautionWord, new Vector2(8, 181));
+                FieldView.Sprite(this, _labels, CautionWord, new Vector2(8, 181), unit);
                 var lines = _headerCaution.Split('\n');
                 for (int i = 0; i < lines.Length && i < 3; i++) Text(lines[i], 16, 192 + 13 * i);
             }
@@ -869,21 +853,21 @@ public sealed partial class ItemMenu : Control
             }
             float top = 18 + 16 * _headers.Count, x = _iconRows ? 169 : 194;
             for (int i = _first; i < _rows.Count && i < _first + 8; i++) Row(_rows[i], x + slide, top + 16 * (i - _first), _iconRows ? 151 : 126, i == _chosen);
-            if (_chosen >= _first && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(x - 14, top + 16 * (_chosen - _first) - 10));
+            if (_chosen >= _first && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(x - 14, top + 16 * (_chosen - _first) - 10), unit);
         }
         else if (_mode == Mode.Data)
         {
             Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
             Text(_header, 186 + slide, 18);
             for (int i = 0; i < _rows.Count; i++) Row(_rows[i], 194 + slide, 34 + 16 * i, 126, i == _chosen);
-            if (_chosen >= 0 && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(180, 34 + 16 * _chosen - 10));
-            if (_labels != null && _widths.Length > 0)
+            if (_chosen >= 0 && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(180, 34 + 16 * _chosen - 10), unit);
+            if (_labels != null && _lettering != null)
             {
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _playLabel, new Vector2(224, 188), unit);
-                BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _playTime, new Vector2(224, 200), unit);
+                _lettering!.Draw(this, _playLabel, new Vector2(224, 188), unit);
+                _lettering!.Draw(this, _playTime, new Vector2(224, 200), unit);
             }
         }
-        else if (_mode == Mode.Status && _status is { } status) DrawStatus(status, unit, (texture, source, at, tint) => Sprite(texture, source, at, tint));
+        else if (_mode == Mode.Status && _status is { } status) DrawStatus(status, unit, (texture, source, at, tint) => FieldView.Sprite(this, texture, source, at, unit, tint));
         else if (_mode == Mode.ContainerTop && _container is { } top)
         {
             // CONTAINER, then REMOVE and STORE as rows and OK bare; below, the bag's and the container's counts.
@@ -894,7 +878,7 @@ public sealed partial class ItemMenu : Control
                 if (i < _rows.Count - 1) Row(_rows[i], 194 + slide, 34 + 16 * i, 126, i == _chosen);
                 else Text(_rows[i].Name, 200 + slide, 34 + 16 * i);
             }
-            if (_chosen >= 0 && _chosen < _rows.Count) Sprite(_cursor, Pointer, new Vector2(180, 34 + 16 * _chosen - 10));
+            if (_chosen >= 0 && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(180, 34 + 16 * _chosen - 10), unit);
             Side(1);
             DrawCounts(top, unit, true);
         }
@@ -908,7 +892,7 @@ public sealed partial class ItemMenu : Control
             for (int i = _first; i < _rows.Count && i < _first + 8; i++)
                 Row(_rows[i], 169 + slide, 50 + 16 * (i - _first), 151, i == _chosen && list.Confirm == null && _actions == null, i == _chosen && _actions != null);
             if (list.Confirm == null && _actions == null && _chosen >= _first && _chosen < _rows.Count)
-                Sprite(_cursor, Pointer, new Vector2(155, 50 + 16 * (_chosen - _first) - 10));
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(155, 50 + 16 * (_chosen - _first) - 10), unit);
             Side(0);
             if (list.Confirm == null && _actions == null) DrawCounts(list, unit, false);
             if (_actions is { } boxActions && list.Confirm == null)
@@ -917,15 +901,15 @@ public sealed partial class ItemMenu : Control
                 // STORE, DISCARD and SORT).
                 for (int k = 0; k < boxActions.Count; k++)
                     Row(boxActions[k], 0, 162 - 16 * (boxActions.Count - 1 - k), 125, k == _action);
-                Sprite(_cursor, Pointer, new Vector2(-2, 162 - 16 * (boxActions.Count - 1 - _action) - 10));
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(-2, 162 - 16 * (boxActions.Count - 1 - _action) - 10), unit);
             }
             if (list.Confirm is { } ask)
             {
                 // YES and NO over the left, the question under CAUTION.
                 Row(new Row(ask.Yes, -1, -1, ""), 0, 146, 125, ask.Chosen == 0);
                 Row(new Row(ask.No, -1, -1, ""), 0, 162, 125, ask.Chosen == 1);
-                Sprite(_cursor, Pointer, new Vector2(-2, 146 + 16 * ask.Chosen - 10));
-                Sprite(_labels, CautionWord, new Vector2(8, 181));
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(-2, 146 + 16 * ask.Chosen - 10), unit);
+                FieldView.Sprite(this, _labels, CautionWord, new Vector2(8, 181), unit);
                 var lines = ask.Question.Split('\n');
                 for (int i = 0; i < lines.Length && i < 3; i++) Text(lines[i], 16, 192 + 13 * i);
                 DrawSetTransform(Vector2.Zero);
@@ -933,7 +917,7 @@ public sealed partial class ItemMenu : Control
             }
             if (_rows.Count == 0 && list.Empty.Length > 0)
             {
-                Sprite(_labels, InformationWord, new Vector2(8, 181));
+                FieldView.Sprite(this, _labels, MenuList.InformationWord, new Vector2(8, 181), unit);
                 var lines = list.Empty.Split('\n');
                 for (int i = 0; i < lines.Length && i < 3; i++) Text(lines[i], 16, 192 + 13 * i);
                 DrawSetTransform(Vector2.Zero);
@@ -953,7 +937,7 @@ public sealed partial class ItemMenu : Control
                 // While its actions are up the chosen thing's bar is unlit and its name yellow.
                 Row(_rows[i], rowX + slide, 50 + 16 * (i - _first), rowWidth, i == _chosen && _actions == null, i == _chosen && _actions != null);
             if (_actions == null && _chosen >= _first && _chosen < _rows.Count)
-                Sprite(_cursor, Pointer, new Vector2(options ? 180 : 155, 50 + 16 * (_chosen - _first) - 10));
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(options ? 180 : 155, 50 + 16 * (_chosen - _first) - 10), unit);
             if (_actions is { } actions)
             {
                 // The chosen thing's actions down the left, the last on line 162 as the container's NO is, the
@@ -961,7 +945,7 @@ public sealed partial class ItemMenu : Control
                 Side(0);
                 for (int k = 0; k < actions.Count; k++)
                     Row(actions[k], 0, 162 - 16 * (actions.Count - 1 - k), 125, k == _action);
-                Sprite(_cursor, Pointer, new Vector2(-2, 162 - 16 * (actions.Count - 1 - _action) - 10));
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(-2, 162 - 16 * (actions.Count - 1 - _action) - 10), unit);
             }
         }
 
@@ -971,7 +955,7 @@ public sealed partial class ItemMenu : Control
         string help = _mode == Mode.Status ? _status?.Help ?? "" : helped?.Help ?? "";
         if (help.Length > 0)
         {
-            Sprite(_labels, helped is { Caution: true } ? CautionWord : InformationWord, new Vector2(8, 181));
+            FieldView.Sprite(this, _labels, helped is { Caution: true } ? CautionWord : MenuList.InformationWord, new Vector2(8, 181), unit);
             var lines = help.Split('\n');
             for (int i = 0; i < lines.Length && i < 4; i++) Text(lines[i], 16, 192 + 13 * i);
         }

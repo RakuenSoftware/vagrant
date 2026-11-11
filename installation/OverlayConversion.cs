@@ -92,12 +92,9 @@ public sealed class OverlayConversion
                                 colour = wordX < vram.GetLength(1) && v + y < 255 ? (vram[v + y, wordX] >> ((texel & 1) * 8)) & 255 : 0;
                             }
                             ushort value = clut + colour < _words.Length ? _words[clut + colour] : (ushort)0;
-                            int r = value & 31, g = (value >> 5) & 31, b = (value >> 10) & 31;
                             int pixel = ((row * TileHeight + y) * imageWidth + column * TileWidth + x) * 4;
-                            data[pixel] = (byte)((r << 3) | (r >> 2));
-                            data[pixel + 1] = (byte)((g << 3) | (g >> 2));
-                            data[pixel + 2] = (byte)((b << 3) | (b >> 2));
-                            data[pixel + 3] = value == 0 ? (byte)0 : (byte)255;
+                            var shown = TitleConversion.ToColor(value, true);
+                            (data[pixel], data[pixel + 1], data[pixel + 2], data[pixel + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, (byte)shown.A8);
                         }
                 }
             images[$"{_name}.{index}"] = Image.CreateFromData(imageWidth, rows * TileHeight, false, Image.Format.Rgba8, data);

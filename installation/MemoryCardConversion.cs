@@ -53,10 +53,8 @@ public static class MemoryCardConversion
             {
                 int palette = x / 64 is >= 1 and <= 4 ? 0 : 512;
                 int colour = BitConverter.ToUInt16(palettes, palette + pictures[y * 448 + x] * 2), at = (y * 448 + x) * 4;
-                rgba[at] = (byte)((colour & 31) * 255 / 31);
-                rgba[at + 1] = (byte)((colour >> 5 & 31) * 255 / 31);
-                rgba[at + 2] = (byte)((colour >> 10 & 31) * 255 / 31);
-                rgba[at + 3] = 255;
+                var shown = TitleConversion.ToColor((ushort)colour, false);
+                (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, 255);
             }
         return Godot.Image.CreateFromData(448, 256, false, Godot.Image.Format.Rgba8, rgba);
     }

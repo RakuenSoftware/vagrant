@@ -19,7 +19,7 @@ public sealed partial class MenuList : Control
     internal static readonly Color ChosenLight = Color.Color8(0x08, 0x34, 0x5C), ChosenDark = Color.Color8(0x00, 0x03, 0x2E);
     internal static readonly Color HeaderLight = Color.Color8(0x06, 0x51, 0x50), HeaderDark = Color.Color8(0x00, 0x1D, 0x22);
     // The label page's words: COMMAND, MENU and INFORMATION; the cursor page's pointer.
-    private static readonly Rect2 CommandWord = new(1, 65, 60, 8), MenuWord = new(65, 65, 33, 8), InformationWord = new(93, 151, 52, 7), Pointer = new(31, 44, 17, 20);
+    internal static readonly Rect2 CommandWord = new(1, 65, 60, 8), MenuWord = new(65, 65, 33, 8), InformationWord = new(93, 151, 52, 7), Pointer = new(31, 44, 17, 20);
 
     private Texture2D? _labels, _cursor;
     private Font? _system;
@@ -48,19 +48,14 @@ public sealed partial class MenuList : Control
     /// <summary>The tint that turns a category icon's grey box retail's light teal.</summary>
     private static readonly Color IconTint = new(0.92f, 2.8f, 2.6f);
     private static readonly Color OliveDark = Color.Color8(0x08, 0x07, 0x05), OliveLight = Color.Color8(0x36, 0x2C, 0x1B), Dimmed = Color.Color8(0x70, 0x90, 0x90), CostDark = Color.Color8(0x04, 0x03, 0x1B), CostLight = Color.Color8(0x36, 0x25, 0x5D);
-    private int[] _widths = Array.Empty<int>(), _columns = Array.Empty<int>(), _kerning = Array.Empty<int>();
+    private Runtime.HudLettering? _lettering;
 
     public void Configure(Texture2D? labels, Texture2D? cursor, Font? system, Godot.Collections.Dictionary? font = null)
     {
         _labels = labels;
         _cursor = cursor;
         _system = system;
-        if (font != null)
-        {
-            _widths = font["widths"].AsInt32Array();
-            _columns = font["columns"].AsInt32Array();
-            _kerning = font["kerning"].AsInt32Array();
-        }
+        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
         MouseFilter = MouseFilterEnum.Ignore;
         AnchorRight = 1;
         AnchorBottom = 1;
@@ -106,11 +101,10 @@ public sealed partial class MenuList : Control
         // The list keeps to the window's right edge, the help to its left.
         var (unit, offset) = FieldView.Pin(Size, 2);
         DrawSetTransform(offset);
-        void Sprite(Texture2D texture, Rect2 source, Vector2 at) => DrawTextureRectRegion(texture, new Rect2(at * unit, source.Size * unit), source);
         void Bar(int row, float left, Color from, Color to)
         {
             float top = 18 + 16 * row;
-            DrawPolygon(new[] { new Vector2(left, top) * unit, new Vector2(320, top) * unit, new Vector2(320, top + 12) * unit, new Vector2(left, top + 12) * unit }, new[] { from, to, to, from });
+            FieldView.Band(this, new Vector2(left, top), new Vector2(320, top + 12), from, to, unit);
         }
         if (_prompt is { } at)
         {
@@ -118,8 +112,7 @@ public sealed partial class MenuList : Control
             {
                 bool lit = i == _chosen;
                 float top = at.Top + 16 * i;
-                DrawPolygon(new[] { new Vector2(at.Left, top) * unit, new Vector2(320, top) * unit, new Vector2(320, top + 12) * unit, new Vector2(at.Left, top + 12) * unit },
-                    new[] { lit ? ChosenLight : BarDark, lit ? ChosenDark : BarLight, lit ? ChosenDark : BarLight, lit ? ChosenLight : BarDark });
+                FieldView.Band(this, new Vector2(at.Left, top), new Vector2(320, top + 12), lit ? ChosenLight : BarDark, lit ? ChosenDark : BarLight, unit);
                 if (_system != null)
                 {
                     DrawSetTransform(offset, 0, unit);
@@ -127,12 +120,12 @@ public sealed partial class MenuList : Control
                     DrawSetTransform(offset, 0, Vector2.One);
                 }
             }
-            if (_cursor != null && _chosen >= 0 && _chosen < _entries.Count) Sprite(_cursor, Pointer, new Vector2(at.Left - 14, at.Top + 16 * _chosen - 10));
+            if (_cursor != null && _chosen >= 0 && _chosen < _entries.Count) FieldView.Sprite(this, _cursor, Pointer, new Vector2(at.Left - 14, at.Top + 16 * _chosen - 10), unit);
             DrawSetTransform(Vector2.Zero);
             return;
         }
         var title = _header == null ? CommandWord : MenuWord;
-        if (_titled) Sprite(_labels, title, new Vector2(313 - title.Size.X, 6));
+        if (_titled) FieldView.Sprite(this, _labels, title, new Vector2(313 - title.Size.X, 6), unit);
         int first = 0;
         // The names print in the system font (its six-pixel upright set), a cell's top a line inside its bar.
         void Name(string text, float x, int row, Color? colour = null)
@@ -178,30 +171,30 @@ public sealed partial class MenuList : Control
                 DrawTextureRectRegion(_labels, new Rect2(new Vector2(202, 18 + 16 * (first + i) + 1) * unit, new Vector2(12, 12) * unit), new Rect2(16 * button, 128, 16, 16), ButtonTints[button]);
             Name(_entries[i], nameLeft, first + i, kind == 1 ? Greyed : kind == 3 ? ItemMenu.ChosenName : null);
         }
-        if (_cursor != null && _chosen >= 0 && _chosen < _entries.Count) Sprite(_cursor, Pointer, new Vector2(left - 20, 18 + 16 * (first + _chosen) - 7));
-        if (_cost is { } cost && _widths.Length > 0)
+        if (_cursor != null && _chosen >= 0 && _chosen < _entries.Count) FieldView.Sprite(this, _cursor, Pointer, new Vector2(left - 20, 18 + 16 * (first + _chosen) - 7), unit);
+        if (_cost is { } cost && _lettering != null)
         {
             // MENU1.PRG's cost box: a bar from the window's left edge, the label at 6 and the value ending at 72.
             var left0 = FieldView.Pin(Size, 0).Offset;
             DrawSetTransform(left0);
-            DrawPolygon(new[] { new Vector2(0, 164) * unit, new Vector2(78, 164) * unit, new Vector2(78, 176) * unit, new Vector2(0, 176) * unit }, new[] { CostDark, CostLight, CostLight, CostDark });
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, cost.Label, new Vector2(6, 165), unit);
-            float width = BattleHud.Letter(this, _labels, _widths, _columns, _kerning, cost.Value, new Vector2(-1000, 0), unit) + 1000;
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, cost.Value, new Vector2(72 - width, 165), unit);
+            FieldView.Band(this, new Vector2(0, 164), new Vector2(78, 176), CostDark, CostLight, unit);
+            _lettering!.Draw(this, cost.Label, new Vector2(6, 165), unit);
+            float width = _lettering!.Width(cost.Value);
+            _lettering!.Draw(this, cost.Value, new Vector2(72 - width, 165), unit);
             DrawSetTransform(offset);
         }
-        if (_note.Left.Length + _note.Right.Length > 0 && _widths.Length > 0)
+        if (_note.Left.Length + _note.Right.Length > 0 && _lettering != null)
         {
             float y = 18 + 16 * (first + _entries.Count);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _note.Left, new Vector2(206, y), unit);
-            float width = BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _note.Right, new Vector2(-1000, 0), unit) + 1000;
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _note.Right, new Vector2(302 - width, y), unit);
+            _lettering!.Draw(this, _note.Left, new Vector2(206, y), unit);
+            float width = _lettering!.Width(_note.Right);
+            _lettering!.Draw(this, _note.Right, new Vector2(302 - width, y), unit);
         }
         if (_help.Length > 0)
         {
             offset = FieldView.Pin(Size, 0).Offset;
             DrawSetTransform(offset);
-            Sprite(_labels, InformationWord, new Vector2(10, 182));
+            FieldView.Sprite(this, _labels, InformationWord, new Vector2(10, 182), unit);
             if (_system != null)
             {
                 DrawSetTransform(offset, 0, unit);

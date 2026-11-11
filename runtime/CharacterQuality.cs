@@ -25,8 +25,7 @@ public partial class CharacterQuality : Node
 
     public override void _Ready()
     {
-        var config = new ConfigFile();
-        if (config.Load(AudioSettings.Preferences) == Error.Ok) Enhanced = config.GetValue("characters", "enhanced", false).AsBool();
+        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("characters", "enhanced", false).AsBool();
     }
 
     /// <summary>Sets the choice, saves it (unless <paramref name="save"/> is false, as the checks have it), and has the field redraw its characters.</summary>
@@ -35,11 +34,7 @@ public partial class CharacterQuality : Node
         if (Enhanced == enhanced) return;
         Enhanced = enhanced;
         if (!save) { Changed?.Invoke(); return; }
-        var config = new ConfigFile();
-        config.Load(AudioSettings.Preferences);
-        config.SetValue("characters", "enhanced", enhanced);
-        var result = config.Save(AudioSettings.Preferences);
-        if (result != Error.Ok) GD.PushWarning("Could not save character settings: " + result);
+        Wol.Engine.Display.DisplaySettings.SetPreference("characters", "enhanced", enhanced);
         Changed?.Invoke();
     }
 

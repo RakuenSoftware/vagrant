@@ -95,21 +95,7 @@ public partial class TitleSequenceContracts : Node
         yield return 1;
     }
 
-    private void Capture(string name)
-    {
-        if (_capture.Length == 0 || DisplayServer.GetName() == "headless") return;
-        Directory.CreateDirectory(_capture);
-        var image = GetViewport().GetTexture().GetImage();
-        // With HDR 2D the window's buffer holds linear colour; displayed output is encoded to sRGB.
-        if (GetTree().Root.UseHdr2D)
-        {
-            for (int y = 0; y < image.GetHeight(); y++)
-                for (int x = 0; x < image.GetWidth(); x++)
-                    image.SetPixel(x, y, image.GetPixel(x, y).LinearToSrgb());
-        }
-        image.Convert(Image.Format.Rgba8);
-        image.SavePng(Path.Combine(_capture, name + ".png"));
-    }
+    private void Capture(string name) => FieldContracts.Capture(this, _capture, name);
 
     private IEnumerator<int> Script()
     {

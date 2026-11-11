@@ -135,6 +135,9 @@ public sealed partial class FieldEffect : Node3D
     /// </summary>
     public float NearLimit;
 
+    /// <summary>The projection distance the GTE projects with, for <see cref="NearLimit"/>.</summary>
+    public float Projection;
+
     /// <summary>The characters an effect's request lists besides its source and targets (timeline type 8 shifts them).</summary>
     public Func<IEnumerable<EventActor>>? Bystanders { get; init; }
 
@@ -897,16 +900,14 @@ public sealed partial class FieldEffect : Node3D
         float unit = 1f / Installation.MapConversion.UnitsPerMetre;
         var eye = camera.GlobalTransform.AffineInverse();
         float front = Math.Max(camera.Near * 1.05f, unit);
-        // A corner nearer than the GTE's limit lands where retail's projection puts it: across and down shrunk by its
-        // depth over the limit (one behind the eye at the near plane).
+        // A corner nearer than the GTE's limit lands where retail's projection puts it (one behind the eye at the near
+        // plane).
         Vector3 Placed(Vector3 world)
         {
             if (NearLimit <= 0) return world;
-            var local = eye * world;
-            float depth = -local.Z, limit = NearLimit * unit;
-            if (depth >= limit) return world;
-            float shown = Math.Max(depth, front);
-            return camera.GlobalTransform * new Vector3(local.X * shown / limit, local.Y * shown / limit, -shown);
+            var local = eye * world / unit;
+            if (-local.Z >= NearLimit) return world;
+            return camera.GlobalTransform * (EventActor.GteProjection(local, Projection, NearLimit, front / unit).Drawn * unit);
         }
         int quads = 0;
         foreach (var instance in _instances)

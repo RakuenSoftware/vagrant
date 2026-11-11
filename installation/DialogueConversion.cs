@@ -212,8 +212,7 @@ public sealed class DialogueConversion
             {
                 int packed = _system[page + 8 + (y * pageWidth + x) / 2], index = (x & 1) == 0 ? packed & 15 : packed >> 4;
                 int colour = BitConverter.ToUInt16(_system, clut + index * 2);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                tile.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2))));
+                tile.SetPixel(x, y, TitleConversion.ToColor((ushort)colour, false));
             }
         images["dialogue_paper"] = tile;
 

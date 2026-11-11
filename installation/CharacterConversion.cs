@@ -46,9 +46,9 @@ public sealed class CharacterConversion
         _sequences = new List<(string, byte[], int)>(sequences);
         if (model.Length < 0x138 || model[0] != (byte)'H') throw new InvalidDataException($"{name} is not a character model.");
         _bonesAt = 0x138;
-        _groupsAt = (int)Long(model, 0x12C) + 0xF8;
-        _verticesAt = (int)Long(model, 0x130) + 0xF8;
-        _facesAt = (int)Long(model, 0x134) + 0xF8;
+        _groupsAt = (int)BitConverter.ToUInt32(model, 0x12C) + 0xF8;
+        _verticesAt = (int)BitConverter.ToUInt32(model, 0x130) + 0xF8;
+        _facesAt = (int)BitConverter.ToUInt32(model, 0x134) + 0xF8;
     }
 
     /// <summary>
@@ -63,12 +63,12 @@ public sealed class CharacterConversion
         _model = wep;
         _sequences = new();
         if (wep.Length < 0x50 || wep[0] != (byte)'H') throw new InvalidDataException($"{name} is not a weapon model.");
-        int block = 0x10, size = (int)Long(wep, 12);
+        int block = 0x10, size = (int)BitConverter.ToUInt32(wep, 12);
         if (block + size + 8 > wep.Length) throw new InvalidDataException($"{name} is truncated.");
         _bonesAt = block + 0x40;
-        _groupsAt = block + (int)Long(wep, block + 0x34);
-        _verticesAt = block + (int)Long(wep, block + 0x38);
-        _facesAt = block + (int)Long(wep, block + 0x3C);
+        _groupsAt = block + (int)BitConverter.ToUInt32(wep, block + 0x34);
+        _verticesAt = block + (int)BitConverter.ToUInt32(wep, block + 0x38);
+        _facesAt = block + (int)BitConverter.ToUInt32(wep, block + 0x3C);
         _weaponTexture = block + size;
         _weaponPalette = palette;
     }
@@ -90,12 +90,12 @@ public sealed class CharacterConversion
     private List<JsonArray> Scripts(byte[] seq, byte[] lengths)
     {
         var scripts = new List<JsonArray>();
-        int slots = Word(seq, 0), bones = seq[2];
-        int table = (int)Long(seq, 12) + 8 + slots, stride = bones * 4 + 10, count = (table - slots - 16) / stride;
+        int slots = BitConverter.ToUInt16(seq, 0), bones = seq[2];
+        int table = (int)BitConverter.ToUInt32(seq, 12) + 8 + slots, stride = bones * 4 + 10, count = (table - slots - 16) / stride;
         for (int index = 0; index < count; index++)
         {
             var list = new JsonArray();
-            int at = table + Word(seq, 16 + index * stride + 4);
+            int at = table + BitConverter.ToUInt16(seq, 16 + index * stride + 4);
             int Frame()
             {
                 if (at >= seq.Length) return -1;
@@ -130,19 +130,16 @@ public sealed class CharacterConversion
     /// half alpha and leaves the rest opaque, 2 keeps only the unmasked texels and 3 only the masked ones (the two draws
     /// of an additive or subtractive face); 0 ignores the bit.
     /// </summary>
-    private static void Put(byte[] data, int at, ushort colour, int mask, float gain)
+    public static void Put(byte[] data, int at, ushort colour, int mask, float gain)
     {
-        int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
         bool masked = (colour & 0x8000) != 0;
-        data[at] = (byte)(((r << 3) | (r >> 2)) * gain);
-        data[at + 1] = (byte)(((g << 3) | (g >> 2)) * gain);
-        data[at + 2] = (byte)(((b << 3) | (b >> 2)) * gain);
+        var shown = TitleConversion.ToColor(colour, false);
+        data[at] = (byte)(shown.R8 * gain);
+        data[at + 1] = (byte)(shown.G8 * gain);
+        data[at + 2] = (byte)(shown.B8 * gain);
         data[at + 3] = colour == 0 ? (byte)0 : mask switch { 1 => masked ? (byte)128 : (byte)255, 2 => masked ? (byte)0 : (byte)255, 3 => masked ? (byte)255 : (byte)0, _ => (byte)255 };
     }
 
-    private static uint Long(byte[] data, int offset) => BitConverter.ToUInt32(data, offset);
-    private static ushort Word(byte[] data, int offset) => BitConverter.ToUInt16(data, offset);
-    private static short Signed(byte[] data, int offset) => BitConverter.ToInt16(data, offset);
     private static short BigSigned(byte[] data, int offset) => (short)((data[offset] << 8) | data[offset + 1]);
 
     /// <summary>
@@ -266,11 +263,11 @@ public sealed class CharacterConversion
         for (int i = 0; i < _bones && _weaponTexture < 0; i++) boneLimbs.Add(_model[_bonesAt + i * 16 + 7] & 15);
         // The radius of the shadow under it (the header's u16 at 0x64, which BATTLE.PRG keeps at the actor's 0x64C and
         // 0x800B4B14 draws by); a weapon has none.
-        int shadow = _weaponTexture < 0 && _model.Length >= 0x66 ? Word(_model, 0x64) : 0;
+        int shadow = _weaponTexture < 0 && _model.Length >= 0x66 ? BitConverter.ToUInt16(_model, 0x64) : 0;
         // Whether the room's light map lights it: bit 16 of the header's word at 0x60, which BATTLE.PRG keeps at the
         // actor's 0x648 and the actor renderer tests (0x800B371C) before taking the map's colour (0x8008C458); without
         // it the character is drawn at 0x80. 23 models have it clear, among them the Ghost (1A) and the dragons.
-        bool roomLit = _weaponTexture >= 0 || _model.Length < 0x64 || (Long(_model, 0x60) & 0x10000) != 0;
+        bool roomLit = _weaponTexture >= 0 || _model.Length < 0x64 || (BitConverter.ToUInt32(_model, 0x60) & 0x10000) != 0;
         return new JsonObject { ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit };
     }
 
@@ -286,7 +283,7 @@ public sealed class CharacterConversion
         if (seq.Length < 3 || seq[2] != _bones) return clips;
         var animations = new List<Animation>(Animations(seq));
         var scripts = ScriptLengths == null ? null : Scripts(seq, ScriptLengths);
-        int slots = Word(seq, 0), table = (int)Long(seq, 12) + 8;
+        int slots = BitConverter.ToUInt16(seq, 0), table = (int)BitConverter.ToUInt32(seq, 12) + 8;
         for (int number = 0; number < slots; number++)
         {
             int index = seq[table + number];
@@ -317,7 +314,7 @@ public sealed class CharacterConversion
         var skeleton = new Skeleton3D { Name = "Skeleton" };
         for (int i = 0; i < _bones; i++)
         {
-            int length = (int)Long(_model, _bonesAt + i * 16);
+            int length = (int)BitConverter.ToUInt32(_model, _bonesAt + i * 16);
             int parent = (sbyte)_model[_bonesAt + i * 16 + 4];
             if (parent < 0 || parent >= i) parent = -1;
             _skeleton[i] = (length, parent);
@@ -335,20 +332,20 @@ public sealed class CharacterConversion
     private MeshInstance3D BuildMesh(Skeleton3D skeleton)
     {
         int groups = _model[5];
-        int faces = Word(_model, 6) + Word(_model, 8) + Word(_model, 10);
+        int faces = BitConverter.ToUInt16(_model, 6) + BitConverter.ToUInt16(_model, 8) + BitConverter.ToUInt16(_model, 10);
         int groupPointer = _groupsAt, vertexPointer = _verticesAt, facePointer = _facesAt;
-        int vertices = Word(_model, groupPointer + (groups - 1) * 4 + 2);
+        int vertices = BitConverter.ToUInt16(_model, groupPointer + (groups - 1) * 4 + 2);
         var positions = new Vector3[vertices];
         var owners = new int[vertices];
         for (int group = 0, first = 0; group < groups; group++)
         {
-            int bone = Signed(_model, groupPointer + group * 4), last = Word(_model, groupPointer + group * 4 + 2);
+            int bone = BitConverter.ToInt16(_model, groupPointer + group * 4), last = BitConverter.ToUInt16(_model, groupPointer + group * 4 + 2);
             if (bone < 0 || bone >= _bones || last > vertices || last < first) throw new InvalidDataException($"{_name} has a malformed vertex group.");
             // Rest poses have no rotation, so a bone's rest origin is the sum of its ancestors' offsets.
             var origin = skeleton.GetBoneGlobalRest(bone).Origin;
             for (int v = first; v < last; v++)
             {
-                positions[v] = origin + new Vector3(Signed(_model, vertexPointer + v * 8), Signed(_model, vertexPointer + v * 8 + 2), Signed(_model, vertexPointer + v * 8 + 4));
+                positions[v] = origin + new Vector3(BitConverter.ToInt16(_model, vertexPointer + v * 8), BitConverter.ToInt16(_model, vertexPointer + v * 8 + 2), BitConverter.ToInt16(_model, vertexPointer + v * 8 + 4));
                 owners[v] = bone;
             }
             first = last;
@@ -397,7 +394,7 @@ public sealed class CharacterConversion
             var colour = new Color[corners];
             for (int c = 0; c < corners; c++)
             {
-                index[c] = Word(_model, cursor + (coloured ? 0 : 4) + c * 2) / 4;
+                index[c] = BitConverter.ToUInt16(_model, cursor + (coloured ? 0 : 4) + c * 2) / 4;
                 if (index[c] >= vertices) throw new InvalidDataException($"{_name} has a face outside its vertices.");
                 // A triangle's texture coordinates are rotated one corner against its vertices, as the rooms' are:
                 // corner c takes pair c + 1. A quad's are in order.
@@ -479,7 +476,7 @@ public sealed class CharacterConversion
             int type = _model[cursor], size = _model[cursor + 1];
             int corners = type == 0x2C ? 4 : 3;
             var index = new int[corners];
-            for (int c = 0; c < corners; c++) index[c] = Math.Min(vertices - 1, Word(_model, cursor + 4 + c * 2) / 4);
+            for (int c = 0; c < corners; c++) index[c] = Math.Min(vertices - 1, BitConverter.ToUInt16(_model, cursor + 4 + c * 2) / 4);
             if (Array.TrueForAll(index, i => owners[i] == bone))
                 foreach (var triangle in corners == 4 ? new[] { (0, 1, 2), (1, 3, 2) } : new[] { (0, 1, 2) })
                 {
@@ -503,8 +500,8 @@ public sealed class CharacterConversion
     private ImageTexture? Texture(out int width, out int height, int mask, float gain)
     {
         if (_weaponTexture >= 0) return WeaponTexture(out width, out height, mask, gain);
-        int magic = (int)Long(_model, 0xF4) + 0xF8;
-        int at = magic + 8 + (int)Long(_model, magic + 4);
+        int magic = (int)BitConverter.ToUInt32(_model, 0xF4) + 0xF8;
+        int at = magic + 8 + (int)BitConverter.ToUInt32(_model, magic + 4);
         // Byte 4 is the depth: 1 an 8-bit image, 0x10 a 4-bit one (two texels a byte, low nibble first; the wyvern,
         // 3A). Bytes 5 and 6 are the image's size in bytes, halved.
         bool packed = _model[at + 4] == 0x10;
@@ -521,7 +518,7 @@ public sealed class CharacterConversion
             for (int x = 0; x < width; x++)
             {
                 int index = packed ? (_model[pixels + y * rowBytes + x / 2] >> (x & 1) * 4) & 15 : _model[pixels + y * rowBytes + x];
-                ushort colour = index < colours ? Word(_model, at + 8 + index * 2) : (ushort)0;
+                ushort colour = index < colours ? BitConverter.ToUInt16(_model, at + 8 + index * 2) : (ushort)0;
                 Put(data, (y * width + x) * 4, colour, mask, gain);
             }
         return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
@@ -536,8 +533,8 @@ public sealed class CharacterConversion
         int shared = wide ? 32 : 16, own = wide ? 64 : 32;
         int palettes = at + 8, image = palettes + (shared + own * 7) * 2;
         if (_weaponPalette is < 0 or >= 7 || image + width * height > _model.Length) throw new InvalidDataException($"{_name}'s texture is malformed.");
-        ushort Colour(int index) => (ushort)(index < shared ? Word(_model, palettes + index * 2)
-            : index < shared + own ? Word(_model, palettes + shared * 2 + (_weaponPalette * own + index - shared) * 2) : 0);
+        ushort Colour(int index) => (ushort)(index < shared ? BitConverter.ToUInt16(_model, palettes + index * 2)
+            : index < shared + own ? BitConverter.ToUInt16(_model, palettes + shared * 2 + (_weaponPalette * own + index - shared) * 2) : 0);
         var data = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++) Put(data, (y * width + x) * 4, Colour(_model[image + y * width + x]), mask, gain);
@@ -550,22 +547,22 @@ public sealed class CharacterConversion
     /// </summary>
     private IEnumerable<Animation> Animations(byte[] seq)
     {
-        int slots = Word(seq, 0), bones = seq[2];
+        int slots = BitConverter.ToUInt16(seq, 0), bones = seq[2];
         if (bones != _bones) throw new InvalidDataException($"{_name}'s animations are for another skeleton ({bones} bones, not {_bones}).");
-        int table = (int)Long(seq, 12) + 8 + slots;
+        int table = (int)BitConverter.ToUInt32(seq, 12) + 8 + slots;
         int stride = bones * 4 + 10, count = (table - slots - 16) / stride;
         for (int index = 0; index < count; index++)
         {
             int header = 16 + index * stride;
-            int frames = Word(seq, header);
+            int frames = BitConverter.ToUInt16(seq, header);
             int other = (sbyte)seq[header + 2];
             var animation = new Animation { Length = Math.Max(1, frames - 1) / FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
             // The translation stream places the root bone above the actor's floor position: its first value in map
             // units, and its keyed deltas in half units. An animation built on a base animation starts from the base's
             // first value, as its rotations do.
             {
-                int stream = table + Word(seq, header + 6);
-                int baseStream = other >= 0 && other < count ? table + Word(seq, 16 + other * stride + 6) : stream;
+                int stream = table + BitConverter.ToUInt16(seq, header + 6);
+                int baseStream = other >= 0 && other < count ? table + BitConverter.ToUInt16(seq, 16 + other * stride + 6) : stream;
                 var position = new Vector3(BigSigned(seq, baseStream), BigSigned(seq, baseStream + 2), BigSigned(seq, baseStream + 4));
                 int track = animation.AddTrack(Animation.TrackType.Position3D);
                 animation.TrackSetPath(track, "Space/Skeleton:b0");
@@ -587,7 +584,7 @@ public sealed class CharacterConversion
             // The movement stream (header +8, the clip's own; BATTLE.PRG 0x800AFA28) moves the actor itself: it opens with a
             // value (doubled, as the others), each frame adds its keyed step, and each frame the actor moves by a quarter
             // of the value, in map axes. Kept as the distance moved by each frame's end.
-            int moving = Word(seq, header + 8);
+            int moving = BitConverter.ToUInt16(seq, header + 8);
             if (moving != 0)
             {
                 int at = table + moving;
@@ -613,8 +610,8 @@ public sealed class CharacterConversion
             }
             for (int bone = 0; bone < bones; bone++)
             {
-                int stream = table + Word(seq, header + 10 + bone * 2);
-                int baseStream = other >= 0 && other < count ? table + Word(seq, 16 + other * stride + 10 + bone * 2) : stream;
+                int stream = table + BitConverter.ToUInt16(seq, header + 10 + bone * 2);
+                int baseStream = other >= 0 && other < count ? table + BitConverter.ToUInt16(seq, 16 + other * stride + 10 + bone * 2) : stream;
                 var rotation = new Vector3(BigSigned(seq, baseStream), BigSigned(seq, baseStream + 2), BigSigned(seq, baseStream + 4)) * 2;
                 int track = animation.AddTrack(Animation.TrackType.Rotation3D);
                 animation.TrackSetPath(track, $"Space/Skeleton:b{bone}");
@@ -644,7 +641,7 @@ public sealed class CharacterConversion
                 int offset = 0;
                 if (starts)
                 {
-                    int at = table + Word(seq, startHeader + 10 + (bones + bone) * 2);
+                    int at = table + BitConverter.ToUInt16(seq, startHeader + 10 + (bones + bone) * 2);
                     if (seq[at] == 254 && seq[at + 1] == 1) { scale = new Vector3(BigSigned(seq, at + 2), BigSigned(seq, at + 4), BigSigned(seq, at + 6)); offset = 8; }
                     else { scale = new Vector3(seq[at], seq[at + 1], seq[at + 2]); offset = 3; }
                 }
@@ -654,7 +651,7 @@ public sealed class CharacterConversion
                 // hair above zero, as a zero one breaks its pose.
                 animation.ScaleTrackInsertKey(track, 0, (scale / 64).Max(Vector3.One / 4096));
                 if (!steps) continue;
-                int stream = table + Word(seq, header + 10 + (bones + bone) * 2);
+                int stream = table + BitConverter.ToUInt16(seq, header + 10 + (bones + bone) * 2);
                 int cursor = startHeader == header ? stream + offset : stream, frame = 0;
                 var velocity = Vector3.Zero;
                 while (frame < frames - 1)

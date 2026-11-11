@@ -469,11 +469,8 @@ public sealed partial class FieldMenu : PanelContainer
         Draw();
     }
 
-    private string CheckString(int index)
-    {
-        var strings = _view.Content.Has("memory_card") ? _view.Content.Data("memory_card").GetValueOrDefault("container_check", new Godot.Collections.Array()).AsGodotArray() : new Godot.Collections.Array();
-        return index < strings.Count ? strings[index].AsGodotDictionary()["text"].AsString() : "";
-    }
+    private string CheckString(int index) =>
+        SystemBox.Entry(_view.Content.Has("memory_card") ? _view.Content.Data("memory_card").GetValueOrDefault("container_check", new Godot.Collections.Array()).AsGodotArray() : new Godot.Collections.Array(), index);
 
     // The container (MENU/MENUD.PRG): the question over the field (stage -1: "Check the container?"), the memory
     // cards read (-2), its first menu (0: REMOVE, STORE, OK), a transfer list (1) of one category, the confirmation
@@ -532,20 +529,13 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>What the container's screen says under CAUTION while it reads the cards or asks as it is left, for tests.</summary>
     public string ContainerCaution => !Visible || _page != Container ? "" : _boxStage == -2 ? CardString(22) : _boxStage == 3 ? CheckString(4) : "";
 
-    private string CardString(int index)
-    {
-        var strings = _view.Content.Has("memory_card") ? _view.Content.Data("memory_card")["strings"].AsGodotArray() : new Godot.Collections.Array();
-        return index < strings.Count ? strings[index].AsGodotDictionary()["text"].AsString() : "";
-    }
+    private string CardString(int index) =>
+        SystemBox.Entry(_view.Content.Has("memory_card") ? _view.Content.Data("memory_card")["strings"].AsGodotArray() : new Godot.Collections.Array(), index);
     private bool _storing;
     private readonly List<Variant> _pending = new();
 
     private GDictionary BoxData => _view.Content.Has("container_menu") ? _view.Content.Data("container_menu") : new GDictionary();
-    private string BoxString(int index)
-    {
-        var strings = BoxData.GetValueOrDefault("strings", new Godot.Collections.Array()).AsGodotArray();
-        return index < strings.Count ? SystemBox.Fill(strings[index].AsGodotDictionary()) : "";
-    }
+    private string BoxString(int index) => SystemBox.Entry(BoxData.GetValueOrDefault("strings", new Godot.Collections.Array()).AsGodotArray(), index);
 
     /// <summary>A thing's bag category: an equipment entry by its kind, an item id (its whole stack) as MISC.</summary>
     private static int BoxCategory(Variant thing) => thing.VariantType == Variant.Type.Int ? 6 : FieldView.BagCategory(thing.AsGodotDictionary()["kind"].AsString());
@@ -594,7 +584,7 @@ public sealed partial class FieldMenu : PanelContainer
     private ItemMenu.Container BoxView((string, string, string, int)? confirm = null, string empty = "")
     {
         var data = BoxData;
-        string[] Words(string key) => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(data.GetValueOrDefault(key, new Godot.Collections.Array()).AsGodotArray(), v => v.AsString()));
+        string[] Words(string key) => data.GetValueOrDefault(key, new Godot.Collections.Array()).AsStringArray();
         var limits = data.GetValueOrDefault("limits", new Godot.Collections.Array()).AsGodotArray();
         var boxLimits = new int[7];
         for (int i = 0; i < 7 && i < limits.Count; i++) boxLimits[i] = limits[i].AsInt32();
@@ -898,11 +888,10 @@ public sealed partial class FieldMenu : PanelContainer
     {
         var rows = new List<ItemMenu.Row>();
         var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
-        string String(int index) => index < strings.Count ? SystemBox.Fill(strings[index].AsGodotDictionary()) : "";
         if (_category == ItemMenu.Options)
         {
-            rows.Add(new ItemMenu.Row(String(8), -1, -1, String(9)));
-            rows.Add(new ItemMenu.Row(String(10), -1, -1, String(11)));
+            rows.Add(new ItemMenu.Row(SystemBox.Entry(strings, 8), -1, -1, SystemBox.Entry(strings, 9)));
+            rows.Add(new ItemMenu.Row(SystemBox.Entry(strings, 10), -1, -1, SystemBox.Entry(strings, 11)));
             return rows;
         }
         if (_category == 6)
@@ -962,13 +951,12 @@ public sealed partial class FieldMenu : PanelContainer
     private ItemMenu.Row SlotRow(int slot)
     {
         var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
-        string String(int index) => index < strings.Count ? SystemBox.Fill(strings[index].AsGodotDictionary()) : "";
         if (slot == 0)
         {
             foreach (var weapon in Weapons()) if (_view.Holds(weapon)) return WeaponRow(weapon);
         }
         else if (_view.EquippedArmour.TryGetValue(SlotLimbs[slot], out var worn) && worn.Count > 0) return ArmourRow(worn);
-        return new ItemMenu.Row(String(20), -1, -1, String(21));
+        return new ItemMenu.Row(SystemBox.Entry(strings, 20), -1, -1, SystemBox.Entry(strings, 21));
     }
 
     /// <summary>
@@ -1007,7 +995,7 @@ public sealed partial class FieldMenu : PanelContainer
     private ItemMenu.Stats SlotStats(int slot, GDictionary? thing)
     {
         var labels = _view.Content.Has("equip_labels") ? _view.Content.Data("equip_labels") : new GDictionary();
-        string[] Words(string key) => System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(labels.GetValueOrDefault(key, new Godot.Collections.Array()).AsGodotArray(), v => v.AsString()));
+        string[] Words(string key) => labels.GetValueOrDefault(key, new Godot.Collections.Array()).AsStringArray();
         int[] Values(GDictionary? record, string key, int count)
         {
             var values = new int[count];
@@ -1080,11 +1068,8 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>What the last setup did, shown as the information until the cursor moves.</summary>
     private string _setupNote = "";
 
-    private string SetupString(int index, params string[] values)
-    {
-        var list = _view.Content.Has("setup_menu") ? _view.Content.Data("setup_menu")["list"].AsGodotArray() : new Godot.Collections.Array();
-        return index < list.Count ? SystemBox.Fill(list[index].AsGodotDictionary(), values) : "";
-    }
+    private string SetupString(int index, params string[] values) =>
+        SystemBox.Entry(_view.Content.Has("setup_menu") ? _view.Content.Data("setup_menu")["list"].AsGodotArray() : new Godot.Collections.Array(), index, values);
 
     /// <summary>SETUP's commands: ASSEMBLE WEAPONS, ATTACH GEMS, DISASSEMBLE, RENAME, REPAIR and COMBINE (MENU12 words 1 to 11, each with its help after).</summary>
     private const int Assemble = 0, AttachGems = 1, Disassemble = 2, Rename = 3, Repair = 4, Combine = 5;
@@ -1698,16 +1683,12 @@ public sealed partial class FieldMenu : PanelContainer
             {
                 case 0x3E:
                 {
-                    int heal = Math.Min(ashley.MaxHp - ashley.Hp, Amount(ashley.MaxHp - ashley.Hp, ashley.Hp));
-                    ashley.Hp += heal;
-                    parts.Add($"HP +{heal}");
+                    parts.Add($"HP +{ashley.Heal(Amount(ashley.MaxHp - ashley.Hp, ashley.Hp))}");
                     break;
                 }
                 case 0x3F:
                 {
-                    int magic = Math.Min(ashley.MaxMp - ashley.Mp, Amount(ashley.MaxMp - ashley.Mp, ashley.Mp));
-                    ashley.Mp += magic;
-                    parts.Add($"MP +{magic}");
+                    parts.Add($"MP +{ashley.Restore(Amount(ashley.MaxMp - ashley.Mp, ashley.Mp))}");
                     break;
                 }
                 case 0x42:
@@ -1717,39 +1698,18 @@ public sealed partial class FieldMenu : PanelContainer
                     parts.Add($"RISK -{risk}");
                     break;
                 }
-                // Cures: paralysis, poison, curse, numbness; the cure-all takes the first three; the magic cancel
-                // every raising and lowering status.
-                case 0x1B: case 0x1C: case 0x1D: case 0x1E:
-                {
-                    int status = kind switch { 0x1B => FieldBattle.Paralysis, 0x1C => FieldBattle.Poison, 0x1D => FieldBattle.Curse, _ => FieldBattle.Numbness };
-                    parts.Add(ashley.Statuses.Remove(status) ? "cured" : "no effect");
-                    break;
-                }
-                case 0x20:
-                    foreach (int status in new[] { FieldBattle.Paralysis, FieldBattle.Poison, FieldBattle.Numbness }) ashley.Statuses.Remove(status);
-                    parts.Add("cured");
-                    break;
-                case 0x1F:
-                    foreach (int status in new List<int>(ashley.Statuses.Keys)) if (status is <= 12 or >= 19) ashley.Statuses.Remove(status);
-                    parts.Add("magic cancelled");
+                case >= 0x1B and <= 0x20:
+                    // The magic cancel and the cure-all report themselves whether or not anything was cured.
+                    parts.Add(ashley.Cure(kind) || kind is 0x1F or 0x20 ? (kind == 0x1F ? "magic cancelled" : "cured") : "no effect");
                     break;
                 case 10:
-                    ashley.Statuses[FieldBattle.Quicken] = FieldBattle.Duration(FieldBattle.Quicken);
+                    ashley.Afflict(FieldBattle.Quicken);
                     parts.Add("quickened");
                     break;
                 // Elixirs: strength, intelligence, agility, most hit points or most magic points, 1 to 4 more for good.
                 case >= 50 and <= 54:
                 {
-                    int gain = random.RandiRange(1, 4), stat = kind - 50;
-                    _view.Gains[stat] += gain;
-                    switch (stat)
-                    {
-                        case 0: ashley.Strength += gain; break;
-                        case 1: ashley.Intelligence += gain; break;
-                        case 2: ashley.Agility += gain; break;
-                        case 3: ashley.MaxHp += gain; ashley.Hp += gain; break;
-                        default: ashley.MaxMp += gain; ashley.Mp += gain; break;
-                    }
+                    int stat = kind - 50, gain = _view.Grow(stat, random.RandiRange(1, 4));
                     parts.Add($"{new[] { "STR", "INT", "AGL", "Max HP", "Max MP" }[stat]} +{gain}");
                     break;
                 }
@@ -1994,12 +1954,11 @@ public sealed partial class FieldMenu : PanelContainer
     {
         var menu = _view.Content.Data("status_menu");
         var strings = menu["strings"].AsGodotArray();
-        string Text(int i) => i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
         var ashley = StatusWho!;
         bool known = ashley == _view.Battle?.Ashley;
         var limbs = StatusLimbs(ashley);
         var icons = StatusIcons(ashley);
-        var conditions = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(menu["conditions"].AsGodotArray(), v => v.AsString()));
+        var conditions = menu["conditions"].AsStringArray();
         var colours = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(menu["condition_colours"].AsGodotArray(), v => { var c = v.AsGodotArray(); return Color.Color8((byte)c[0].AsInt32(), (byte)c[1].AsInt32(), (byte)c[2].AsInt32()); }));
         var cells = menu["icons"].AsInt32Array();
         var labels = _view.Content.Has("equip_labels") ? _view.Content.Data("equip_labels") : new GDictionary();
@@ -2021,7 +1980,7 @@ public sealed partial class FieldMenu : PanelContainer
             var parts = _view.Content.Data("battle_text")["parts"].AsGodotArray();
             int part = FieldBattle.PartNameIndex(ashley, IndexOfLimb(ashley, _statusChosen));
             string partName = part >= 0 && part < parts.Count ? parts[part].AsGodotDictionary()["text"].AsString() : "";
-            help = SystemBox.Fill(strings[12].AsGodotDictionary(), new[] { partName, Text(13 + limbs[_statusChosen].Condition) });
+            help = SystemBox.Fill(strings[12].AsGodotDictionary(), new[] { partName, SystemBox.Entry(strings, 13 + limbs[_statusChosen].Condition) });
         }
         else help = "";
         ItemMenu.Defences? defences = null;
@@ -2030,14 +1989,14 @@ public sealed partial class FieldMenu : PanelContainer
             // The limb's own values (MENU4 0x80105F44): its affinities, or its blunt, edged and piercing types; each
             // row's help is strings 50 to 56, or 57 to 59.
             var limb = ashley.Limbs[IndexOfLimb(ashley, _statusChosen)];
-            var pages = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(labels.GetValueOrDefault("pages", new Godot.Collections.Array()).AsGodotArray(), v => v.AsString()));
-            var rowLabels = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(labels.GetValueOrDefault(_defencePage == 1 ? "affinities" : "types", new Godot.Collections.Array()).AsGodotArray(), v => v.AsString()));
+            var pages = labels.GetValueOrDefault("pages", new Godot.Collections.Array()).AsStringArray();
+            var rowLabels = labels.GetValueOrDefault(_defencePage == 1 ? "affinities" : "types", new Godot.Collections.Array()).AsStringArray();
             int[] values = _defencePage == 1 ? limb.Affinities[..7] : limb.Types[1..4];
             defences = new ItemMenu.Defences(_defencePage, pages, new[] { false, true, true }, rowLabels, values, _defenceRow);
-            help = Text((_defencePage == 1 ? 50 : 57) + _defenceRow);
+            help = SystemBox.Entry(strings, (_defencePage == 1 ? 50 : 57) + _defenceRow);
         }
-        else if (_statusChosen is >= 6 and <= 11) help = Text(_statusChosen - 6);
-        else if (_statusChosen == 13 && icons.Count > 0) help = Text(18 + icons[_statusIcon]);
+        else if (_statusChosen is >= 6 and <= 11) help = SystemBox.Entry(strings, _statusChosen - 6);
+        else if (_statusChosen == 13 && icons.Count > 0) help = SystemBox.Entry(strings, 18 + icons[_statusIcon]);
         return new ItemMenu.Status(ashley.Hp, ashley.MaxHp, ashley.Mp, ashley.MaxMp, ashley.Risk, limbs, conditions, colours, icons, cells,
             labels.GetValueOrDefault("org_eqp", "").AsString(), stats, _statusChosen, _statusIcon, help, defences, ashley.Name, known);
     }
@@ -2091,17 +2050,16 @@ public sealed partial class FieldMenu : PanelContainer
             {
                 // EQUIP's slots and a thing's panels, as the item menu shows them.
                 var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
-                string String(int index) => index < strings.Count ? SystemBox.Fill(strings[index].AsGodotDictionary()) : "";
                 if (_statusEquip == 1)
                 {
                     var labels = new string[8];
-                    for (int i = 0; i < 8; i++) labels[i] = String(12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
+                    for (int i = 0; i < 8; i++) labels[i] = SystemBox.Entry(strings, 12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
                     var slots = new List<ItemMenu.Row>();
                     for (int i = 0; i < 8; i++) slots.Add(SlotRow(i));
                     // Under the character's name (MENU4 keeps its header up), without the item menu's strip.
-                    _items.SetSlots(StatusWho?.Name ?? String(12 + _slot), labels, slots, _slot, strip: false);
+                    _items.SetSlots(StatusWho?.Name ?? SystemBox.Entry(strings, 12 + _slot), labels, slots, _slot, strip: false);
                 }
-                else _items.SetList(String(12 + _slot), new List<ItemMenu.Row> { SlotRow(_slot) }, 0, SlotStats(_slot, Worn(_slot)));
+                else _items.SetList(SystemBox.Entry(strings, 12 + _slot), new List<ItemMenu.Row> { SlotRow(_slot) }, 0, SlotStats(_slot, Worn(_slot)));
             }
         }
         if (Visible && _page == Data && !_cards.Open && _view.Content.Has("memory_card"))
@@ -2110,14 +2068,13 @@ public sealed partial class FieldMenu : PanelContainer
             // seconds and hundredths (its sixtieths times five thirds), as MENU7.PRG prints them.
             var card = _view.Content.Data("memory_card");
             var words = card["strings"].AsGodotArray();
-            string Word(int i) => i < words.Count ? words[i].AsGodotDictionary()["text"].AsString() : "";
             var commands = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             long frames = _view.PlayFrames;
             long seconds = frames / 60;
             string time = $"{Math.Min(99, seconds / 3600):d2}:{seconds / 60 % 60:d2}:{seconds % 60:d2}:{frames % 60 * 5 / 3:d2}";
             _items.SetData(Data < commands.Count ? commands[Data].AsGodotDictionary()["text"].AsString() : "DATA",
                 // Retail shows no help on this page (footage).
-                new[] { new ItemMenu.Row(Word(0), -1, -1, ""), new ItemMenu.Row(Word(2), -1, -1, "") }, _cursor,
+                new[] { new ItemMenu.Row(SystemBox.Entry(words, 0), -1, -1, ""), new ItemMenu.Row(SystemBox.Entry(words, 2), -1, -1, "") }, _cursor,
                 card.GetValueOrDefault("play_time", "").AsString(), time);
         }
         if (Visible && _cards.Open)
@@ -2131,7 +2088,6 @@ public sealed partial class FieldMenu : PanelContainer
         else if (_items.Visible && _page != Data && !statusPage)
         {
             var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
-            string String(int index) => index < strings.Count ? SystemBox.Fill(strings[index].AsGodotDictionary()) : "";
             var commands = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             string header = Items < commands.Count ? commands[Items].AsGodotDictionary()["text"].AsString() : "ITEMS";
             int carried = _category < 7 ? _view.BagCounts()[_category] : 0;
@@ -2144,10 +2100,10 @@ public sealed partial class FieldMenu : PanelContainer
             else if (_equip == 1)
             {
                 var labels = new string[8];
-                for (int i = 0; i < 8; i++) labels[i] = String(12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
+                for (int i = 0; i < 8; i++) labels[i] = SystemBox.Entry(strings, 12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
                 var slots = new List<ItemMenu.Row>();
                 for (int i = 0; i < 8; i++) slots.Add(SlotRow(i));
-                _items.SetSlots(String(12 + _slot), labels, slots, _slot);
+                _items.SetSlots(SystemBox.Entry(strings, 12 + _slot), labels, slots, _slot);
             }
             else if (_equip == 2)
             {
@@ -2155,9 +2111,9 @@ public sealed partial class FieldMenu : PanelContainer
                 foreach (var candidate in SlotCandidates(_slot)) rows.Add(_slot == 0 ? WeaponRow(candidate) : ArmourRow(candidate));
                 var candidates = SlotCandidates(_slot);
                 GDictionary? chosen = _cursor > 0 && _cursor <= candidates.Count ? candidates[_cursor - 1] : Worn(_slot);
-                _items.SetList(String(12 + _slot), rows, _cursor, SlotStats(_slot, chosen));
+                _items.SetList(SystemBox.Entry(strings, 12 + _slot), rows, _cursor, SlotStats(_slot, chosen));
             }
-            else _items.Set(header, _category, String(_category), count, CategoryRows(), _cursor, true, _itemAction >= 0 ? ItemActions() : null, Math.Max(0, _itemAction));
+            else _items.Set(header, _category, SystemBox.Entry(strings, _category), count, CategoryRows(), _cursor, true, _itemAction >= 0 ? ItemActions() : null, Math.Max(0, _itemAction));
         }
         _bag.Visible = Visible && _page == Chest && _chest != null;
         if (!Visible) return;
@@ -2192,15 +2148,14 @@ public sealed partial class FieldMenu : PanelContainer
         {
             var page = _view.Content.Data("magic_menu");
             var strings = page["strings"].AsGodotArray();
-            string Text(int i) => i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
             var menuNames = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             string header = menuNames.Count > Magic ? menuNames[Magic].AsGodotDictionary()["text"].AsString() : "MAGIC";
             if (_magicClass < 0)
             {
                 var names = new List<string>();
                 var kinds = new List<int>();
-                for (int c = 0; c < 4; c++) { names.Add(Text(c * 3)); kinds.Add(ClassSpells(c).Count == 0 ? 1 : 0); }
-                _list.Set(names, _cursor, header, Text(_cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1)), kinds: kinds, titled: !_shortcut);
+                for (int c = 0; c < 4; c++) { names.Add(SystemBox.Entry(strings, c * 3)); kinds.Add(ClassSpells(c).Count == 0 ? 1 : 0); }
+                _list.Set(names, _cursor, header, SystemBox.Entry(strings, _cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1)), kinds: kinds, titled: !_shortcut);
             }
             else
             {
@@ -2215,14 +2170,13 @@ public sealed partial class FieldMenu : PanelContainer
                 var kinds = shown.ConvertAll(id => SpellCastable(id) ? 0 : 1);
                 int chosen = spells.Count > 0 ? spells[_cursor] : 0, index = 0;
                 for (int i = 0; i < all.Count; i++) if (all[i].AsInt32() == chosen) index = i;
-                _list.Set(names, _cursor - top, header, spells.Count > 0 ? Text(first + index) : "", sub: (Text(_magicClass * 3), -1), kinds: kinds,
+                _list.Set(names, _cursor - top, header, spells.Count > 0 ? SystemBox.Entry(strings, first + index) : "", sub: (SystemBox.Entry(strings, _magicClass * 3), -1), kinds: kinds,
                     cost: spells.Count > 0 ? ("MP", SpellCost(chosen).ToString()) : null, titled: !_shortcut);
             }
         }
         else if (artsList)
         {
             var strings = _view.Content.Data("break_arts")["strings"].AsGodotArray();
-            string Text(int i) => i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
             var menuNames = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             string header = menuNames.Count > Arts ? menuNames[Arts].AsGodotDictionary()["text"].AsString() : "BREAK ARTS";
             if (_artsCategories)
@@ -2234,9 +2188,9 @@ public sealed partial class FieldMenu : PanelContainer
                 var icons = new List<int>();
                 // Each category with its icon; greyed with no art back, yellow for the one in hand (Ep. 3 7:14: AXE & MACE).
                 int held = _view.Battle?.Ashley?.Category ?? 0;
-                for (int c = top + 1; c <= Math.Min(10, top + 8); c++) { names.Add(Text((c - 1) * 3)); kinds.Add(CategoryArts(c).Count == 0 ? 1 : c == held ? 3 : 0); icons.Add(3 + c); }
+                for (int c = top + 1; c <= Math.Min(10, top + 8); c++) { names.Add(SystemBox.Entry(strings, (c - 1) * 3)); kinds.Add(CategoryArts(c).Count == 0 ? 1 : c == held ? 3 : 0); icons.Add(3 + c); }
                 bool none = CategoryArts(_cursor + 1).Count == 0;
-                _list.Set(names, _cursor - top, header, Text(_cursor * 3 + (none ? 2 : 1)), sub: (Text(30), -1), kinds: kinds, icons: icons, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
+                _list.Set(names, _cursor - top, header, SystemBox.Entry(strings, _cursor * 3 + (none ? 2 : 1)), sub: (SystemBox.Entry(strings, 30), -1), kinds: kinds, icons: icons, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
             }
             else
             {
@@ -2244,10 +2198,10 @@ public sealed partial class FieldMenu : PanelContainer
                 var actions = _view.Content.Data("spells")["actions"].AsGodotDictionary();
                 var names = arts.ConvertAll(a => actions.GetValueOrDefault(a.ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("name", "").AsString());
                 var kinds = arts.ConvertAll(a => ArtUsable(a) ? 0 : 1);
-                names.Add(Text(30));
+                names.Add(SystemBox.Entry(strings, 30));
                 kinds.Add(2);
                 bool onArt = _cursor < arts.Count;
-                string help = onArt ? Text(32 + arts[_cursor] - 184) : Text(31);
+                string help = onArt ? SystemBox.Entry(strings, 32 + arts[_cursor] - 184) : SystemBox.Entry(strings, 31);
                 // NEXT: the kills still wanted for the category's next art (none once all four are back).
                 (string, string)? next = null;
                 int row = _artsCategory % 10, learned = arts.Count;
@@ -2258,7 +2212,7 @@ public sealed partial class FieldMenu : PanelContainer
                 }
                 (string, string)? cost = onArt ? ("HP", actions.GetValueOrDefault(arts[_cursor].ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("cost", 0).AsInt32().ToString()) : null;
                 // BREAK ARTS is dimmed over the page out of battle mode only (Ep. 3 7:01 against 7:09).
-                _list.Set(names, _cursor, header, help, next, sub: (Text((_artsCategory - 1) * 3), 3 + _artsCategory), kinds: kinds, cost: cost, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
+                _list.Set(names, _cursor, header, help, next, sub: (SystemBox.Entry(strings, (_artsCategory - 1) * 3), 3 + _artsCategory), kinds: kinds, cost: cost, headerDimmed: _view.Battle?.Drawn != true, titled: !_shortcut);
             }
         }
         else if (reclaimList)
@@ -2286,7 +2240,6 @@ public sealed partial class FieldMenu : PanelContainer
             // the face button it is on, the chosen one's description below and its RISK in the cost box.
             var page = _view.Content.Data("battle_abilities");
             var strings = page["strings"].AsGodotArray();
-            string Text(int i) => i >= 0 && i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
             var menuNames = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             var descriptions = page["descriptions"].AsGodotArray();
             var list = KindAbilities(_abilityKind);
@@ -2299,7 +2252,7 @@ public sealed partial class FieldMenu : PanelContainer
             int description = chosen < descriptions.Count ? descriptions[chosen].AsInt32() : 0;
             int cost = _view.Content.Data("abilities").GetValueOrDefault(chosen.ToString(), new GDictionary()).AsGodotDictionary().GetValueOrDefault("cost", 0).AsInt32();
             _list.Set(names, Math.Min(_cursor, Math.Max(0, list.Count - 1)), menuNames.Count > Abilities ? menuNames[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
-                description > 0 ? Text(description) : "", sub: (Text(_abilityKind * 3), -1), cost: ("RISK", cost.ToString()), titled: !_shortcut, buttons: buttons, headerDimmed: false);
+                description > 0 ? SystemBox.Entry(strings, description) : "", sub: (SystemBox.Entry(strings, _abilityKind * 3), -1), cost: ("RISK", cost.ToString()), titled: !_shortcut, buttons: buttons, headerDimmed: false);
         }
         else if (abilityList && _view.Content.Has("battle_abilities"))
         {
@@ -2308,7 +2261,6 @@ public sealed partial class FieldMenu : PanelContainer
             // put away for the help.
             var page = _view.Content.Data("battle_abilities");
             var strings = page["strings"].AsGodotArray();
-            string Text(int i) => i < strings.Count ? strings[i].AsGodotDictionary()["text"].AsString() : "";
             var names = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
             bool any = _view.Abilities.Exists(id => _cursor == 0 ? id < 40 : id >= 40);
             var needed = page["requirements"].AsGodotArray();
@@ -2316,9 +2268,9 @@ public sealed partial class FieldMenu : PanelContainer
             int next = _view.AbilitiesReclaimed < needed.Count ? needed[_view.AbilitiesReclaimed].AsInt32() : 0;
             int points = Math.Max(0, next - _view.AbilityPoints);
             // From the shortcut menu the two kinds stand alone, under BATTLE MODE: no header, title or points (Episode 4 at 3:15).
-            if (_shortcut) _list.Set(new[] { Text(0), Text(3) }, _cursor, null, Text(_cursor * 3 + (any ? 1 : 2)), titled: false);
-            else _list.Set(new[] { Text(0), Text(3) }, _cursor, names.Count > Abilities ? names[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
-                Text(_cursor * 3 + (any ? 1 : 2)), ("NEXT", $"{points}PT"));
+            if (_shortcut) _list.Set(new[] { SystemBox.Entry(strings, 0), SystemBox.Entry(strings, 3) }, _cursor, null, SystemBox.Entry(strings, _cursor * 3 + (any ? 1 : 2)), titled: false);
+            else _list.Set(new[] { SystemBox.Entry(strings, 0), SystemBox.Entry(strings, 3) }, _cursor, names.Count > Abilities ? names[Abilities].AsGodotDictionary()["text"].AsString() : "BATTLE ABILITIES",
+                SystemBox.Entry(strings, _cursor * 3 + (any ? 1 : 2)), ("NEXT", $"{points}PT"));
         }
         _map.Visible = Visible && _page == Map;
         var lines = new List<string>();

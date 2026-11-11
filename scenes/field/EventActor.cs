@@ -123,6 +123,26 @@ public sealed class EventActor
     private Transform3D[] _poses = Array.Empty<Transform3D>();
 
     /// <summary>
+    /// A corner as retail's GTE projects it: <paramref name="local"/> is in the camera's frame in retail units. The GTE
+    /// divides the projection distance <paramref name="projection"/> by the corner's depth only down to
+    /// <paramref name="least"/> (H / 2 after the view's scale), so a nearer corner (or one behind the eye) lands where it
+    /// would at that depth, and its screen place (9/8 across, y down, from the screen's centre) is held within -1024 to
+    /// 1023 of the screen's corner. Returns that screen place and the point to draw the corner at in the camera's frame,
+    /// in retail units: on its screen place, at its own depth but no nearer than <paramref name="nearest"/>.
+    /// </summary>
+    public static (Vector2 Screen, Vector3 Drawn) GteProjection(Vector3 local, float projection, float least, float nearest)
+    {
+        float depth = -local.Z, divisor = Math.Max(depth, least);
+        var screen = new Vector2(Math.Clamp(projection * local.X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), Math.Clamp(projection * -local.Y / divisor, -1024 - 112, 1023 - 112));
+        float shown = Math.Max(depth, nearest);
+        return (screen, new Vector3(screen.X * 8 / 9 / projection * shown, -screen.Y / projection * shown, -shown));
+    }
+
+    /// <summary>Whether retail's GPU drops a triangle with these screen corners: one more than 1023 pixels across or 511 down.</summary>
+    public static bool GpuDrops(Vector2 a, Vector2 b, Vector2 c) =>
+        Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X)) > 1023 || Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y)) > 511;
+
+    /// <summary>
     /// Draws the rig as the PSX would where the camera stands close to it (BATTLE.PRG's character renderer through the
     /// GTE and GPU). The GTE divides the projection distance by a corner's depth only down to half of it, so a corner
     /// nearer than H / 2 (the depth after the view's scale, <paramref name="far"/> over 4096; behind the eye too) is
@@ -286,19 +306,14 @@ public sealed class EventActor
                 var screen = new Vector2[local.Length];
                 for (int v = 0; v < local.Length; v++)
                 {
-                    float depth = -local[v].Z, divisor = Math.Max(depth, least);
-                    // Retail's screen place (9/8 across), held as the GTE holds it.
-                    float x = Math.Clamp(projection * local[v].X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), y = Math.Clamp(projection * local[v].Y / divisor, -1024 - 112, 1023 - 112);
-                    screen[v] = new Vector2(x, y);
-                    float shown = Math.Max(depth, nearClip);
-                    placed[v] = camera.GlobalTransform * (new Vector3(x * 8 / 9 / projection * shown, y / projection * shown, -shown) / units);
+                    (screen[v], var drawn) = GteProjection(local[v], projection, least, nearClip);
+                    placed[v] = camera.GlobalTransform * (drawn / units);
                 }
                 var kept = new System.Collections.Generic.List<int>(entry.Faces[surface].Length);
                 var faces = entry.Faces[surface];
                 for (int f = 0; f + 2 < faces.Length; f += 3)
                 {
-                    Vector2 a = screen[faces[f]], b = screen[faces[f + 1]], c = screen[faces[f + 2]];
-                    if (Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X)) > 1023 || Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y)) > 511) continue;
+                    if (GpuDrops(screen[faces[f]], screen[faces[f + 1]], screen[faces[f + 2]])) continue;
                     kept.Add(faces[f]); kept.Add(faces[f + 1]); kept.Add(faces[f + 2]);
                 }
                 var arrays = new Godot.Collections.Array();
@@ -377,15 +392,13 @@ public sealed class EventActor
         };
         // Retail tests the bytes as given: both 0 is the teleport, a default (0xff) is not.
         if (speed == 0 && turnSpeed == 0) args["frames_per_unit"] = args["frames_per_turn"] = 0;
-        if (heading >= 0) args["heading"] = EngineHeading(heading);
+        if (heading >= 0) args["heading"] = Installation.EventConversion.Heading(heading);
         Command("actor.walk", args);
     }
 
     /// <summary>A retail-space point as the engine's.</summary>
     private static Godot.Collections.Array EngineVector(Vector3 point) { var engine = RetailSpace * point; return new() { engine.X, engine.Y, engine.Z }; }
 
-    /// <summary>A retail facing (4096 a turn) as the engine's heading, which turns the other way.</summary>
-    private static float EngineHeading(float facing) => Mathf.Wrap(-facing * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi);
 
     /// <summary>Hands the actor a command of the engine's field; an actor not in a field takes the end state at once.</summary>
     private void Command(string type, Godot.Collections.Dictionary args)
@@ -414,13 +427,17 @@ public sealed class EventActor
         });
     }
 
+    /// <summary>Turns to a heading the shorter way, evenly over a number of event frames (as the player turns, 12).</summary>
+    public void TurnOver(float heading, int frames) =>
+        Command("actor.turn", new Godot.Collections.Dictionary { ["actor"] = Id, ["heading"] = Installation.EventConversion.Heading(heading), ["frames"] = frames, ["frame_rate"] = 30 });
+
     /// <summary>Retail 2b: turn to a heading the shortest way (direction 0), or up (above 0) or down (below 0) the facings.</summary>
     public void TurnTo(float heading, int direction, float speed)
     {
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Facing = Mathf.PosMod(heading, 4096); return; }
         Command("actor.turn", new Godot.Collections.Dictionary
         {
-            ["actor"] = Id, ["heading"] = EngineHeading(heading), ["direction"] = -Math.Sign(direction), ["frame_rate"] = 30,
+            ["actor"] = Id, ["heading"] = Installation.EventConversion.Heading(heading), ["direction"] = -Math.Sign(direction), ["frame_rate"] = 30,
             ["frames_per_turn"] = speed < 0 ? DefaultTurnSpeed : speed,
         });
     }

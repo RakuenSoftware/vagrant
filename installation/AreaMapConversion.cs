@@ -100,8 +100,7 @@ public static class AreaMapConversion
         for (int i = 0; i < 320 * 240; i++)
         {
             ushort colour = BitConverter.ToUInt16(file, file[0x200 + i] * 2);
-            int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-            image.SetPixel(i % 320, i / 320, Godot.Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2))));
+            image.SetPixel(i % 320, i / 320, TitleConversion.ToColor(colour, false));
         }
         return image;
     }

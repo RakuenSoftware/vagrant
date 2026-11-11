@@ -488,8 +488,7 @@ public sealed class InventoryConversion
         for (int i = 0; i < pixels.Length; i++)
         {
             ushort colour = BitConverter.ToUInt16(file, pixels[i] * 2);
-            int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-            image.SetPixel(i % 192, i / 192, Godot.Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2))));
+            image.SetPixel(i % 192, i / 192, TitleConversion.ToColor(colour, false));
         }
         return image;
     }

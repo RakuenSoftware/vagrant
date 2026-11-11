@@ -45,7 +45,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// Whether an event has placed the camera (the engine's eye and target then move as its commands say); until
     /// then the gameplay camera stays in charge. With it, the event's near clip and far-texture depth (ec, in map units).
     /// </summary>
-    private bool _eventCamera;
+    private bool _eventCamera => Field != null && Field.CameraScriptMode;
     private float _eventNear = 64, _eventFar = 4096;
     /// <summary>The retail default projection distance (GTE H): about a 35 degree horizontal view on the 320-pixel screen.</summary>
     public const float DefaultProjection = 512f;
@@ -61,11 +61,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         | (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Roll].Active ? 0 : 4) | (Field.CameraTracks[(int)Wol.Engine.World.CameraPart.Projection].Active ? 0 : 8)
         | 0x70 | (Field.CameraWaving ? 0 : 0x80);
 
-    /// <summary>The four user curves (4 to 7) an event defines with 5f: a base shape and a power.</summary>
-    private static readonly (int Shape, int Power)[] UserCurves = new (int, int)[4];
-    /// <summary>A retail easing curve: 0 even, 1 ease-out, 2 in and out, 3 ease-in; 4 to 7 the event's own (5f).</summary>
-    public static Wol.Engine.World.CameraEase Ease(int curve) =>
-        curve >= 4 ? new((Wol.Engine.World.CameraEaseShape)UserCurves[(curve - 4) & 3].Shape, UserCurves[(curve - 4) & 3].Power) : new((Wol.Engine.World.CameraEaseShape)(curve & 3));
+    /// <summary>A retail easing curve: 0 even, 1 ease-out, 2 in and out, 3 ease-in; 4 to 7 the event's own (5f), the engine's script curves.</summary>
+    public Wol.Engine.World.CameraEase Ease(int curve) => Field.ScriptCurve(curve);
 
     /// <summary>The engine's presentation ticks for retail event frames (30 a second).</summary>
     private int EventTicks(int frames) => (int)Math.Round(frames * Field.PresentationHz / 30);
@@ -73,9 +70,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Stops the event camera's moves and puts its projection, roll and clip back as a room starts them.</summary>
     private void ResetEventCamera()
     {
-        _eventCamera = false;
         _eventNear = 64; _eventFar = 4096;
         if (Field == null) return;
+        Field.SetCameraScriptMode(false);
         Field.StopCameraPoints();
         Field.SetCameraAnchor("");
         Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
@@ -218,6 +215,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>Window pixels to a screen pixel, across and down, for a window of <paramref name="size"/>.</summary>
+    /// <summary>A picture's region drawn at a place on the retail screen, each of its pixels <paramref name="unit"/> wide and high.</summary>
+    public static void Sprite(CanvasItem canvas, Texture2D? texture, Rect2 source, Vector2 at, Vector2 unit, Color? tint = null)
+    {
+        if (texture != null) canvas.DrawTextureRectRegion(texture, new Rect2(at * unit, source.Size * unit), source, tint ?? Colors.White);
+    }
+
+    /// <summary>A band on the retail screen from one corner to the other, shaded from its left colour to its right (or, falling, top to bottom).</summary>
+    public static void Band(CanvasItem canvas, Vector2 from, Vector2 to, Color first, Color second, Vector2 unit, bool falling = false) =>
+        canvas.DrawPolygon(new[] { from * unit, new Vector2(to.X, from.Y) * unit, to * unit, new Vector2(from.X, to.Y) * unit },
+            falling ? new[] { first, first, second, second } : new[] { first, second, second, first });
+
     public static Vector2 Unit(Vector2 size)
     {
         float scale = Math.Min(size.X / (320 * PixelAspect), size.Y / VisibleLines);
@@ -754,7 +762,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public bool Settled => _events != null && !Active(0) && _pendingChain.Length == 0 && _pendingTransition == null && _door == null && (CameraIdle & 0xff) == 0xff;
 
     /// <summary>What the event is waiting on: the view's own waits and the open dialogue boxes, for diagnosis.</summary>
-    public string WaitingOn => $"waits [{string.Join(", ", _waits.ConvertAll(w => $"{_flows[w.Id.Slot]}.{w.Id.Command}"))}] dialogues [{string.Join(", ", Field.Dialogues.Keys)}] choice {(_choice != null)} completions {_completions.Count}";
+    public string WaitingOn => $"waits [{string.Join(", ", _waits.ConvertAll(w => $"{_flows[w.Id.Slot]}.{w.Id.Command}"))}] dialogues [{string.Join(", ", Field.Dialogues.Keys)}] choice {(_choice != null)} completions {_completions.Count} engine {Field?.CommandWaits}";
 
     /// <summary>Where the main event is: its instruction; empty before it starts, "complete" once it has ended.</summary>
     public string EventNode => _events == null ? "" : Active(0) ? "i" + _events.Instruction(0) : "complete";
@@ -809,7 +817,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         _returnSuppressed = false;
         _skippable = _skipRequested = false;
         Controlled = false;
-        Array.Clear(UserCurves);
+        Array.Clear(Field.CameraCurves);
         Events.Add(_mainEvent);
         if (!_programs.TryGetValue(eventName, out var compiled))
         {
@@ -999,32 +1007,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 }
                 Battle?.ShowWeapons();
                 return Error.Ok;
-            case "screen.echo":
-            {
-                int ease = args.GetValueOrDefault("ease", 0).AsInt32(), frames = args.GetValueOrDefault("frames", 0).AsInt32();
-                // The engine's echo, under the HUD (layer 6): e1 starts it or stops it two frames on; e4 scale (0x20
-                // is 1), e5 tint (0x80 neutral), e6 offset in screen pixels, each eased over event frames; e7 its blend.
-                var echo = Field.Echo(6);
-                var curve = Ease(ease);
-                int ticks = EventTicks(frames);
-                if (args.ContainsKey("preset"))
-                {
-                    // Retail bf: 0 resets it; otherwise this frame again over itself, half and half, two pixels low and
-                    // slightly bright, leaving no trail (Episode 3, 7:45: a knight rising before the camera stays solid).
-                    echo.Clear();
-                    if (args["preset"].AsInt32() != 0)
-                    {
-                        echo.Enable(true, trail: false);
-                        echo.Ease(null, new Vector3(144, 144, 144) / 128f, new Vector2(0, 2f / VisibleLines), curve, 0);
-                    }
-                }
-                if (args.ContainsKey("enabled")) echo.Enable(args["enabled"].AsBool(), stopTicks: EventTicks(2));
-                if (args.ContainsKey("mode")) echo.Blend((Wol.Engine.World.ScreenEchoBlend)(args["mode"].AsInt32() & 3));
-                if (args.ContainsKey("scale")) { var v = args["scale"].AsGodotArray(); echo.Ease(new Vector2(v[0].AsSingle(), v[1].AsSingle()), null, null, curve, ticks); }
-                if (args.ContainsKey("tint")) { var v = args["tint"].AsGodotArray(); echo.Ease(null, new Vector3(v[0].AsInt32(), v[1].AsInt32(), v[2].AsInt32()) / 128f, null, curve, ticks); }
-                if (args.ContainsKey("offset")) { var v = args["offset"].AsGodotArray(); echo.Ease(null, null, new Vector2(v[0].AsInt32() / 320f, v[1].AsInt32() / (float)VisibleLines), curve, ticks); }
-                return Error.Ok;
-            }
             case "room.cutaway":
                 _cutaway = args["enabled"].AsBool();
                 return Error.Ok;
@@ -1146,9 +1128,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case "actor.tint":
                 if (Actor(args) is { } tinted) Tint(tinted, Retail(args["color"].AsGodotArray()));
                 return Error.Ok;
-            case "camera.stage":
-                Field.SetCameraPoint(Part(args), true, EventActor.RetailSpace * Retail(args["position"].AsGodotArray()));
-                return Error.Ok;
             case "camera.stage_bone":
             {
                 if (Actor(args) is not { } actor) return Error.Ok;
@@ -1157,88 +1136,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 Field.SetCameraPoint(Part(args), true, EventActor.RetailSpace * (actor.BonePosition(args["bone"].AsInt32()) + offset));
                 return Error.Ok;
             }
-            case "camera.snap":
-                Field.SnapCamera(Part(args), Field.CameraPoints[(int)Part(args)].End);
-                _eventCamera = true;
-                return Error.Ok;
-            case "camera.move":
-            {
-                // Retail's paths in retail space: its headings turn the other way about the engine's up, so an orbit's
-                // way round and a turn's angle flip; a turn's height is a retail height.
-                var part = Part(args);
-                var path = args["mode"].AsString() switch
-                {
-                    "radius" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Radius),
-                    "orbit" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Orbit, Heading: Ease(args.GetValueOrDefault("yaw_ease", 0).AsInt32()),
-                        Distance: Ease(args.GetValueOrDefault("radius_ease", 0).AsInt32()), Height: Ease(args.GetValueOrDefault("height_ease", 0).AsInt32()),
-                        Direction: args.GetValueOrDefault("direction", 0).AsInt32() switch { 1 => -1, 0xf => 1, _ => 0 }),
-                    "turn" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Turn, Heading: Ease(args.GetValueOrDefault("yaw_ease", 0).AsInt32()),
-                        Distance: Ease(args.GetValueOrDefault("radius_ease", 0).AsInt32()), Height: Ease(args.GetValueOrDefault("height_ease", 0).AsInt32()),
-                        Turn: -args.GetValueOrDefault("yaw", 0).AsSingle() * Mathf.Tau / 4096, DistanceScale: args.GetValueOrDefault("radius_scale", 64).AsSingle() / 64f,
-                        EndHeight: -args.GetValueOrDefault("height", 0).AsSingle() / Installation.MapConversion.UnitsPerMetre),
-                    "follow" => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Follow),
-                    "track" when Actor(args) is { } tracked => new Wol.Engine.World.CameraPath(Wol.Engine.World.CameraPathKind.Actor, Actor: tracked.Id,
-                        Anchor: tracked.BoneAnchor(args["bone"].AsInt32()), Offset: EventActor.RetailSpace.Basis * Retail(args["offset"].AsGodotArray())),
-                    _ => new Wol.Engine.World.CameraPath(),
-                };
-                if (path.Kind == Wol.Engine.World.CameraPathKind.Line && args["mode"].AsString() == "track") return Error.Ok;
-                // A move goes to the point as staged each frame: staging another retargets it, as retail's does.
-                Field.GuideCamera(part, Field.CameraPoints[(int)part].End, EventTicks(Math.Max(1, args["frames"].AsInt32())), Ease(args.GetValueOrDefault("ease", 0).AsInt32()), path, followsStaged: true);
-                _eventCamera = true;
-                return Error.Ok;
-            }
-            case "camera.wait":
-            {
-                int mask = args["mask"].AsInt32();
-                _waits.Add((id, () => (CameraIdle & mask) == mask));
-                return Error.Ok;
-            }
-            case "camera.roll":
-            {
-                // Direction 0 turns down the angles, 2 up them; anything else takes the shorter way.
-                float current = Field.CameraRoll * 4096 / Mathf.Tau, delta = Mathf.PosMod(args["angle"].AsInt32() - current, 4096);
-                int direction = args["direction"].AsInt32();
-                if (direction == 0) delta -= 4096;
-                else if (direction != 2 && delta > 2048) delta -= 4096;
-                Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, Field.CameraRoll + delta * Mathf.Tau / 4096, EventTicks(args["frames"].AsInt32()), ease: Ease(args["ease"].AsInt32()));
-                return Error.Ok;
-            }
             case "camera.lens":
             {
+                // Retail's near clip (eb) and far-texture depth (ec, 128 a step), which its room renderer cuts by.
                 int value = args["value"].AsInt32();
-                switch (args["property"].AsString())
-                {
-                    case "projection":
-                        // The projection distance (GTE H, 4 a step) as the view's 1 / tan(half its height's angle).
-                        float distance = value == 0 ? DefaultProjection : value * 4;
-                        int frames = args["frames"].AsInt32();
-                        Field.SetCameraScalar(Wol.Engine.World.CameraPart.Projection, distance / (VisibleLines / 2f), frames == 0 ? 1 : EventTicks(frames), ease: Ease(args["ease"].AsInt32()));
-                        break;
-                    case "near": _eventNear = value == 0 ? 64 : value; break;
-                    case "far": _eventFar = value == 0 ? 4096 : value * 128; break;
-                }
-                return Error.Ok;
-            }
-            case "camera.shake":
-            {
-                // Axes as -1, 0 or 1 for x, y and z (bits 2, 4 and 6), for the look-at (bit 0) and eye (bit 1).
-                int axes = args["axes"].AsInt32();
-                int Factor(int shift) => ((axes >> shift) & 3) - 1;
-                var factors = EventActor.RetailSpace.Basis.Orthonormalized() * new Vector3(Factor(2), Factor(4), Factor(6));
-                Field.ShakeCameraWave(args["cycles"].AsInt32(), args["amplitude"].AsInt32() / Installation.MapConversion.UnitsPerMetre, (axes & 2) != 0 ? factors : Vector3.Zero,
-                    (axes & 1) != 0 ? factors : Vector3.Zero, (Wol.Engine.World.CameraShakeEnvelope)(args["envelope"].AsInt32() & 3), EventTicks(args["frames"].AsInt32()));
-                return Error.Ok;
-            }
-            case "screen.fade":
-            {
-                FadeScreen(args["direction"].AsString() == "out", args["speed"].AsInt32(), args["effect"].AsInt32() == 1);
-                if (awaited) _waits.Add((id, () => Field.ScreenFadeLevel >= 1));
-                return Error.Ok;
-            }
-            case "screen.display":
-            {
-                int switches = args["switches"].AsInt32();
-                if ((switches & 3) < 2) Field.SetScreenBlank((switches & 3) != 1);
+                if (args["property"].AsString() == "near") _eventNear = value == 0 ? 64 : value;
+                else _eventFar = value == 0 ? 4096 : value * 128;
                 return Error.Ok;
             }
             case "text.box":
@@ -1505,52 +1408,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                     Fail(error.Message);
                 }
                 return Error.Ok;
-            case "overlay.set":
-            {
-                // A layer's mode (BATTLE.PRG's table at 0x800EC25C): 0 over the frame, 1 added while it fades, 3 added
-                // at a quarter, 2 the staff credits' wipe (0x800CC204), its edge ragged: each row 320 plus the sine, in
-                // eighths, of an angle that walks toward random targets by random steps (0x800C8550). 128 is full brightness.
-                int mode = args["mode"].AsInt32();
-                var rows = new int[240];
-                if (mode == 2)
-                {
-                    int angle = _random.Next(512), target = _random.Next(1024);
-                    for (int y = 0; y < 240; y++)
-                    {
-                        rows[y] = (int)(Math.Sin(angle * Math.Tau / 4096) * 4096) / 8 + 320;
-                        int step = _random.Next(256) - 64, next = _random.Next(1024);
-                        if (target < angle) { angle -= step; if (target >= angle) target = next; }
-                        else { angle += step; if (angle >= target) target = next; }
-                        if (angle < 0) { angle = 128; target = _random.Next(1024); }
-                    }
-                }
-                var blend = mode switch { 1 => Wol.Engine.World.ScreenPictureBlend.AddUntilFull, 2 => Wol.Engine.World.ScreenPictureBlend.Wipe, 3 => Wol.Engine.World.ScreenPictureBlend.QuarterAdd, _ => Wol.Engine.World.ScreenPictureBlend.Over };
-                Field.SetScreenPicture(Math.Min(args["layer"].AsInt32(), 2), blend, new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(),
-                    mode == 2 ? args["brightness"].AsSingle() : args["brightness"].AsSingle() / 128f, args.GetValueOrDefault("behind", false).AsBool(), rows);
-            }
-                return Error.Ok;
-            case "overlay.move":
-                Field.EaseScreenPicture(Math.Min(args["layer"].AsInt32(), 2), new Vector2(args["x"].AsSingle(), args["y"].AsSingle()), args["scale"].AsSingle(), args["brightness"].AsSingle() / 128f,
-                    Ease(args["ease"].AsInt32()), EventTicks(args["frames"].AsInt32()));
-                return Error.Ok;
-            case "overlay.wait":
-                _waits.Add((id, () => Field.ScreenPicturesIdle));
-                return Error.Ok;
-            case "overlay.free":
-                Field.ClearScreenPictures();
-                return Error.Ok;
-            case "ease.define":
-                UserCurves[args["slot"].AsInt32() & 3] = (args["shape"].AsInt32() & 3, args["power"].AsInt32());
-                return Error.Ok;
-            case "camera.anchor":
-                Field.SetCameraAnchor(Actor(args) is { } anchor ? anchor.Id : "");
-                return Error.Ok;
-            case "camera.momentum":
-                Field.SetCameraMomentum(args["eye"].AsBool(), args["look_at"].AsBool());
-                return Error.Ok;
-            case "camera.stop":
-                Field.StopCameraPoints();
-                return Error.Ok;
             case "music.halt":
                 _musicFade?.Kill();
                 _driver.Stop();
@@ -1594,10 +1451,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 }));
                 return Error.Ok;
             }
-            case "screen.wait":
-                // Waits while the screen is still fading.
-                _waits.Add((id, () => !Field.ScreenFading));
-                return Error.Ok;
             case "actor.collapse":
                 foreach (var falling in Targets(args))
                 {
@@ -1835,7 +1688,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case "event.chain":
                 _pendingChain = "event_" + args["event"].AsString();
                 return Error.Ok;
-            case "actor.walk": case "actor.glide": case "actor.turn": case "actor.shape": case "actor.sway": case "actor.play": case "actor.queue": case "actor.wait":
+            case "actor.walk": case "actor.glide": case "actor.turn": case "actor.shape": case "actor.sway": case "actor.play": case "actor.queue": case "actor.wait": case "actor.rim":
+            case "camera.stage": case "camera.snap": case "camera.guide": case "camera.wait": case "camera.roll": case "camera.projection": case "camera.shake":
+            case "camera.anchor": case "camera.momentum": case "camera.stop": case "camera.curve":
+            case "screen.fade": case "screen.blank": case "screen.wait": case "screen.echo":
+            case "picture.set": case "picture.ease": case "picture.wait": case "picture.clear":
                 return Engine(id, type, args, awaited);
             default:
                 return Error.Unavailable;
@@ -1849,8 +1706,29 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     private Error Engine(PresentationReceipt id, string type, GDictionary args, bool awaited)
     {
+        // The staff credits' wipe has a ragged edge (0x800C8550): each row 320 plus the sine, in eighths, of an angle
+        // that walks toward random targets by random steps.
+        if (type == "picture.set" && args.GetValueOrDefault("blend", "").AsString() == "wipe")
+        {
+            var rows = new int[240];
+            int angle = _random.Next(512), target = _random.Next(1024);
+            for (int y = 0; y < 240; y++)
+            {
+                rows[y] = (int)(Math.Sin(angle * Math.Tau / 4096) * 4096) / 8 + 320;
+                int step = _random.Next(256) - 64, next = _random.Next(1024);
+                if (target < angle) { angle -= step; if (target >= angle) target = next; }
+                else { angle += step; if (angle >= target) target = next; }
+                if (angle < 0) { angle = 128; target = _random.Next(1024); }
+            }
+            args = args.Duplicate();
+            args["rows"] = rows;
+        }
+        // A command without an actor goes as it is.
+        if (!args.ContainsKey("actor")) return Field.Present(id, new Wol.Engine.World.FieldCommand(type, args, awaited), done => _completions.Add(done));
         var targets = type == "actor.sway" ? new List<EventActor>(Targets(args)) : Actor(args) is { } one ? new List<EventActor> { one } : new List<EventActor>();
         if (targets.Count == 0 && type == "actor.wait") { _completions.Add(id); return Error.Ok; }
+        // An anchor letting go names no actor.
+        if (targets.Count == 0 && type == "camera.anchor") return Field.SetCameraAnchor("");
         foreach (var actor in targets)
         {
             var own = args.Duplicate();
@@ -1862,6 +1740,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 var grounded = EventActor.RetailSpace * (retail with { Y = FloorHeight(retail) });
                 own["destination"] = new GArray { grounded.X, grounded.Y, grounded.Z };
             }
+            // A camera following a bone follows the bone's node.
+            if (own.ContainsKey("bone")) own["anchor"] = actor.BoneAnchor(own["bone"].AsInt32());
             if (own.TryGetValue("clip", out var named) && !actor.HasClip(named.AsString()))
             {
                 if (named.AsString().StartsWith("base_", StringComparison.Ordinal) && actor.HasClip("base_0")) own["clip"] = "base_0";
@@ -3476,7 +3356,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         DropNearFaces();
         bool staged = _eventCamera && !Controlled;
         foreach (var actor in Actors.Values) actor.ProjectAsRetail(Field.Camera, staged ? EventProjection : Gameplay.Projection, staged ? _eventFar : 4096);
-        foreach (var effect in _effects) effect.NearLimit = (staged ? EventProjection : Gameplay.Projection) / 2 * 4096 / (staged ? _eventFar : 4096);
+        foreach (var effect in _effects) (effect.Projection, effect.NearLimit) = (staged ? EventProjection : Gameplay.Projection, (staged ? EventProjection : Gameplay.Projection) / 2 * 4096 / (staged ? _eventFar : 4096));
         PlaceSky();
         // The simple map shows while Ashley is in hand, the HUD is up and nothing pauses the field.
         // It is put away with the HUD while an action plays (footage: Heal's and the Elixir's casting).
@@ -3840,10 +3720,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Combines two loose blades into a new one, as the workshop's Combine does (MENUC 0x8010b2b4; see
-    /// InventoryConversion.Combining): the blade and material the tables give for the pair, the new kind's model,
-    /// category, cost, damage type, range and strength, intelligence and agility (plus its material's), DP and PP the
-    /// mean of the two, and class and affinity values mixed. The two blades are used up.
+    /// Combines two loose blades, two shields or two pieces of armour, as the workshop's Combine does (MENUC: blades
+    /// 0x8010b2b4, shields 0x8010b598, armour 0x8010b80c; see InventoryConversion.Combining). The tables give the new
+    /// piece and its material for the pair (blades by id and by material and category; shields and armour by their
+    /// index, the item id less 126). The new piece takes its kind's category (a blade's model, cost, damage type and
+    /// range too; a shield's model and gem slots), its kind's strength, intelligence and agility plus its material's,
+    /// DP (and a blade's PP) the mean of the two, and class and affinity values mixed (a shield's or armour's types
+    /// too). A blade or shield is drawn in its material's palette. The two are used up.
     /// </summary>
     public string Combine(GDictionary first, GDictionary second)
     {
@@ -3854,90 +3737,68 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         int Int(GDictionary d, string key) => d.GetValueOrDefault(key, 0).AsInt32();
         if (!Works(a) || !Works(b)) return "This workshop cannot work that material.";
         string kindA = first["kind"].AsString(), kindB = second["kind"].AsString();
-        if (kindA is "armour" or "shield" || kindB is "armour" or "shield")
+        bool blades = kindA is "blade" or "blades", pieces = kindA is "armour" or "shield";
+        bool shields = Int(a, "id") is >= 127 and <= 142;
+        if (blades ? kindB is not ("blade" or "blades") : !pieces || kindB is not ("armour" or "shield") || shields != Int(b, "id") is >= 127 and <= 142)
+            return "These cannot be combined.";
+
+        int id, materialCell;
+        GArray results, materials, kinds;
+        if (blades)
         {
-            bool shieldA = Int(a, "id") is >= 127 and <= 142, shieldB = Int(b, "id") is >= 127 and <= 142;
-            if (kindA is not ("armour" or "shield") || kindB is not ("armour" or "shield") || shieldA != shieldB) return "These cannot be combined.";
-            return CombinePieces(first, second, a, b, table, shieldA);
+            results = table["results"].AsGodotArray();
+            materials = table["materials"].AsGodotArray();
+            kinds = table["kinds"].AsGodotArray();
+            id = results[Math.Clamp(Int(a, "id"), 0, 95) * 96 + Math.Clamp(Int(b, "id"), 0, 95)].AsInt32();
+            if (id == 0) return "These blades cannot be combined.";
+            materialCell = (Int(a, "material") - 3) * 500 + Int(a, "category") * 50 + (Int(b, "material") - 3) * 10 + Int(b, "category");
         }
-        if (kindA is not ("blade" or "blades") || kindB is not ("blade" or "blades")) return "These cannot be combined.";
-        int id = table["results"].AsGodotArray()[Math.Clamp(Int(a, "id"), 0, 95) * 96 + Math.Clamp(Int(b, "id"), 0, 95)].AsInt32();
-        if (id == 0) return "These blades cannot be combined.";
-        int materialIndex = (Int(a, "material") - 3) * 500 + Int(a, "category") * 50 + (Int(b, "material") - 3) * 10 + Int(b, "category");
-        var materials = table["materials"].AsGodotArray();
-        int material = materialIndex >= 0 && materialIndex < materials.Count ? materials[materialIndex].AsInt32() : Int(a, "material");
-        var kind = table["kinds"].AsGodotArray()[id].AsGodotDictionary();
+        else
+        {
+            var piece = table[shields ? "shields" : "armour"].AsGodotDictionary();
+            results = piece["results"].AsGodotArray();
+            materials = piece["materials"].AsGodotArray();
+            kinds = piece["kinds"].AsGodotArray();
+            int indexA = Int(a, "id") - 126, indexB = Int(b, "id") - 126;
+            int cell = shields ? indexA * 17 + indexB : (indexA - 16) * 65 + (indexB - 16);
+            if (cell < 0 || cell >= results.Count || results[cell].AsInt32() == 0) return "These cannot be combined.";
+            id = results[cell].AsInt32() + 126;
+            materialCell = shields ? Int(a, "material") * 8 + Int(b, "material") : Int(a, "material") * 128 + (Int(a, "category") - 2) * 32 + Int(b, "material") * 4 + (Int(b, "category") - 2);
+        }
+        int material = materialCell >= 0 && materialCell < materials.Count ? materials[materialCell].AsInt32() : Int(a, "material");
+        var kind = kinds[Math.Clamp(blades ? id : id - 126, 0, kinds.Count - 1)].AsGodotDictionary();
         var bonus = table["material_stats"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsGodotArray();
         var made = (GDictionary)a.Duplicate(true);
         made["id"] = id;
         made["material"] = material;
-        foreach (string key in new[] { "model", "category", "cost", "damage_type", "range" }) made[key] = kind[key];
+        foreach (string key in blades ? new[] { "model", "category", "cost", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
+            made[key] = kind[key];
         made["strength"] = Int(kind, "strength") + bonus[0].AsInt32();
         made["intelligence"] = Int(kind, "intelligence") + bonus[1].AsInt32();
         made["agility"] = Int(kind, "agility") + bonus[2].AsInt32();
         int dp = (Int(a, "max_dp") + Int(b, "max_dp")) / 2;
         made["dp"] = dp;
         made["max_dp"] = dp;
-        made["max_pp"] = (Int(a, "max_pp") + Int(b, "max_pp")) / 2;
-        made["pp"] = (Int(a, "pp") + Int(b, "pp")) / 2;
-        bool two = Int(a, "material") != Int(b, "material");
-        var weights = table[two ? "two_materials" : "same_material"].AsGodotArray();
-        made["classes"] = Mix(a, b, "classes", 6, table["class_positions"].AsGodotArray(), weights);
-        made["affinities"] = Mix(a, b, "affinities", 7, table["affinity_positions"].AsGodotArray(), weights);
-        // The new blade's model in its material's palette, converted for every kind and metal at installation.
-        int palette = table["palettes"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsInt32();
-        made["asset"] = Int(made, "model") > 0 && _content.Has($"weapon_{Int(made, "model"):X2}_{palette}") ? $"weapon_{Int(made, "model"):X2}_{palette}" : "";
-        Equipment.Remove(first);
-        Equipment.Remove(second);
-        Equipment.Add(new GDictionary { ["kind"] = "blade", ["record"] = made });
-        return $"The {ItemName(Int(a, "id"))} and the {ItemName(Int(b, "id"))} made a {ItemName(id)}.";
-    }
-
-    /// <summary>
-    /// Combines two shields (MENUC 0x8010b598) or two pieces of armour (0x8010b80c): the piece and material the tables
-    /// give for their indices (item id less 126), the new piece's category (and a shield's model and gem slots) and its
-    /// strength, intelligence and agility plus its material's, DP the mean of the two, and its type, class and affinity
-    /// values mixed. The two are used up.
-    /// </summary>
-    private string CombinePieces(GDictionary first, GDictionary second, GDictionary a, GDictionary b, GDictionary table, bool shields)
-    {
-        int Int(GDictionary d, string key) => d.GetValueOrDefault(key, 0).AsInt32();
-        var pieces = table[shields ? "shields" : "armour"].AsGodotDictionary();
-        int indexA = Int(a, "id") - 126, indexB = Int(b, "id") - 126;
-        var results = pieces["results"].AsGodotArray();
-        int cell = shields ? indexA * 17 + indexB : (indexA - 16) * 65 + (indexB - 16);
-        if (cell < 0 || cell >= results.Count || results[cell].AsInt32() == 0) return "These cannot be combined.";
-        int index = results[cell].AsInt32();
-        var materials = pieces["materials"].AsGodotArray();
-        int materialCell = shields ? Int(a, "material") * 8 + Int(b, "material") : Int(a, "material") * 128 + (Int(a, "category") - 2) * 32 + Int(b, "material") * 4 + (Int(b, "category") - 2);
-        int material = materialCell >= 0 && materialCell < materials.Count ? materials[materialCell].AsInt32() : Int(a, "material");
-        var kind = pieces["kinds"].AsGodotArray()[Math.Clamp(index, 0, pieces["kinds"].AsGodotArray().Count - 1)].AsGodotDictionary();
-        var bonus = table["material_stats"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsGodotArray();
-        var made = (GDictionary)a.Duplicate(true);
-        made["id"] = index + 126;
-        made["material"] = material;
-        made["category"] = kind["category"];
-        if (shields) { made["model"] = kind["model"]; made["gem_slots"] = kind["gem_slots"]; }
-        made["strength"] = Int(kind, "strength") + bonus[0].AsInt32();
-        made["intelligence"] = Int(kind, "intelligence") + bonus[1].AsInt32();
-        made["agility"] = Int(kind, "agility") + bonus[2].AsInt32();
-        int dp = (Int(a, "max_dp") + Int(b, "max_dp")) / 2;
-        made["dp"] = dp;
-        made["max_dp"] = dp;
-        bool two = Int(a, "material") != Int(b, "material");
-        var weights = table[two ? "two_materials" : "same_material"].AsGodotArray();
-        made["classes"] = Mix(a, b, "classes", 6, table["class_positions"].AsGodotArray(), weights);
-        made["affinities"] = Mix(a, b, "affinities", 7, table["affinity_positions"].AsGodotArray(), weights);
-        made["types"] = MixTypes(a, b, table[two ? "types_two_materials" : "types_same_material"].AsGodotArray());
-        if (shields)
+        if (blades)
         {
+            made["max_pp"] = (Int(a, "max_pp") + Int(b, "max_pp")) / 2;
+            made["pp"] = (Int(a, "pp") + Int(b, "pp")) / 2;
+        }
+        bool two = Int(a, "material") != Int(b, "material");
+        var weights = table[two ? "two_materials" : "same_material"].AsGodotArray();
+        made["classes"] = Mix(a, b, "classes", 6, table["class_positions"].AsGodotArray(), weights);
+        made["affinities"] = Mix(a, b, "affinities", 7, table["affinity_positions"].AsGodotArray(), weights);
+        if (!blades) made["types"] = MixTypes(a, b, table[two ? "types_two_materials" : "types_same_material"].AsGodotArray());
+        if (blades || shields)
+        {
+            // The new piece's model in its material's palette, converted for every kind and metal at installation.
             int palette = table["palettes"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsInt32();
             made["asset"] = Int(made, "model") > 0 && _content.Has($"weapon_{Int(made, "model"):X2}_{palette}") ? $"weapon_{Int(made, "model"):X2}_{palette}" : "";
         }
         Equipment.Remove(first);
         Equipment.Remove(second);
-        Equipment.Add(new GDictionary { ["kind"] = first["kind"], ["record"] = made });
-        return $"The {ItemName(Int(a, "id"))} and the {ItemName(Int(b, "id"))} made a {ItemName(index + 126)}.";
+        Equipment.Add(new GDictionary { ["kind"] = blades ? "blade" : first["kind"], ["record"] = made });
+        return $"The {ItemName(Int(a, "id"))} and the {ItemName(Int(b, "id"))} made a {ItemName(id)}.";
     }
 
     /// <summary>
@@ -4334,20 +4195,37 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return true;
     }
 
-    /// <summary>The CONGRATULATIONS bonus (a stat sprite, 13 STR, 14 AGL, 15 INT, 16 HP, 17 MP, and an amount), added to the stat and its gains for good, to at most 999.</summary>
+    /// <summary>The CONGRATULATIONS bonus (a stat sprite, 13 STR, 14 AGL, 15 INT, 16 HP, 17 MP, and an amount), grown for good.</summary>
     private void Gain((int Stat, int Amount) bonus)
     {
-        if (Battle?.Ashley is not { } ashley || bonus.Amount <= 0) return;
-        int amount = bonus.Amount;
-        switch (bonus.Stat)
+        int stat = bonus.Stat switch { 13 => 0, 15 => 1, 14 => 2, 16 => 3, 17 => 4, _ => -1 };
+        if (stat < 0) return;
+        GD.Print($"FIELD: CONGRATULATIONS bonus: stat {bonus.Stat} +{Grow(stat, bonus.Amount)}");
+    }
+
+    /// <summary>
+    /// Raises one of Ashley's stats for good (0 strength, 1 intelligence, 2 agility, 3 most hit points, 4 most magic
+    /// points, the last two filling as they grow), to at most 999, and keeps it in <see cref="Gains"/>. Returns the
+    /// amount it grew.
+    /// </summary>
+    public int Grow(int stat, int amount)
+    {
+        if (Battle?.Ashley is not { } ashley || amount <= 0) return 0;
+        ref int value = ref ashley.Strength;
+        switch (stat)
         {
-            case 13: amount = Math.Min(amount, 999 - ashley.Strength); ashley.Strength += amount; Gains[0] += amount; break;
-            case 15: amount = Math.Min(amount, 999 - ashley.Intelligence); ashley.Intelligence += amount; Gains[1] += amount; break;
-            case 14: amount = Math.Min(amount, 999 - ashley.Agility); ashley.Agility += amount; Gains[2] += amount; break;
-            case 16: amount = Math.Min(amount, 999 - ashley.MaxHp); ashley.MaxHp += amount; ashley.Hp += amount; Gains[3] += amount; break;
-            case 17: amount = Math.Min(amount, 999 - ashley.MaxMp); ashley.MaxMp += amount; ashley.Mp += amount; Gains[4] += amount; break;
+            case 1: value = ref ashley.Intelligence; break;
+            case 2: value = ref ashley.Agility; break;
+            case 3: value = ref ashley.MaxHp; break;
+            case 4: value = ref ashley.MaxMp; break;
         }
-        GD.Print($"FIELD: CONGRATULATIONS bonus: stat {bonus.Stat} +{amount}");
+        amount = Math.Min(amount, 999 - value);
+        if (amount <= 0) return 0;
+        value += amount;
+        if (stat == 3) ashley.Hp += amount;
+        if (stat == 4) ashley.Mp += amount;
+        Gains[stat] += amount;
+        return amount;
     }
 
     /// <summary>Lasting gains from elixirs and the CONGRATULATIONS bonus: strength, intelligence, agility, most hit points, most magic points.</summary>
@@ -5474,16 +5352,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                     {
                         // The corner in the camera's frame, in retail units, and its screen place (9/8 across, y down).
                         var local = toEye * vertices[at + v] * units;
-                        float depth = -local.Z, divisor = Math.Max(depth, least);
-                        nearest = Math.Min(nearest, depth);
-                        screen[v] = new Vector2(Math.Clamp(projection * local.X * 9 / 8 / divisor, -1024 - 160, 1023 - 160), Math.Clamp(projection * -local.Y / divisor, -1024 - 112, 1023 - 112));
+                        nearest = Math.Min(nearest, -local.Z);
+                        screen[v] = EventActor.GteProjection(local, projection, least, 0).Screen;
                     }
                     bool near = !_hideFirstPerson && nearest < reject;
                     for (int v = 0; v < count; v += 3, triangle++)
                     {
-                        Vector2 a = screen[v], b = screen[v + 1], c = screen[v + 2];
-                        bool drop = near || !_hideFirstPerson
-                            && (Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X)) > 1023 || Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y)) > 511);
+                        bool drop = near || !_hideFirstPerson && EventActor.GpuDrops(screen[v], screen[v + 1], screen[v + 2]);
                         if (drop != room.Dropped[surface][triangle]) { room.Dropped[surface][triangle] = drop; changed = true; }
                     }
                     at += count;

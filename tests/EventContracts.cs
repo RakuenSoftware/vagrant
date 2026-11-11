@@ -12,13 +12,13 @@ namespace Wol.Games.Vagrant.Tests;
 /// Translates every event script on the player's disc (the EVENT files and each room's own script) and checks that
 /// the shared flow runtime accepts the result, without a full installation. Argument: <c>--disc=BIN_OR_CUE</c>;
 /// Rooms' local events (their door sections) are checked too. <c>--find=TEXT</c> also names the scripts whose messages hold TEXT, and <c>--dump=NAME</c> prints one's translation.
-/// Reports how often each opcode was left unpresented.
+/// Reports how often each opcode was left unpresented; <c>--opcode=XX</c> lists one opcode's uses.
 /// </summary>
 public partial class EventContracts : Node
 {
     public override void _Ready()
     {
-        string disc = "", find = "", dump = "";
+        string disc = "", find = "", dump = "", opcode = "";
         foreach (string argument in OS.GetCmdlineUserArgs())
         {
             if (argument.StartsWith("--disc=", StringComparison.Ordinal)) disc = argument["--disc=".Length..];
@@ -26,6 +26,8 @@ public partial class EventContracts : Node
             if (argument.StartsWith("--find=", StringComparison.Ordinal)) find = argument["--find=".Length..];
             // --dump=NAME writes that script's translation (map034, evt0004) to the output.
             if (argument.StartsWith("--dump=", StringComparison.Ordinal)) dump = argument["--dump=".Length..];
+            // --opcode=XX names every unpresented use of that opcode (b7 ones as b7XX), with its bytes.
+            if (argument.StartsWith("--opcode=", StringComparison.Ordinal)) opcode = argument["--opcode=".Length..];
         }
         try
         {
@@ -53,6 +55,7 @@ public partial class EventContracts : Node
                     string bytes = ((string)entry!).Split(' ')[1];
                     string key = bytes.StartsWith("b7", StringComparison.Ordinal) ? bytes[..4] : bytes[..2];
                     unpresented[key] = unpresented.GetValueOrDefault(key) + 1;
+                    if (key == opcode) GD.Print($"EVENT: {opcode} in {name} at {entry}");
                 }
                 scripts++;
             }

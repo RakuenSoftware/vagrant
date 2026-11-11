@@ -32,26 +32,24 @@ public sealed class MapConversion
         _map = map;
         _zone = zone;
         if (zone.Length < 32) throw new InvalidDataException("The zone file is truncated.");
-        int imagePointer = (int)Long(zone, 16), imageLength = (int)Long(zone, 20);
+        int imagePointer = (int)BitConverter.ToUInt32(zone, 16), imageLength = (int)BitConverter.ToUInt32(zone, 20);
         if (imagePointer + imageLength > zone.Length || imageLength < 20) throw new InvalidDataException("The zone's texture section is malformed.");
-        int count = (int)Long(zone, imagePointer + 16), offset = imagePointer + 20;
+        int count = (int)BitConverter.ToUInt32(zone, imagePointer + 16), offset = imagePointer + 20;
         for (int i = 0; i < count; i++)
         {
-            int size = (int)Long(zone, offset);
+            int size = (int)BitConverter.ToUInt32(zone, offset);
             // Each entry is a 16-bit TIM image: a VRAM rectangle uploaded verbatim (texture pages and palettes alike).
-            if (Long(zone, offset + 4) != 0x10 || Long(zone, offset + 8) != 2) throw new InvalidDataException("A zone texture is not a direct VRAM image.");
-            int x = Word(zone, offset + 16), y = Word(zone, offset + 18), width = Word(zone, offset + 20), height = Word(zone, offset + 22);
+            if (BitConverter.ToUInt32(zone, offset + 4) != 0x10 || BitConverter.ToUInt32(zone, offset + 8) != 2) throw new InvalidDataException("A zone texture is not a direct VRAM image.");
+            int x = BitConverter.ToUInt16(zone, offset + 16), y = BitConverter.ToUInt16(zone, offset + 18), width = BitConverter.ToUInt16(zone, offset + 20), height = BitConverter.ToUInt16(zone, offset + 22);
             if (x + width > 1024 || y + height > 512 || offset + 24 + width * height * 2 > zone.Length) throw new InvalidDataException("A zone texture lies outside VRAM.");
             for (int row = 0; row < height; row++)
                 for (int column = 0; column < width; column++)
-                    _vram[(y + row) * 1024 + x + column] = Word(zone, offset + 24 + (row * width + column) * 2);
+                    _vram[(y + row) * 1024 + x + column] = BitConverter.ToUInt16(zone, offset + 24 + (row * width + column) * 2);
             offset += 4 + size;
         }
         if (offset != imagePointer + imageLength) throw new InvalidDataException("The zone's texture section has an unexpected length.");
     }
 
-    private static uint Long(byte[] data, int offset) => BitConverter.ToUInt32(data, offset);
-    private static ushort Word(byte[] data, int offset) => BitConverter.ToUInt16(data, offset);
 
     private byte[]? _sky, _skyLayout;
     private byte[]? _battle;
@@ -76,10 +74,10 @@ public sealed class MapConversion
     {
         byte[] tim = _sky!, far = _skyLayout!;
         // TIM files start with id 0x10; some carry a version byte above it.
-        if ((Long(tim, 0) & 0xFF) != 0x10 || (Long(tim, 4) & 8) == 0) throw new InvalidDataException("The sky image is not an indexed TIM.");
-        int clutBlock = (int)Long(tim, 8), colours = Word(tim, 16) * Word(tim, 18);
-        int pixels = 8 + clutBlock, imageWidth = Word(tim, pixels + 8) * 2, imageHeight = Word(tim, pixels + 10);
-        int columns = (int)Long(far, 0), rows = (int)Long(far, 4);
+        if ((BitConverter.ToUInt32(tim, 0) & 0xFF) != 0x10 || (BitConverter.ToUInt32(tim, 4) & 8) == 0) throw new InvalidDataException("The sky image is not an indexed TIM.");
+        int clutBlock = (int)BitConverter.ToUInt32(tim, 8), colours = BitConverter.ToUInt16(tim, 16) * BitConverter.ToUInt16(tim, 18);
+        int pixels = 8 + clutBlock, imageWidth = BitConverter.ToUInt16(tim, pixels + 8) * 2, imageHeight = BitConverter.ToUInt16(tim, pixels + 10);
+        int columns = (int)BitConverter.ToUInt32(far, 0), rows = (int)BitConverter.ToUInt32(far, 4);
         if (12 + columns * rows * 24 > far.Length) throw new InvalidDataException("The sky layout is truncated.");
         const int Cell = 32;
         width = Math.Max(1, columns * Cell);
@@ -89,7 +87,7 @@ public sealed class MapConversion
         for (int cell = 0; cell < columns * rows; cell++)
         {
             int at = 12 + cell * 24;
-            int x = Word(far, at), y = Word(far, at + 2), w = (short)Word(far, at + 4), h = (short)Word(far, at + 6);
+            int x = BitConverter.ToUInt16(far, at), y = BitConverter.ToUInt16(far, at + 2), w = (short)BitConverter.ToUInt16(far, at + 4), h = (short)BitConverter.ToUInt16(far, at + 6);
             if (w == 0 && h == 0) continue;
             int column = cell % columns, row = cell / columns;
             var corners = new float[4];
@@ -99,7 +97,7 @@ public sealed class MapConversion
                 {
                     int sx = Math.Clamp(x + (int)Math.Floor(u * w / (float)Cell), 0, imageWidth - 1), sy = Math.Clamp(y + (int)Math.Floor(v * h / (float)Cell), 0, imageHeight - 1);
                     int index = tim[pixels + 12 + sy * imageWidth + sx];
-                    ushort colour = index < colours ? Word(tim, 20 + index * 2) : (ushort)0;
+                    ushort colour = index < colours ? BitConverter.ToUInt16(tim, 20 + index * 2) : (ushort)0;
                     float fx = u / (float)(Cell - 1), fy = v / (float)(Cell - 1);
                     float shade = Mathf.Lerp(Mathf.Lerp(corners[0], corners[1], fx), Mathf.Lerp(corners[2], corners[3], fx), fy);
                     int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
@@ -116,10 +114,10 @@ public sealed class MapConversion
     /// <summary>Returns the room's field document, putting its textures into <paramref name="images"/> by the names the document gives them.</summary>
     public JsonObject Export(IDictionary<string, Image> images)
     {
-        int room = (int)Long(_map, 0), roomLength = (int)Long(_map, 4);
+        int room = (int)BitConverter.ToUInt32(_map, 0), roomLength = (int)BitConverter.ToUInt32(_map, 4);
         if (room + roomLength > _map.Length || roomLength < RoomHeaderSize + 4) throw new InvalidDataException("The room section is malformed.");
-        int geometryLength = (int)Long(_map, room);
-        int geometry = room + RoomHeaderSize, groups = (int)Long(_map, geometry);
+        int geometryLength = (int)BitConverter.ToUInt32(_map, room);
+        int geometry = room + RoomHeaderSize, groups = (int)BitConverter.ToUInt32(_map, geometry);
         int cursor = geometry + 4 + groups * GroupHeaderSize;
         var textures = new SortedDictionary<string, (int Page, int Clut, int Mask)>(StringComparer.Ordinal);
         // Each geometry group is its own model and object, so the field can hide groups as the retail renderer does.
@@ -133,13 +131,13 @@ public sealed class MapConversion
         var scrolls = FaceScrolls(room);
         for (int group = 0; group < groups; group++)
         {
-            int flags = Word(_map, geometry + 4 + group * GroupHeaderSize);
+            int flags = BitConverter.ToUInt16(_map, geometry + 4 + group * GroupHeaderSize);
             int header = geometry + 4 + group * GroupHeaderSize;
-            var origin = ((int)Long(_map, header + 4), (int)Long(_map, header + 8), (int)Long(_map, header + 12));
+            var origin = ((int)BitConverter.ToUInt32(_map, header + 4), (int)BitConverter.ToUInt32(_map, header + 8), (int)BitConverter.ToUInt32(_map, header + 12));
             _groupBounds[group] = (int.MaxValue, int.MinValue, int.MaxValue, int.MinValue, int.MaxValue, int.MinValue);
             _boundsGroup = group;
             int scale = (flags & 0x0800) != 0 ? 1 : 8;
-            int triangles = (int)Long(_map, cursor), quads = (int)Long(_map, cursor + 4);
+            int triangles = (int)BitConverter.ToUInt32(_map, cursor), quads = (int)BitConverter.ToUInt32(_map, cursor + 4);
             cursor += 8;
             var surfaces = new SortedDictionary<string, JsonObject>(StringComparer.Ordinal);
             for (int face = 0; face < triangles + quads; face++)
@@ -247,7 +245,7 @@ public sealed class MapConversion
     private int Telegraphs(int room)
     {
         int at = SubSection(room, 5, out int length);
-        return length >= 0x454 ? (int)(Long(_map, at + 0x450) >> 29) + 1 : 1;
+        return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 29) + 1 : 1;
     }
 
     /// <summary>The area the room belongs to: the scene id in room sub-section 10 (section B), at 0x50; -1 without one.</summary>
@@ -266,7 +264,7 @@ public sealed class MapConversion
     {
         int at = SubSection(room, 4, out int length);
         if (length < 12) return null;
-        int count = (int)Long(_map, at + 4);
+        int count = (int)BitConverter.ToUInt32(_map, at + 4);
         var triangles = new JsonArray();
         for (int i = 0; i < count && 12 + (i + 1) * 32 <= length; i++)
         {
@@ -287,8 +285,8 @@ public sealed class MapConversion
     {
         get
         {
-            int room = (int)Long(_map, 0);
-            if ((int)Long(_map, 4) < RoomHeaderSize) return Array.Empty<byte>();
+            int room = (int)BitConverter.ToUInt32(_map, 0);
+            if ((int)BitConverter.ToUInt32(_map, 4) < RoomHeaderSize) return Array.Empty<byte>();
             int at = SubSection(room, 19, out int length);
             return length >= 8 && at + length <= _map.Length ? _map[at..(at + length)] : Array.Empty<byte>();
         }
@@ -309,7 +307,7 @@ public sealed class MapConversion
         for (int i = 0; i < 5; i++)
         {
             colours.Add(new JsonArray { (int)_map[at + i * 4], (int)_map[at + i * 4 + 1], (int)_map[at + i * 4 + 2] });
-            any |= (Long(_map, at + i * 4) & 0xFFFFFF) != 0;
+            any |= (BitConverter.ToUInt32(_map, at + i * 4) & 0xFFFFFF) != 0;
         }
         return any ? colours : null;
     }
@@ -345,8 +343,8 @@ public sealed class MapConversion
     private int SubSection(int room, int index, out int length)
     {
         int at = room + RoomHeaderSize;
-        for (int i = 0; i < index; i++) at += (int)Long(_map, room + i * 4);
-        length = (int)Long(_map, room + index * 4);
+        for (int i = 0; i < index; i++) at += (int)BitConverter.ToUInt32(_map, room + i * 4);
+        length = (int)BitConverter.ToUInt32(_map, room + index * 4);
         return at;
     }
 
@@ -359,7 +357,7 @@ public sealed class MapConversion
     {
         var words = new JsonArray();
         int at = SubSection(room, 2, out int length);
-        for (int i = 0; i + 4 <= length; i += 4) words.Add((long)Long(_map, at + i));
+        for (int i = 0; i + 4 <= length; i += 4) words.Add((long)BitConverter.ToUInt32(_map, at + i));
         return words;
     }
 
@@ -376,7 +374,7 @@ public sealed class MapConversion
         int at = SubSection(room, 3, out int length);
         for (int i = 0; i + 12 <= length; i += 12)
         {
-            int p = at + i, own = Word(_map, p + 2), to = Word(_map, p + 4), gate = Word(_map, p + 6);
+            int p = at + i, own = BitConverter.ToUInt16(_map, p + 2), to = BitConverter.ToUInt16(_map, p + 4), gate = BitConverter.ToUInt16(_map, p + 6);
             doors.Add(new JsonObject
             {
                 ["zone"] = (int)_map[p], ["map"] = (int)_map[p + 1],
@@ -407,18 +405,18 @@ public sealed class MapConversion
     {
         var crates = new JsonArray();
         if (_battle == null) return crates;
-        int at = (int)Long(_map, 0x20), length = (int)Long(_map, 0x24);
+        int at = (int)BitConverter.ToUInt32(_map, 0x20), length = (int)BitConverter.ToUInt32(_map, 0x24);
         const uint Base = 0x80068800;
         int Address(uint address) => (int)(address - Base);
         for (int record = at; record + 40 <= at + length; record += 40)
         {
             if (_map[record] == 0) continue;
-            int model = Word(_map, record + 14), kind = model >> 12;
+            int model = BitConverter.ToUInt16(_map, record + 14), kind = model >> 12;
             if (kind > 6) continue;
             int index = _battle[Address(0x800E919C) + kind];
             int pointer = (int)(BitConverter.ToUInt32(_battle, Address(0x800E8FB4) + index * 4) - Base);
-            int body = pointer + 0x10, polygons = (int)Long(_battle, pointer + 8);
-            int vertexAt = body + (int)Long(_battle, body + 0x38), polygonAt = body + (int)Long(_battle, body + 0x3C);
+            int body = pointer + 0x10, polygons = (int)BitConverter.ToUInt32(_battle, pointer + 8);
+            int vertexAt = body + (int)BitConverter.ToUInt32(_battle, body + 0x38), polygonAt = body + (int)BitConverter.ToUInt32(_battle, body + 0x3C);
             int cell = Math.Min(kind, 5), cellU = cell % 3 * 64, cellV = cell / 3 * 32;
             int page = 384 / 64, clut = (768 + 16 * kind) / 16 | 227 << 6;
             string key = $"p{page:x3}_c{clut:x4}";
@@ -435,7 +433,7 @@ public sealed class MapConversion
                 var corner = new (Vector3 Position, int U, int V, int Colour)[corners];
                 for (int c = 0; c < corners; c++)
                 {
-                    int vertex = vertexAt + Word(_battle, cursor + c * 2) / 4 * 8;
+                    int vertex = vertexAt + BitConverter.ToUInt16(_battle, cursor + c * 2) / 4 * 8;
                     var position = new Vector3(BitConverter.ToInt16(_battle, vertex), BitConverter.ToInt16(_battle, vertex + 2), BitConverter.ToInt16(_battle, vertex + 4)) * 0.5f;
                     int texel = quad ? cursor + 0x18 + c * 2 : c == 0 ? cursor + 6 : cursor + 0x12 + c * 2;
                     corner[c] = (position, _battle[texel], _battle[texel + 1], cursor + 8 + c * 4);
@@ -462,7 +460,7 @@ public sealed class MapConversion
             crates.Add(new JsonObject
             {
                 ["id"] = id, ["kind"] = kind, ["tile"] = new JsonArray { x, z }, ["level"] = _map[record + 12] & 1, ["stack"] = stack,
-                ["flag"] = Word(_map, record + 4) & 0x3FF, ["flag_min"] = (int)_map[record + 6], ["flag_max"] = (int)_map[record + 7],
+                ["flag"] = BitConverter.ToUInt16(_map, record + 4) & 0x3FF, ["flag_min"] = (int)_map[record + 6], ["flag_max"] = (int)_map[record + 7],
                 ["moves"] = kind == 1 ? (model >> 8) & 0xF : 0, ["orientation"] = orientation,
             });
         }
@@ -506,7 +504,7 @@ public sealed class MapConversion
     {
         var chests = new JsonArray();
         int at = SubSection(room, 18, out int length);
-        int treasure = (int)Long(_map, 0x28), treasureLength = (int)Long(_map, 0x2C);
+        int treasure = (int)BitConverter.ToUInt32(_map, 0x28), treasureLength = (int)BitConverter.ToUInt32(_map, 0x2C);
         for (int i = 0; i + 0x234 <= length; i += 0x234)
         {
             int p = at + i;
@@ -535,18 +533,18 @@ public sealed class MapConversion
         var loot = new JsonObject();
         if (Drops(0) && _map[at + 4] != 0) loot["weapon"] = new JsonObject { ["blade"] = InventoryConversion.Blade(_map, at + 4), ["grip"] = InventoryConversion.Grip(_map, at + 4 + 0x2C), ["name"] = DialogueConversion.Decode(_map, at + 4 + 0x2C + 0x10 + 0x54).Text };
         if (Drops(0xAC) && _map[at + 0xB0] != 0) loot["blade"] = InventoryConversion.Blade(_map, at + 0xB0);
-        if (Drops(0xDC) && Word(_map, at + 0xE0) != 0) loot["grip"] = InventoryConversion.Grip(_map, at + 0xE0);
+        if (Drops(0xDC) && BitConverter.ToUInt16(_map, at + 0xE0) != 0) loot["grip"] = InventoryConversion.Grip(_map, at + 0xE0);
         if (Drops(0xF0) && _map[at + 0xF4] != 0) loot["shield"] = InventoryConversion.Armour(_map, at + 0xF4);
         var armour = new JsonArray();
         for (int i = 0; i < 2; i++)
             if (Drops(0x170 + i * 0x2C) && _map[at + 0x174 + i * 0x2C] != 0) armour.Add(InventoryConversion.Armour(_map, at + 0x174 + i * 0x2C));
         if (Drops(0x1C8) && _map[at + 0x1CC] != 0) armour.Add(InventoryConversion.Armour(_map, at + 0x1CC));
         loot["armour"] = armour;
-        if (Drops(0x1F4) && Word(_map, at + 0x1F8) != 0) loot["gem"] = InventoryConversion.Gem(_map, at + 0x1F8);
+        if (Drops(0x1F4) && BitConverter.ToUInt16(_map, at + 0x1F8) != 0) loot["gem"] = InventoryConversion.Gem(_map, at + 0x1F8);
         var items = new JsonArray();
         for (int i = 0; i < 3; i++)
         {
-            int p = at + 0x214 + i * 4, id = Word(_map, p), count = _map[p + 3];
+            int p = at + 0x214 + i * 4, id = BitConverter.ToUInt16(_map, p), count = _map[p + 3];
             if (id != 0 && count != 0 && (_map[p + 2] & 1) != 0) items.Add(new JsonObject { ["id"] = id, ["count"] = count });
         }
         loot["items"] = items;
@@ -624,7 +622,7 @@ public sealed class MapConversion
             int x = BitConverter.ToInt16(_map, record + 0xC), y = BitConverter.ToInt16(_map, record + 0xE);
             int w = BitConverter.ToInt16(_map, record + 0x10), h = BitConverter.ToInt16(_map, record + 0x12);
             int frame = _map[record + 1], count = _map[record + 2], columns = Math.Max(1, (int)_map[record + 3]);
-            bool scrolling = Long(_map, record + 8) != 0;
+            bool scrolling = BitConverter.ToUInt32(_map, record + 8) != 0;
             int speed = _map[record + 8];
             if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > 1024 || y + h > 512) return;
             // Each step's copies: (source x, y, width, height, destination x, y).
@@ -753,7 +751,7 @@ public sealed class MapConversion
             if (kind >= sizes.Length || sizes[kind] == 0 || p + sizes[kind] > at + length) break;
             if (kind == 6)
             {
-                int header = (int)Long(_map, p);
+                int header = (int)BitConverter.ToUInt32(_map, p);
                 swings.Add(new JsonObject
                 {
                     ["index"] = index, ["group"] = (header - 4) / GroupHeaderSize, ["axis"] = _map[p + 7] == 1 ? "y" : _map[p + 7] == 2 ? "x" : "z",
@@ -787,7 +785,7 @@ public sealed class MapConversion
             if (kind >= sizes.Length || sizes[kind] == 0 || p + sizes[kind] > at + length) break;
             if (kind == 2 && _map[p + 5] == 0)
             {
-                int face = (int)Long(_map, p), stored = geometry + face;
+                int face = (int)BitConverter.ToUInt32(_map, p), stored = geometry + face;
                 if (stored + 0x28 <= _map.Length)
                 {
                     int u = _map[p + 0xC], v = _map[p + 0xD];
@@ -833,7 +831,7 @@ public sealed class MapConversion
         for (int i = 0; i + 184 <= length; i += 184)
         {
             int p = at + i, group = _map[p];
-            uint flags = Long(_map, p);
+            uint flags = BitConverter.ToUInt32(_map, p);
             int last = (int)(flags >> 10) & 3;
             var waypoints = new JsonArray();
             for (int w = 0; w <= last; w++)
@@ -873,12 +871,12 @@ public sealed class MapConversion
     private JsonArray Conditions()
     {
         var records = new JsonArray();
-        int at = (int)Long(_map, 8), length = (int)Long(_map, 12);
+        int at = (int)BitConverter.ToUInt32(_map, 8), length = (int)BitConverter.ToUInt32(_map, 12);
         if (length < 2 || at + length > _map.Length) return records;
-        for (int i = 0; i < 16 && Word(_map, at + i * 2) != 0xFFFF; i++)
+        for (int i = 0; i < 16 && BitConverter.ToUInt16(_map, at + i * 2) != 0xFFFF; i++)
         {
-            int p = at + Word(_map, at + i * 2), end = at + length;
-            int types = _map[p], eventId = Word(_map, p + 1);
+            int p = at + BitConverter.ToUInt16(_map, at + i * 2), end = at + length;
+            int types = _map[p], eventId = BitConverter.ToUInt16(_map, p + 1);
             p += 3;
             var tests = new JsonArray();
             bool negate = false;
@@ -901,9 +899,9 @@ public sealed class MapConversion
     /// <summary>Where the room's own event <paramref name="index"/> starts: the MPD section at bytes 24 and 28 opens with a u16 offset table.</summary>
     public int LocalEvent(int index)
     {
-        int at = (int)Long(_map, 24), length = (int)Long(_map, 28);
+        int at = (int)BitConverter.ToUInt32(_map, 24), length = (int)BitConverter.ToUInt32(_map, 28);
         if (index * 2 + 2 > length) throw new InvalidDataException($"The room has no local event {index}.");
-        return at + Word(_map, at + index * 2);
+        return at + BitConverter.ToUInt16(_map, at + index * 2);
     }
 
     /// <summary>The size of a retail character record: a zone's character templates and Ashley's starting record in INITBTL.PRG share the layout.</summary>
@@ -1083,10 +1081,10 @@ public sealed class MapConversion
     private JsonArray RoomActors()
     {
         var actors = new JsonArray();
-        int at = (int)Long(_map, 0x20), length = (int)Long(_map, 0x24);
-        int units = (int)Long(_zone, 8), unitsLength = (int)Long(_zone, 12);
+        int at = (int)BitConverter.ToUInt32(_map, 0x20), length = (int)BitConverter.ToUInt32(_map, 0x24);
+        int units = (int)BitConverter.ToUInt32(_zone, 8), unitsLength = (int)BitConverter.ToUInt32(_zone, 12);
         if (length < 40 || unitsLength < 4 || at + length > _map.Length) return actors;
-        int templates = (int)Long(_zone, units), first = units + 4 + templates * 8;
+        int templates = (int)BitConverter.ToUInt32(_zone, units), first = units + 4 + templates * 8;
         for (int record = at; record + 40 <= at + length; record += 40)
         {
             // Type 0 is a character; other types place objects.
@@ -1097,11 +1095,11 @@ public sealed class MapConversion
             if (template >= templates || first + (template + 1) * 0x464 > _zone.Length) throw new InvalidDataException("A room actor names a missing character template.");
             // The template's last word indexes the zone's unit files (sector, size), which hold its model, weapon and
             // animations.
-            int unit = (int)Long(_zone, first + template * 0x464 + 0x460);
+            int unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
             if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
             actors.Add(new JsonObject
             {
-                ["unit_sector"] = (long)Long(_zone, units + 4 + unit * 8),
+                ["unit_sector"] = (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
                 ["stats"] = CharacterRecord(_zone, first + template * CharacterRecordSize),
                 ["slot"] = (int)_map[record + 5],
                 ["character"] = (int)_zone[first + template * 0x464 + 2],
@@ -1114,14 +1112,14 @@ public sealed class MapConversion
                 // 0x1E, rate out of 255 at 0x22).
                 ["items"] = new JsonArray
                 {
-                    new JsonObject { ["id"] = (int)Word(_map, record + 0x1A), ["count"] = (int)_map[record + 0x20], ["rate"] = 256 },
-                    new JsonObject { ["id"] = (int)Word(_map, record + 0x1C), ["count"] = (int)_map[record + 0x21], ["rate"] = 256 },
-                    new JsonObject { ["id"] = (int)Word(_map, record + 0x1E), ["count"] = 1, ["rate"] = (int)_map[record + 0x22] },
+                    new JsonObject { ["id"] = (int)BitConverter.ToUInt16(_map, record + 0x1A), ["count"] = (int)_map[record + 0x20], ["rate"] = 256 },
+                    new JsonObject { ["id"] = (int)BitConverter.ToUInt16(_map, record + 0x1C), ["count"] = (int)_map[record + 0x21], ["rate"] = 256 },
+                    new JsonObject { ["id"] = (int)BitConverter.ToUInt16(_map, record + 0x1E), ["count"] = 1, ["rate"] = (int)_map[record + 0x22] },
                 },
                 ["hidden"] = _map[record + 2] != 0,
                 ["scene_test"] = (int)_map[record + 0x27],
-                ["flag_test"] = (int)_map[record + 6], ["flag_value"] = (int)Word(_map, record + 8),
-                ["stat_test"] = (int)_map[record + 7], ["stat_value"] = (int)Word(_map, record + 10),
+                ["flag_test"] = (int)_map[record + 6], ["flag_value"] = (int)BitConverter.ToUInt16(_map, record + 8),
+                ["stat_test"] = (int)_map[record + 7], ["stat_value"] = (int)BitConverter.ToUInt16(_map, record + 10),
             });
         }
         return actors;
@@ -1133,8 +1131,8 @@ public sealed class MapConversion
     /// </summary>
     private JsonArray CameraBounds(int room, JsonObject floor)
     {
-        int at = room + RoomHeaderSize, length = (int)Long(_map, room + 23 * 4);
-        for (int section = 0; section < 23; section++) at += (int)Long(_map, room + section * 4);
+        int at = room + RoomHeaderSize, length = (int)BitConverter.ToUInt32(_map, room + 23 * 4);
+        for (int section = 0; section < 23; section++) at += (int)BitConverter.ToUInt32(_map, room + section * 4);
         if (length >= 8 && at + 8 <= _map.Length)
             return new JsonArray { BitConverter.ToInt16(_map, at), BitConverter.ToInt16(_map, at + 2), BitConverter.ToInt16(_map, at + 4), BitConverter.ToInt16(_map, at + 6) };
         int columns = floor.ContainsKey("columns") ? (int)floor["columns"]! / 4 : 0, rows = floor.ContainsKey("rows") ? (int)floor["rows"]! / 4 : 0;
@@ -1181,7 +1179,7 @@ public sealed class MapConversion
         // Texture coordinates are stored rotated by one corner relative to positions: p1 uses the second pair.
         (int U, int V)[] stored = { (_map[at + 19], _map[at + 23]), (_map[at + 24], _map[at + 25]), (_map[at + 28], _map[at + 29]), quad ? (_map[at + 35], _map[at + 39]) : (0, 0) };
         (int U, int V)[] uv = quad ? new[] { stored[1], stored[2], stored[0], stored[3] } : new[] { stored[1], stored[2], stored[0] };
-        int type = _map[at + 15], clut = Word(_map, at + 26), page = Word(_map, at + 30);
+        int type = _map[at + 15], clut = BitConverter.ToUInt16(_map, at + 26), page = BitConverter.ToUInt16(_map, at + 30);
         bool semi = (type & 0x02) != 0;
         // Bit 0 marks a double-sided polygon: the room renderer draws it facing away too (BATTLE.PRG 0x800973C8) and
         // clears the bit before the GPU sees it (0x8009756C), so every room polygon is modulated by its colours.
@@ -1266,8 +1264,8 @@ public sealed class MapConversion
     /// </summary>
     private (JsonArray Walkmeshes, JsonObject Floor) Collision(int room)
     {
-        int at = room + RoomHeaderSize + (int)Long(_map, room);
-        int length = (int)Long(_map, room + 4);
+        int at = room + RoomHeaderSize + (int)BitConverter.ToUInt32(_map, room);
+        int length = (int)BitConverter.ToUInt32(_map, room + 4);
         if (length < 8) return (new JsonArray(), new JsonObject());
         int width = BitConverter.ToInt16(_map, at), depth = BitConverter.ToInt16(_map, at + 2), baseHeight = BitConverter.ToInt16(_map, at + 4);
         int cells = width * depth, grid = at + 8, blocks = grid + cells * 4;
@@ -1319,14 +1317,7 @@ public sealed class MapConversion
                     ? (vram[(pageY + v) * 1024 + Math.Min(1023, pageX + u / 4)] >> ((u & 3) * 4)) & 15
                     : (vram[(pageY + v) * 1024 + Math.Min(1023, pageX + u / 2)] >> ((u & 1) * 8)) & 255;
                 ushort colour = vram[clutY * 1024 + Math.Min(1023, clutX + index)];
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                bool masked = (colour & 0x8000) != 0;
-                byte alpha = colour == 0 ? (byte)0 : mask switch { 1 => masked ? (byte)128 : (byte)255, 2 => masked ? (byte)0 : (byte)255, 3 => masked ? (byte)255 : (byte)0, _ => (byte)255 };
-                int at = (v * 256 + u) * 4;
-                data[at] = (byte)((r << 3) | (r >> 2));
-                data[at + 1] = (byte)((g << 3) | (g >> 2));
-                data[at + 2] = (byte)((b << 3) | (b >> 2));
-                data[at + 3] = alpha;
+                CharacterConversion.Put(data, (v * 256 + u) * 4, colour, mask, 1);
             }
         return Image.CreateFromData(256, 256, false, Image.Format.Rgba8, data);
     }
