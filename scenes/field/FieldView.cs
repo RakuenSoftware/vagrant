@@ -599,6 +599,7 @@ void fragment() {
             _driver.StopSounds(-1);
             Actors.Clear();
             _fading.Clear();
+            _materialising.Clear();
             _clipEvents.Clear();
             _dropped.Clear();
             _balloons.Clear();
@@ -1733,7 +1734,13 @@ void fragment() {
                 _transitionFade = (args["effect"].AsInt32(), args["speed"].AsInt32());
                 return Error.Ok;
             case "actor.materialise":
-                if (Actor(args) is { } shown && args["state"].AsInt32() is 1 or 2) shown.Visible = args["state"].AsInt32() == 2;
+                if (Actor(args) is { } shown && args["state"].AsInt32() is 1 or 2)
+                {
+                    bool appear = args["state"].AsInt32() == 2;
+                    if (appear) shown.Visible = true;
+                    var was = _materialising.TryGetValue(shown, out var running) ? running : (Mode: 0, Frames: 0, Tinted: shown.Tinted, Light: shown.Light);
+                    _materialising[shown] = (appear ? 9 : 6, 0, was.Tinted, was.Light);
+                }
                 return Error.Ok;
             case "actor.redraw":
             {
@@ -1888,16 +1895,18 @@ void fragment() {
     /// <summary>
     /// A palette transform in effect: every colour of the palettes is <c>scale * original + grey * grey(original) +
     /// offset</c> in 5-bit units over 31 (grey is (2r + 3g + b) / 6), clamped, fading from one state to the next over
-    /// event frames.
+    /// event frames. No colour falls below <see cref="Floor"/>, and <see cref="Add"/> draws the surfaces added to the
+    /// screen (an actor's materialising, below).
     /// </summary>
     private sealed class Palette
     {
         public float Scale = 1, Grey;
-        public Vector3 Offset;
+        public Vector3 Offset, Floor;
+        public bool Add;
         public (float Scale, float Grey, Vector3 Offset) From, To;
         public int Frames, Elapsed;
         public readonly Dictionary<StandardMaterial3D, ShaderMaterial> Shaders = new();
-        public bool Identity => Scale == 1 && Grey == 0 && Offset == Vector3.Zero;
+        public bool Identity => Scale == 1 && Grey == 0 && Offset == Vector3.Zero && Floor == Vector3.Zero && !Add;
     }
 
     /// <summary>Palette transforms by what they cover: "room", or an actor's reference.</summary>
@@ -1979,7 +1988,7 @@ void fragment() {
                     if (identity) { mesh.SetSurfaceOverrideMaterial(surface, null); continue; }
                     if (!palette.Shaders.TryGetValue(material, out var shader))
                     {
-                        if (PaletteShader(material) is not { } made) continue;
+                        if (PaletteShader(material, palette.Add) is not { } made) continue;
                         palette.Shaders[material] = shader = made;
                     }
                     // The material's colour and texture scroll can change while the copy stands in for it.
@@ -1989,6 +1998,7 @@ void fragment() {
                     shader.SetShaderParameter("palette_scale", palette.Scale);
                     shader.SetShaderParameter("palette_grey", palette.Grey);
                     shader.SetShaderParameter("palette_offset", palette.Offset);
+                    shader.SetShaderParameter("palette_floor", palette.Floor);
                     mesh.SetSurfaceOverrideMaterial(surface, shader);
                 }
             }
@@ -1998,15 +2008,16 @@ void fragment() {
     /// <summary>
     /// A shader standing in for one of the field's standard materials (see the engine's FieldScene: vertex colour as
     /// albedo, an optional texture cut out at half alpha or blended, unshaded or rough; and this view's sRGB vertex
-    /// colours and near cut) with the palette transform applied to its texel.
+    /// colours and near cut) with the palette transform applied to its texel; <paramref name="add"/> adds it to the
+    /// screen whatever the material's blend.
     /// </summary>
-    private static ShaderMaterial? PaletteShader(StandardMaterial3D material)
+    private static ShaderMaterial? PaletteShader(StandardMaterial3D material, bool add)
     {
         // Untextured polygons take no palette; billboards keep their material.
         if (material.BillboardMode != BaseMaterial3D.BillboardModeEnum.Disabled || material.AlbedoTexture == null) return null;
         var modes = new List<string>
         {
-            material.BlendMode switch { BaseMaterial3D.BlendModeEnum.Add => "blend_add", BaseMaterial3D.BlendModeEnum.Sub => "blend_sub", _ => "blend_mix" },
+            add ? "blend_add" : material.BlendMode switch { BaseMaterial3D.BlendModeEnum.Add => "blend_add", BaseMaterial3D.BlendModeEnum.Sub => "blend_sub", _ => "blend_mix" },
             material.CullMode switch { BaseMaterial3D.CullModeEnum.Back => "cull_back", BaseMaterial3D.CullModeEnum.Front => "cull_front", _ => "cull_disabled" },
             material.DepthDrawMode == BaseMaterial3D.DepthDrawModeEnum.Disabled ? "depth_draw_never" : "depth_draw_opaque",
         };
@@ -2034,10 +2045,11 @@ void fragment() {
             uniform float palette_scale = 1.0;
             uniform float palette_grey = 0.0;
             uniform vec3 palette_offset = vec3(0.0);
+            uniform vec3 palette_floor = vec3(0.0);
 
             vec3 palette_apply(vec3 linear_colour) {
             	vec3 c = mix(1.055 * pow(linear_colour, vec3(1.0 / 2.4)) - 0.055, linear_colour * 12.92, lessThan(linear_colour, vec3(0.0031308)));
-            	c = clamp(c * palette_scale + vec3(dot(c, vec3(2.0, 3.0, 1.0) / 6.0)) * palette_grey + palette_offset, 0.0, 1.0);
+            	c = max(clamp(c * palette_scale + vec3(dot(c, vec3(2.0, 3.0, 1.0) / 6.0)) * palette_grey + palette_offset, 0.0, 1.0), palette_floor);
             	return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
             }
 
@@ -2446,6 +2458,78 @@ void fragment() {
                 actor.Flags &= ~1;
                 actor.Apply();
             }
+        }
+    }
+
+    /// <summary>Actors materialising (71), by actor: the drawing mode, frames in it, and the light they had before.</summary>
+    private readonly Dictionary<EventActor, (int Mode, int Frames, bool Tinted, Vector3 Light)> _materialising = new();
+
+    /// <summary>
+    /// Retail 71 sets an actor's drawing mode (+8 bits 8 to 11, BATTLE.PRG 0x800AC37C), which its update steps each frame
+    /// through its palette (0x800AB9A4 with 0x800AC168), going on to the next mode when a pass leaves the palette as it
+    /// was. Reappearing (2) is mode 9, the palette all white and the actor's colour (+0x54) at 255, then 10, each colour
+    /// down by 2 of 31 a frame to its own and the colour back to its light by 8 a frame, then 11, which ends it. Vanishing
+    /// (1) is mode 6, red up by 1 and green and blue by 2 a frame for 15 frames, then 7, all three down by 4 a frame to
+    /// black, added to the screen (the actor renderer, 0x800B3680, draws modes 7 and 8 semi-transparently, 0x800B516C
+    /// adding), so it fades out; then 8, where it stays unseen. Byte +0x6F2, which these modes raise to 64 and lower, is
+    /// not followed.
+    /// </summary>
+    private void StepMaterialising()
+    {
+        foreach (var actor in new List<EventActor>(_materialising.Keys))
+        {
+            var state = _materialising[actor];
+            if (!actor.Node.IsInsideTree()) { _materialising.Remove(actor); continue; }
+            if (!_palettes.TryGetValue(actor.Id, out var palette)) _palettes[actor.Id] = palette = new Palette();
+            var light = state.Tinted ? state.Light : actor.Parent != null ? actor.Parent.Light : FloorLight(actor.Position);
+            int frames = state.Frames;
+            int mode = state.Mode;
+            float step(int fifths) => Math.Clamp(fifths, 0, 31) / 31f;
+            switch (mode)
+            {
+                case 9:
+                    palette.Floor = Vector3.One;
+                    actor.Tinted = true;
+                    Light(actor, new Vector3(255, 255, 255));
+                    mode = 10;
+                    frames = 0;
+                    break;
+                case 10:
+                {
+                    frames++;
+                    float floor = step(31 - 2 * frames);
+                    palette.Floor = new Vector3(floor, floor, floor);
+                    var colour = new Vector3(Math.Max(light.X, 255 - 8 * frames), Math.Max(light.Y, 255 - 8 * frames), Math.Max(light.Z, 255 - 8 * frames));
+                    Light(actor, colour);
+                    if (floor == 0 && colour == light) mode = 11;
+                    break;
+                }
+                case 6:
+                    frames++;
+                    palette.Offset = new Vector3(step(frames), step(2 * frames), step(2 * frames));
+                    if (frames >= 15) { mode = 7; frames = 0; }
+                    break;
+                case 7:
+                    frames++;
+                    // The surfaces' stand-in shaders are made again to add.
+                    if (!palette.Add) { palette.Add = true; palette.Shaders.Clear(); }
+                    palette.Offset = new Vector3(step(15) - 4 * frames / 31f, step(30) - 4 * frames / 31f, step(30) - 4 * frames / 31f);
+                    if (4 * frames >= 31 + 30) mode = 8;
+                    break;
+            }
+            if (mode is 8 or 11)
+            {
+                if (mode == 8) actor.Visible = false;
+                palette.Floor = palette.Offset = Vector3.Zero;
+                palette.Add = false;
+                ShowPalette(actor.Id, palette);
+                _palettes.Remove(actor.Id);
+                actor.Tinted = state.Tinted;
+                Light(actor, light);
+                _materialising.Remove(actor);
+                continue;
+            }
+            _materialising[actor] = (mode, frames, state.Tinted, state.Light);
         }
     }
 
@@ -3502,6 +3586,7 @@ void fragment() {
             actor.Apply();
         }
         FadeTheDead();
+        StepMaterialising();
         _fade = Mathf.Clamp(_fade + _fadeSpeed, 0, 1);
         foreach (var (id, done) in _waits.ToArray())
             if (done()) { _waits.Remove((id, done)); _completions.Add(id); }

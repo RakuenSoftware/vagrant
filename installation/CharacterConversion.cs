@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json.Nodes;
 using Godot;
 
@@ -123,14 +124,20 @@ public sealed class CharacterConversion
         return scripts;
     }
 
-    /// <summary>Writes a PS1 colour (0 transparent) as four bytes of RGBA.</summary>
-    private static void Put(byte[] data, int at, ushort colour)
+    /// <summary>
+    /// Writes a PS1 colour (0 transparent) as four bytes of RGBA, scaled by <paramref name="gain"/>. On semi-transparent
+    /// faces only texels with the mask bit (0x8000) blend, as on the rooms' polygons: <paramref name="mask"/> 1 gives those
+    /// half alpha and leaves the rest opaque, 2 keeps only the unmasked texels and 3 only the masked ones (the two draws
+    /// of an additive or subtractive face); 0 ignores the bit.
+    /// </summary>
+    private static void Put(byte[] data, int at, ushort colour, int mask, float gain)
     {
         int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-        data[at] = (byte)((r << 3) | (r >> 2));
-        data[at + 1] = (byte)((g << 3) | (g >> 2));
-        data[at + 2] = (byte)((b << 3) | (b >> 2));
-        data[at + 3] = colour == 0 ? (byte)0 : (byte)255;
+        bool masked = (colour & 0x8000) != 0;
+        data[at] = (byte)(((r << 3) | (r >> 2)) * gain);
+        data[at + 1] = (byte)(((g << 3) | (g >> 2)) * gain);
+        data[at + 2] = (byte)(((b << 3) | (b >> 2)) * gain);
+        data[at + 3] = colour == 0 ? (byte)0 : mask switch { 1 => masked ? (byte)128 : (byte)255, 2 => masked ? (byte)0 : (byte)255, 3 => masked ? (byte)255 : (byte)0, _ => (byte)255 };
     }
 
     private static uint Long(byte[] data, int offset) => BitConverter.ToUInt32(data, offset);
@@ -342,12 +349,22 @@ public sealed class CharacterConversion
             first = last;
         }
 
-        var texture = Texture(out int width, out int height);
+        var textures = new Dictionary<(int, float), ImageTexture?> { [(0, 1f)] = Texture(out int width, out int height, 0, 1) };
         // One-sided faces (BATTLE.PRG 0x800B3CF0 draws a face only when its screen winding, nclip, is positive) and
-        // two-sided ones (a plain face's byte 2, bit 0, as the rooms' type bit 0) go to their own surfaces.
-        var sides = new[] { new SurfaceTool(), new SurfaceTool() };
-        var used = new bool[2];
-        foreach (var side in sides) { side.SetSkinWeightCount(SurfaceTool.SkinWeightCount.Skin4Weights); side.Begin(Mesh.PrimitiveType.Triangles); }
+        // two-sided ones (a plain face's byte 2, bit 0, as the rooms' type bit 0) go to their own surfaces, and so do
+        // semi-transparent faces by how they blend: byte 2 bit 4 makes a face semi-transparent and bits 5 and 6 are its
+        // blend (half and half, add, subtract, add a quarter), which the draw hands the GPU (0x800B4088 to 0x800B40C0).
+        // As on the rooms' polygons, a half-and-half face carries its masked texels at half alpha, and an additive or
+        // subtractive one is drawn twice: its unmasked texels opaque and its masked ones blended.
+        var surfaces = new Dictionary<(int Side, string Blend, int Mask, float Gain), SurfaceTool>();
+        SurfaceTool Surface((int, string, int, float) key)
+        {
+            if (surfaces.TryGetValue(key, out var made)) return made;
+            made = new SurfaceTool();
+            made.SetSkinWeightCount(SurfaceTool.SkinWeightCount.Skin4Weights);
+            made.Begin(Mesh.PrimitiveType.Triangles);
+            return surfaces[key] = made;
+        }
         int cursor = facePointer;
         // Most models' faces open with their primitive type and size (0x24 triangles, 0x2C quads) and are lit by the
         // field. Props whose faces open with a vertex index are Gouraud-shaded instead: indices, then each corner's
@@ -388,42 +405,59 @@ public sealed class CharacterConversion
             // Gouraud-shaded props keep both sides: where their side flag sits was not read.
             bool head = headBone >= 0 && Array.TrueForAll(index, i => owners[i] == headBone);
             int side = coloured || head || (_model[cursor + 2] & 1) != 0 ? 1 : 0;
-            var surface = sides[side];
-            used[side] = true;
-            foreach (int c in quad ? new[] { 0, 1, 2, 1, 3, 2 } : new[] { 0, 1, 2 })
+            int flags = coloured ? 0 : _model[cursor + 2], rate = (flags >> 5) & 3;
+            string blend = (flags & 0x10) == 0 ? "opaque" : rate switch { 0 => "mix", 2 => "subtract", _ => "add" };
+            var passes = blend switch
             {
-                surface.SetUV(uv[c]);
-                if (coloured) surface.SetColor(colour[c]);
-                surface.SetBones(new[] { owners[index[c]], 0, 0, 0 });
-                surface.SetWeights(new[] { 1f, 0, 0, 0 });
-                surface.AddVertex(positions[index[c]]);
+                "opaque" => new[] { (side, blend, 0, 1f) },
+                "mix" => new[] { (side, blend, 1, 1f) },
+                _ => new[] { (side, "opaque", 2, 1f), (side, blend, 3, rate == 3 ? 0.25f : 1f) },
+            };
+            foreach (var pass in passes)
+            {
+                var surface = Surface(pass);
+                foreach (int c in quad ? new[] { 0, 1, 2, 1, 3, 2 } : new[] { 0, 1, 2 })
+                {
+                    surface.SetUV(uv[c]);
+                    if (coloured) surface.SetColor(colour[c]);
+                    surface.SetBones(new[] { owners[index[c]], 0, 0, 0 });
+                    surface.SetWeights(new[] { 1f, 0, 0, 0 });
+                    surface.AddVertex(positions[index[c]]);
+                }
             }
             cursor += size;
         }
-        var material = new StandardMaterial3D
-        {
-            AlbedoTexture = texture,
-            Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor,
-            AlphaScissorThreshold = 0.5f,
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest,
-        };
-        // A Gouraud colour of 0x80 leaves the texel as it is, so shaded props double the stored colour.
-        if (coloured)
-        {
-            material.VertexColorUseAsAlbedo = true;
-            material.VertexColorIsSrgb = true;
-            material.AlbedoColor = new Color(2, 2, 2);
-        }
         var mesh = new ArrayMesh();
-        for (int i = 0; i < 2; i++)
+        // Opaque surfaces first, as the field draws its blended ones after them.
+        foreach (var ((side, blend, mask, gain), surface) in surfaces.OrderBy(entry => entry.Key.Blend != "opaque").ThenBy(entry => entry.Key.Side))
         {
-            if (!used[i]) continue;
-            var sided = (StandardMaterial3D)material.Duplicate();
-            sided.CullMode = i == 0 ? BaseMaterial3D.CullModeEnum.Back : BaseMaterial3D.CullModeEnum.Disabled;
-            sides[i].SetMaterial(sided);
-            sides[i].Commit(mesh);
+            if (!textures.TryGetValue((mask, gain), out var texture)) textures[(mask, gain)] = texture = Texture(out _, out _, mask, gain);
+            // glTF keeps a material's name but not how it blends; the field restores that from the name.
+            var material = new StandardMaterial3D
+            {
+                ResourceName = blend,
+                AlbedoTexture = texture,
+                Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor,
+                AlphaScissorThreshold = 0.5f,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                CullMode = side == 0 ? BaseMaterial3D.CullModeEnum.Back : BaseMaterial3D.CullModeEnum.Disabled,
+                TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest,
+            };
+            if (blend != "opaque")
+            {
+                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                material.BlendMode = blend switch { "add" => BaseMaterial3D.BlendModeEnum.Add, "subtract" => BaseMaterial3D.BlendModeEnum.Sub, _ => BaseMaterial3D.BlendModeEnum.Mix };
+                material.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled;
+            }
+            // A Gouraud colour of 0x80 leaves the texel as it is, so shaded props double the stored colour.
+            if (coloured)
+            {
+                material.VertexColorUseAsAlbedo = true;
+                material.VertexColorIsSrgb = true;
+                material.AlbedoColor = new Color(2, 2, 2);
+            }
+            surface.SetMaterial(material);
+            surface.Commit(mesh);
         }
         var instance = new MeshInstance3D { Name = "Mesh", Mesh = mesh, Skeleton = new NodePath("..") };
         instance.Skin = skeleton.CreateSkinFromRestTransforms();
@@ -461,9 +495,9 @@ public sealed class CharacterConversion
     }
 
     /// <summary>The model's texture: an 8-byte header, two palettes, then an 8-bit or 4-bit image. The first palette is the character's own.</summary>
-    private ImageTexture? Texture(out int width, out int height)
+    private ImageTexture? Texture(out int width, out int height, int mask, float gain)
     {
-        if (_weaponTexture >= 0) return WeaponTexture(out width, out height);
+        if (_weaponTexture >= 0) return WeaponTexture(out width, out height, mask, gain);
         int magic = (int)Long(_model, 0xF4) + 0xF8;
         int at = magic + 8 + (int)Long(_model, magic + 4);
         // Byte 4 is the depth: 1 an 8-bit image, 0x10 a 4-bit one (two texels a byte, low nibble first; the wyvern,
@@ -483,12 +517,12 @@ public sealed class CharacterConversion
             {
                 int index = packed ? (_model[pixels + y * rowBytes + x / 2] >> (x & 1) * 4) & 15 : _model[pixels + y * rowBytes + x];
                 ushort colour = index < colours ? Word(_model, at + 8 + index * 2) : (ushort)0;
-                Put(data, (y * width + x) * 4, colour);
+                Put(data, (y * width + x) * 4, colour, mask, gain);
             }
         return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
     }
 
-    private ImageTexture WeaponTexture(out int width, out int height)
+    private ImageTexture WeaponTexture(out int width, out int height, int mask, float gain)
     {
         int at = _weaponTexture;
         width = _model[at + 5] * 2;
@@ -501,7 +535,7 @@ public sealed class CharacterConversion
             : index < shared + own ? Word(_model, palettes + shared * 2 + (_weaponPalette * own + index - shared) * 2) : 0);
         var data = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
-            for (int x = 0; x < width; x++) Put(data, (y * width + x) * 4, Colour(_model[image + y * width + x]));
+            for (int x = 0; x < width; x++) Put(data, (y * width + x) * 4, Colour(_model[image + y * width + x]), mask, gain);
         return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
     }
 

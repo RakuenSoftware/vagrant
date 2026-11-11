@@ -324,6 +324,14 @@ public partial class RetailContent : Node
             if (((MeshInstance3D)node).Mesh is not ArrayMesh mesh) continue;
             for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
             {
+                // Semi-transparent faces' surfaces are named by their blend (the conversion's), which glTF does not keep;
+                // the export numbers repeated names ("mix2").
+                if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D blended && blended.ResourceName.TrimEnd("0123456789".ToCharArray()) is ("mix" or "add" or "subtract") and var blend)
+                {
+                    blended.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                    blended.BlendMode = blend switch { "add" => BaseMaterial3D.BlendModeEnum.Add, "subtract" => BaseMaterial3D.BlendModeEnum.Sub, _ => BaseMaterial3D.BlendModeEnum.Mix };
+                    blended.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled;
+                }
                 if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material && (mesh.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatColor) != 0)
                 {
                     material.VertexColorUseAsAlbedo = true;
