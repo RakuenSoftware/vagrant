@@ -982,7 +982,7 @@ public sealed class MapConversion
                 ["agility"] = (sbyte)data[blade + 7] + (sbyte)data[grip + 7],
                 ["intelligence"] = (sbyte)data[blade + 6] + (sbyte)data[grip + 6],
                 ["material"] = (int)data[at + 0x34 + 0xF0],
-                ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A] },
+                ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], (int)data[blade + 0x1B] },
                 ["damage_type"] = (int)data[blade + 0x10], ["cost"] = (int)data[blade + 0x12],
                 ["dp"] = (int)BitConverter.ToUInt16(data, blade + 8), ["max_dp"] = (int)BitConverter.ToUInt16(data, blade + 0xA),
                 ["pp"] = (int)BitConverter.ToUInt16(data, blade + 0xC), ["max_pp"] = (int)BitConverter.ToUInt16(data, blade + 0xE),

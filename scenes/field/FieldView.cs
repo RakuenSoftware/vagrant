@@ -5174,10 +5174,37 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             "armour" => category is >= 1 and <= 5 ? 19 + category : 26,
             _ => -1,
         };
-        // "Class: Weapon" or "Class: Armor" (item help 651, with 383 and 392). A weapon's or blade's second line is help
-        // 652: its material, category, damage type and hands ("Bronze Sword (Edged/One-Handed)"); anything else's is
-        // its name.
-        string word = Help(kind is "armour" or "shield" ? 392 : 383);
+        // "Class: " and its class word (item help 651; MAINMENU 0x800fc85c): a rank word, then a noun, by the item's six
+        // class totals and seven affinity totals (its own and its gems'; 0x8006a334), ranked by 0x800fa598: the rank
+        // word is help 372 plus the second highest total in tens (none under 10, at most 10), and the noun the item's
+        // kind (a weapon's by its category, 383 on; "Armor" 392) while the highest is under 50, else help 558 (weapons)
+        // or 584 (shields and armour) plus twice which total it is, one more from 95. A weapon's or blade's second
+        // line is help 652: its material, category, damage type and hands ("Bronze Sword (Edged/One-Handed)");
+        // anything else's is its name.
+        bool armour = kind is "armour" or "shield";
+        string word = Help(armour ? 392 : 383);
+        if (kind is "weapon" or "blade" or "shield" or "armour")
+        {
+            var totals = new int[13];
+            void Add(GDictionary part)
+            {
+                var classes = part.GetValueOrDefault("classes", new GArray()).AsGodotArray();
+                var affinities = part.GetValueOrDefault("affinities", new GArray()).AsGodotArray();
+                for (int i = 0; i < 6 && i < classes.Count; i++) totals[i] += classes[i].AsInt32();
+                for (int i = 0; i < 7 && i < affinities.Count; i++) totals[6 + i] += affinities[i].AsInt32();
+            }
+            Add(kind == "weapon" ? record.GetValueOrDefault("blade", new GDictionary()).AsGodotDictionary() : record);
+            foreach (var gem in record.GetValueOrDefault("gems", new GArray()).AsGodotArray()) Add(gem.AsGodotDictionary());
+            int highest = int.MinValue, runnerUp = int.MinValue, which = 0;
+            for (int i = 0; i < 13; i++)
+            {
+                if (totals[i] > highest) { runnerUp = highest; highest = totals[i]; which = i; }
+                else if (totals[i] > runnerUp) runnerUp = totals[i];
+            }
+            int rank = Math.Clamp(runnerUp / 10, 0, 10), tier = highest < 50 ? 0 : highest < 95 ? 1 : 2;
+            string noun = tier > 0 ? Help((armour ? 583 : 557) + tier + 2 * which) : armour ? Help(392) : Help(category is >= 1 and <= 9 ? 382 + category : 383);
+            word = Help(372 + rank) + noun;
+        }
         string second = "\n" + name;
         var blade = kind == "weapon" ? record.GetValueOrDefault("blade", new GDictionary()).AsGodotDictionary() : kind == "blade" ? record : null;
         if (blade != null && blade.Count > 0 && help.Count > 652)

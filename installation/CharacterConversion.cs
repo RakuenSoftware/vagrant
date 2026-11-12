@@ -268,7 +268,10 @@ public sealed class CharacterConversion
         // actor's 0x648 and the actor renderer tests (0x800B371C) before taking the map's colour (0x8008C458); without
         // it the character is drawn at 0x80. 23 models have it clear, among them the Ghost (1A) and the dragons.
         bool roomLit = _weaponTexture >= 0 || _model.Length < 0x64 || (BitConverter.ToUInt32(_model, 0x60) & 0x10000) != 0;
-        return new JsonObject { ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
+        // How high its middle stands above its feet, at model size: the header's s16 at 0x72 (BATTLE.PRG keeps it at the
+        // model's +0x65A and centres the attack sphere there, 0x800a190c); a weapon has none.
+        int centre = _weaponTexture < 0 && _model.Length >= 0x74 ? BitConverter.ToInt16(_model, 0x72) : 0;
+        return new JsonObject { ["centre"] = centre, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
     }
 
     /// <summary>

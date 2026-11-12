@@ -125,6 +125,20 @@ public sealed class FieldBattle
         public int Struck => DefaultLimb >= 0 && DefaultLimb < Limbs.Count && Limbs[DefaultLimb].MaxHp > 0 ? DefaultLimb : Limbs.FindIndex(l => l.MaxHp > 0);
 
         public EventActor Actor = null!;
+        /// <summary>How high its middle stands above its feet (y down), where its attack sphere is centred.</summary>
+        public float Centre;
+        /// <summary>Its weapon's range angle (the range record's fourth byte, its low three bits cleared), which pitches the sphere.</summary>
+        public int Tilt;
+
+        /// <summary>
+        /// Takes its attack sphere from its weapon's range record (x, y, z and angle): each radius the range and its
+        /// reach, 32 units a point (BATTLE.PRG 0x8006b3c0), and the angle's pitch.
+        /// </summary>
+        public void Reaching(Godot.Collections.Array range)
+        {
+            Range = new Vector3(range[0].AsInt32() + Reach, range[1].AsInt32() + Reach, range[2].AsInt32() + Reach) * 32;
+            Tilt = range.Count > 3 ? range[3].AsInt32() & 0xF8 : 0;
+        }
         /// <summary>
         /// How an enemy moves on foot: the one movement Ashley's is (BATTLE.PRG 0x800a5280), at its record's speeds, its
         /// rises above a step walls and its drops fallen; null for Ashley, whom the player moves.
@@ -356,7 +370,7 @@ public sealed class FieldBattle
             DamageType = Math.Clamp(weapon.GetValueOrDefault("damage_type", 1).AsInt32(), 1, 3), Cost = weapon.GetValueOrDefault("cost", 0).AsInt32(),
             Blade = Gear.From(weapon), Shield = Gear.From(stats.GetValueOrDefault("shield", new GDictionary()).AsGodotDictionary()),
             Accessory = Gear.From(stats.GetValueOrDefault("accessory", new GDictionary()).AsGodotDictionary()),
-            Range = new Vector3(range[0].AsInt32() + reach, range[1].AsInt32() + reach, range[2].AsInt32() + reach) * 32, Reach = reach,
+            Reach = reach,
             Hostile = hostile, Marked = marked, Drawn = drawn, Timer = EnemyPause,
             Category = weapon.GetValueOrDefault("category", 0).AsInt32(),
             DefaultLimb = stats.GetValueOrDefault("default_limb", -1).AsInt32(),
@@ -377,6 +391,8 @@ public sealed class FieldBattle
             combatant.Mover = new FieldPlayer(actor, _view.FloorAt, _view.Stairs) { Crowded = Crowded, Climbs = false, Animates = false, WalkSpeed = combatant.Gait == Gait.Walk ? combatant.Speed : 0 };
             if (_view.FloorAt(actor.Position) is { } under) combatant.Altitude = under - actor.Position.Y;
         }
+        combatant.Centre = _view.Content.Character(actor.Character).GetValueOrDefault("centre", -200).AsInt32() * Installation.CharacterConversion.ModelScale;
+        combatant.Reaching(range);
         // Ashley fights by the set for her weapon's category; others by their one battle set.
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
         combatant.Set = drawn ? combatant.BattleSet : "base";
@@ -443,8 +459,7 @@ public sealed class FieldBattle
         c.WeaponAgility = Int(blade, "agility") + Int(grip, "agility");
         c.DamageType = Math.Clamp(Int(blade, "damage_type"), 1, 3);
         c.Cost = Int(blade, "cost");
-        var range = blade.GetValueOrDefault("range", new Godot.Collections.Array { 3, 2, 3 }).AsGodotArray();
-        c.Range = new Vector3(range[0].AsInt32() + c.Reach, range[1].AsInt32() + c.Reach, range[2].AsInt32() + c.Reach) * 32;
+        c.Reaching(blade.GetValueOrDefault("range", new Godot.Collections.Array { 3, 2, 3 }).AsGodotArray());
         var gear = Gear.From(blade);
         gear.Types = Gear.From(grip).Types;
         gear.Strength = c.WeaponStrength;
@@ -608,25 +623,32 @@ public sealed class FieldBattle
         Ashley!.Actor.Animate($"{Ashley.BattleSet}_{animation}", 5);
     }
 
-    /// <summary>Whether <paramref name="target"/> is inside <paramref name="attacker"/>'s attack sphere.</summary>
-    /// <summary>Whether a point is inside the attacker's sphere as it is drawn: about its body, 90 up from its feet.</summary>
+    /// <summary>
+    /// Whether a point is inside the attacker's attack sphere (BATTLE.PRG 0x800c1034, the one the sphere draws, 0x800c05ec):
+    /// the ellipsoid of its range about its middle (its model's centre height above its feet, 0x800a190c), turned to its
+    /// facing and pitched by its weapon's range angle (the range record's fourth byte less its low three, in 16ths of a
+    /// 4096th of a turn).
+    /// </summary>
     private static bool Reaches(Combatant attacker, Vector3 point)
     {
-        var offset = point - (attacker.Actor.Position + new Vector3(0, -90, 0));
+        var offset = point - (attacker.Actor.Position + new Vector3(0, attacker.Centre, 0));
         float angle = attacker.Actor.Facing * Mathf.Tau / 4096f;
-        var local = new Basis(Vector3.Up, -angle) * offset;
+        var local = new Basis(Vector3.Right, attacker.Tilt * 16 * Mathf.Tau / 4096f) * (new Basis(Vector3.Up, -angle) * offset);
         var r = attacker.Range;
         return local.X * local.X / (r.X * r.X) + local.Y * local.Y / (r.Y * r.Y) + local.Z * local.Z / (r.Z * r.Z) < 1;
     }
 
+    /// <summary>Whether the attacker's sphere reaches any of the target's limbs (0x80071d54), or its middle when it has none.</summary>
     private static bool InSphere(Combatant attacker, Combatant target)
     {
-        // The sphere is centred on the attacker's body and reaches the target's.
-        var offset = target.Actor.Position - attacker.Actor.Position;
-        float angle = attacker.Actor.Facing * Mathf.Tau / 4096f;
-        var local = new Basis(Vector3.Up, -angle) * offset;
-        var r = attacker.Range;
-        return local.X * local.X / (r.X * r.X) + local.Y * local.Y / (r.Y * r.Y) + local.Z * local.Z / (r.Z * r.Z) < 1;
+        bool limbs = false;
+        for (int limb = 0; limb < target.Limbs.Count; limb++)
+        {
+            if (target.Limbs[limb].MaxHp <= 0) continue;
+            limbs = true;
+            if (Reaches(attacker, Aim(target, limb))) return true;
+        }
+        return !limbs && Reaches(attacker, Aim(target, -1));
     }
 
     /// <summary>A fighter's agility with what it wears: accessory, every limb's armour, and its weapon and shield while drawn.</summary>

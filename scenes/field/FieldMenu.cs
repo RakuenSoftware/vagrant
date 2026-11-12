@@ -914,11 +914,7 @@ public sealed partial class FieldMenu : PanelContainer
         }
         if (_category == 0)
         {
-            foreach (var weapon in Weapons())
-            {
-                var entry = _view.BagEntry(new GDictionary { ["kind"] = "weapon", ["record"] = new GDictionary { ["name"] = weapon["name"], ["blade"] = weapon["blade"] } });
-                rows.Add(new ItemMenu.Row(entry.Name, -1, entry.Icon, entry.Help, entry.Material, Badge: _view.Holds(weapon) ? 2 : 0));
-            }
+            foreach (var weapon in Weapons()) rows.Add(WeaponRow(weapon) with { Badge = _view.Holds(weapon) ? 2 : 0 });
             return rows;
         }
         foreach (var held in CategoryEntries())
@@ -944,7 +940,7 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>A weapon as the item menu lists it: its name and icon, and "Class: Weapon" with its name as help.</summary>
     private ItemMenu.Row WeaponRow(GDictionary weapon)
     {
-        var entry = _view.BagEntry(new GDictionary { ["kind"] = "weapon", ["record"] = new GDictionary { ["name"] = weapon["name"], ["blade"] = weapon["blade"] } });
+        var entry = _view.BagEntry(new GDictionary { ["kind"] = "weapon", ["record"] = new GDictionary { ["name"] = weapon["name"], ["blade"] = weapon["blade"], ["gems"] = weapon.GetValueOrDefault("gems", new Godot.Collections.Array()) } });
         return new ItemMenu.Row(entry.Name, -1, entry.Icon, entry.Help, entry.Material);
     }
 

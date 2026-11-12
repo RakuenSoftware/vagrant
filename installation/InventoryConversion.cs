@@ -42,7 +42,7 @@ public sealed class InventoryConversion
         ["dp"] = (int)BitConverter.ToUInt16(d, at + 8), ["max_dp"] = (int)BitConverter.ToUInt16(d, at + 4),
         ["pp"] = (int)BitConverter.ToUInt16(d, at + 10), ["max_pp"] = (int)BitConverter.ToUInt16(d, at + 6),
         ["strength"] = (int)(sbyte)d[at + 12], ["intelligence"] = (int)(sbyte)d[at + 13], ["agility"] = (int)(sbyte)d[at + 14],
-        ["damage_type"] = d[at + 16] & 3, ["cost"] = (int)d[at + 15], ["range"] = new JsonArray { (int)d[at + 20], (int)d[at + 21], (int)d[at + 22], d[at + 23] & 7 },
+        ["damage_type"] = d[at + 16] & 3, ["cost"] = (int)d[at + 15], ["range"] = new JsonArray { (int)d[at + 20], (int)d[at + 21], (int)d[at + 22], (int)d[at + 23] },
         ["classes"] = Signed(d, at + 24, 8), ["affinities"] = Signed(d, at + 32, 8), ["material"] = (int)BitConverter.ToUInt16(d, at + 40),
     };
 
@@ -80,7 +80,7 @@ public sealed class InventoryConversion
             {
                 ["model"] = (int)blades[p + 1], ["category"] = (int)blades[p + 2], ["damage_type"] = blades[p + 3] & 3, ["value4"] = blades[p + 4] & 7, ["cost"] = (int)blades[p + 5],
                 ["value6"] = (int)blades[p + 6], ["strength"] = (int)(sbyte)blades[p + 8], ["intelligence"] = (int)(sbyte)blades[p + 9], ["agility"] = (int)(sbyte)blades[p + 10],
-                ["range"] = new JsonArray { (int)blades[p + 12], (int)blades[p + 13], (int)blades[p + 14], blades[p + 15] & 7 },
+                ["range"] = new JsonArray { (int)blades[p + 12], (int)blades[p + 13], (int)blades[p + 14], (int)blades[p + 15] },
             });
         }
         var stats = new JsonArray();
