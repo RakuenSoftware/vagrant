@@ -67,6 +67,21 @@ public sealed class FieldBattle
             if (Record != null) Record["dp"] = Dp;
         }
 
+        /// <summary>Restores <paramref name="amount"/> DP, to no more than its most.</summary>
+        public void Mend(int amount)
+        {
+            if (MaxDp <= 0 || amount <= 0) return;
+            Dp = Math.Min(MaxDp, Dp + amount);
+            if (Record != null) Record["dp"] = Dp;
+        }
+
+        /// <summary>Spends all its PP.</summary>
+        public void Drain()
+        {
+            Pp = 0;
+            if (Record != null) Record["pp"] = Pp;
+        }
+
         /// <summary>Adds <paramref name="amount"/> PP, to no more than its most.</summary>
         public void Gain(int amount)
         {
@@ -217,6 +232,10 @@ public sealed class FieldBattle
     /// <summary>The 30 Hz frame count, for RISK and recovery.</summary>
     private long _tick;
     private bool _struck;
+
+    /// <summary>Whether the last blow landed, and the affinity it struck with, which defense abilities test.</summary>
+    private bool _landed;
+    private int _blowAffinity;
     private int _landAt;
     private FieldPlayer? _player;
     private Func<string, bool> _pressed = _ => false;
@@ -480,6 +499,7 @@ public sealed class FieldBattle
                 break;
         }
         if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing) { StepEnemies(); StepEnemyCast(); }
+        StepEnemyRelease();
         // The balloons are put away while the sphere is open (BATTLE.PRG 0x8009627C draws none while its flag is set).
         StepRange();
         if (_phase != Phase.Sphere) StepBalloons();
@@ -606,6 +626,7 @@ public sealed class FieldBattle
             affinity = 0;
             for (int i = 1; i < 8; i++) if (attacker.Blade.Affinities[i] > attacker.Blade.Affinities[affinity]) affinity = i;
         }
+        _blowAffinity = affinity;
         int strength = attacker.EffectiveStrength + attacker.Accessory.Strength + (attacker.Drawn ? attacker.WeaponStrength : 0);
         int term = attacker.Accessory.Types[type] + attacker.Accessory.Affinities[affinity] + attacker.Accessory.Classes[target.Class & 7];
         if (attacker.Drawn) term += attacker.Blade.Types[type] + attacker.Blade.Affinities[affinity] + attacker.Blade.Classes[target.Class & 7] - attacker.Blade.Worn;
@@ -673,10 +694,16 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// An ability's effects from its installed record. Chains: damage (58) as a share of the last hit (reckoning 4,
-    /// a tenth per factor), of the hit points Ashley has lost (5), or the last hit itself; healing (62) and magic
-    /// (63) as a share of the last hit. Defenses: reflecting part of the hit back (58 with reckoning 10), turning
-    /// part away (42, impact guard: half), or drawing it in (41, absorb: a fifth healed). Statuses are not kept yet.
+    /// An ability's effects from its installed record (BATTLE.PRG 0x80085390: each effect's handler from the table at
+    /// 0x800E8378, its amount from the reckoning table at 0x800E830C). The amount: 1 the previous effect's; 4, 6 and 18
+    /// a tenth per factor of the last hit; 5 and 11 of the hit points or magic points Ashley lacks; 8 her weapon's PP;
+    /// 22 of the hit taken, if it landed; 10 and 20 the same for a blow, 9, 19 and 21 for a spell; 23 her shield's PP.
+    /// A chain's amounts add its links so far. The effect's prerequisite 3 falls on Ashley, any other on the other
+    /// side: the enemy struck for a chain, the attacker for a defense. Then 58 takes hit points, 59 magic points, 62
+    /// restores hit points (40 and 41 only against a spell or a blow, 42 to 48 only against their affinity, 49 only if
+    /// the hit landed), 63 magic points, 64 the weapon's PP and 65 its DP; 60 and 61 spend all the weapon's or the
+    /// shield's PP; 11, 15, 16 and 17 set silence, paralysis, poison or numbness and 27 and 30 cure paralysis or
+    /// numbness. The timing runs on blows only, so no hit taken is a spell.
     /// </summary>
     private void Apply(int id, bool chain)
     {
@@ -687,49 +714,67 @@ public sealed class FieldBattle
         // Its flash: a resident small effect, on the one struck for a chain, on Ashley for a defense.
         int visual = ability.GetValueOrDefault("visual", 0).AsInt32();
         if (visual > 0) _view.PlayResident(visual, chain ? Ashley.Actor : _lastStruck.Actor, chain ? _lastStruck.Actor : Ashley.Actor);
+        var other = chain ? _lastStruck : _attacker;
+        const bool magic = false;
+        int links = chain ? _chain : 0, previous = 0;
         foreach (var value in ability["effects"].AsGodotArray())
         {
             var effect = value.AsGodotDictionary();
             int kind = effect["effect"].AsInt32(), reckoning = effect["reckoning"].AsInt32(), factor = effect["factor"].AsInt32();
-            if (chain)
+            var target = effect.GetValueOrDefault("prerequisite", 0).AsInt32() == 3 ? Ashley : other;
+            if (target == null) continue;
+            int amount = reckoning switch
             {
-                var target = _lastStruck;
-                switch (kind)
-                {
-                    case 58:
-                    {
-                        int damage = reckoning switch { 4 => _lastDamage * factor / 10, 5 => (Ashley.MaxHp - Ashley.Hp) * Math.Max(1, factor) / 10, _ => _lastDamage } + _chain;
-                        _lastDamage = damage;
-                        Strike(target, damage, id, flinch: false);
-                        break;
-                    }
-                    case 62:
-                    {
-                        Number(Ashley, "+" + Ashley.Heal(_lastDamage * Math.Max(1, factor) / 10 + _chain));
-                        break;
-                    }
-                    case 63:
-                        Ashley.Restore(_lastDamage * Math.Max(1, factor) / 10 + _chain);
-                        break;
-                }
-            }
-            else
+                1 => previous,
+                4 or 6 or 18 => _lastDamage * factor / 10 + links,
+                5 => (Ashley.MaxHp - Ashley.Hp) * factor / 10 + links,
+                8 => Ashley.Blade.Pp + links,
+                11 => (Ashley.MaxMp - Ashley.Mp) * factor / 10 + links,
+                22 => _landed ? _lastDamage * factor / 10 : 0,
+                10 or 20 => !magic && _landed ? _lastDamage * factor / 10 : 0,
+                9 or 19 or 21 => 0,
+                23 => Ashley.Shield.Pp,
+                _ => 0,
+            };
+            previous = amount;
+            switch (kind)
             {
-                switch (kind)
-                {
-                    case 58 when reckoning == 10:
-                        if (_attacker is { } source) Strike(source, _lastDamage * factor / 10, flinch: false);
-                        break;
-                    case 42:
-                    {
-                        Ashley.Heal(_lastDamage * factor / 10);
-                        Number(Ashley, "Guard");
-                        break;
-                    }
-                    case 41:
-                        Ashley.Heal(_lastDamage * factor / 10);
-                        break;
-                }
+                case 58:
+                    if (amount <= 0) break;
+                    if (chain) _lastDamage = amount;
+                    Strike(target, amount, chain ? id : -1, flinch: false);
+                    break;
+                case 59:
+                    target.Mp -= Math.Min(target.Mp, Math.Max(0, amount));
+                    break;
+                case 62:
+                case 40 when magic:
+                case 41 when !magic:
+                case >= 42 and <= 48 when kind - 42 == _blowAffinity:
+                case 49 when _landed:
+                    if (amount > 0) Number(target, "+" + target.Heal(amount));
+                    break;
+                case 63:
+                    target.Restore(amount);
+                    break;
+                case 64:
+                    target.Blade.Gain(amount);
+                    break;
+                case 65:
+                    target.Blade.Mend(amount);
+                    break;
+                case 60:
+                    if (target.Blade.MaxPp > 0) target.Blade.Drain();
+                    break;
+                case 61:
+                    if (_landed && target.Shield.MaxPp > 0) target.Shield.Drain();
+                    break;
+                case 11 or 15 or 16 or 17:
+                    target.Afflict(kind);
+                    break;
+                case 27 or 30:
+                    target.Cure(kind);
+                    break;
             }
         }
     }
@@ -943,20 +988,22 @@ public sealed class FieldBattle
             }
             if (Play(Ashley!, 88, 4) == null) Play(Ashley!, 89, 4);
             _frames = Math.Max(10, (int)Math.Ceiling((Ashley!.Actor.Player?.CurrentAnimationLength ?? 0.5) * 30));
-            // The spell's effect plays from her release; what it does lands once it has run (footage: Heal's 59 shows
-            // as the camera comes back).
+            // The spell's effect plays from her release; what it does lands at the effect's hit (its timeline's
+            // action 0 or 1), or once it has run when it has none (footage: Heal's 59 shows as the camera comes back).
             _castEffect = _view.PlayEffect(_spell!.GetValueOrDefault("visual", 0).AsInt32(), Ashley!.Actor, _spellTarget!.Actor);
             _landing = true;
             return;
         }
         // A spell's action lasts until its effect has run (footage: Heal's burst ends and the HUD is back before
         // "Mastered" shows).
-        if (_artNumber < 0 && _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished) return;
+        if (_artNumber < 0 && _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished && !(_landing && _castEffect.Struck)) return;
         if (_landing)
         {
             _landing = false;
             Release(Ashley!, _spell!, _spellTarget!, play: false);
             if (Ashley!.Dead) return;
+            // Landed at the effect's hit, the action still lasts until the effect has run.
+            if (_artNumber < 0 && _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished) return;
         }
         // A spell's first cast to the end masters it (BATTLE.PRG 0x8007B63C): retail says so as the action ends.
         if (_artNumber < 0 && _spellAction > 0 && _view.Mastered.Add(_spellAction)) _view.Announce(30, _spell!["name"].AsString());
@@ -983,7 +1030,7 @@ public sealed class FieldBattle
     /// caster's intelligence (with weapon and accessory), scaled by a quarter of the weapon's affinity term plus 100
     /// and by the factor, less the target's intelligence above 20 scaled by its limb's type and affinity defences and
     /// its armour's, over 100 plus half its RISK; plus 1 to 5. Healing (62): the same shape on Ashley's own
-    /// intelligence. Statuses are not kept yet.
+    /// intelligence. A status effect (1 to 26) lands by its hit roll and is set for its duration.
     /// </summary>
     private void Release(Combatant caster, GDictionary spell, Combatant target, bool play = true)
     {
@@ -1297,8 +1344,26 @@ public sealed class FieldBattle
         cast.Caster.Actor.Queue($"{cast.Caster.Set}_1", 6);
         bool heals = false;
         foreach (var effect in cast.Spell["effects"].AsGodotArray()) heals |= effect.AsGodotDictionary()["effect"].AsInt32() == 62;
-        Release(cast.Caster, cast.Spell, heals ? cast.Caster : Ashley);
+        // Its effect plays now; what it does lands at the effect's hit, or once the effect has run.
+        var target = heals ? cast.Caster : Ashley;
+        _castEffect = _enemyEffect = _view.PlayEffect(cast.Spell.GetValueOrDefault("visual", 0).AsInt32(), cast.Caster.Actor, target.Actor);
+        _enemyRelease = (cast.Caster, cast.Spell, target);
         cast.Caster.Timer = EnemyPause;
+    }
+
+    private FieldEffect? _enemyEffect;
+    private (Combatant Caster, GDictionary Spell, Combatant Target)? _enemyRelease;
+
+    /// <summary>An enemy's spell lands at its effect's hit, or once its effect has run (or when it has none).</summary>
+    private void StepEnemyRelease()
+    {
+        if (_enemyRelease is not { } release) return;
+        bool playing = _enemyEffect != null && GodotObject.IsInstanceValid(_enemyEffect) && !_enemyEffect.Finished;
+        if (playing && !_enemyEffect!.Struck) return;
+        _enemyRelease = null;
+        _enemyEffect = null;
+        if (release.Caster.Dead || release.Target.Dead) return;
+        Release(release.Caster, release.Spell, release.Target, play: false);
     }
 
     /// <summary>
@@ -1857,6 +1922,7 @@ public sealed class FieldBattle
         // that changes is not followed.
         if (target.Cube) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
         int chance = Math.Min(100, HitChance(attacker, target, limb, vary: true) + (attacker == Ashley ? 10 : 0));
+        _landed = false;
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
         int bone = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Bone : -1;
         if (_random.RandiRange(0, 99) >= chance) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
@@ -1864,6 +1930,7 @@ public sealed class FieldBattle
         int damage = Damage(attacker, target, limb);
         _lastDamage = damage;
         _lastStruck = target;
+        _landed = true;
 
         if (limb >= 0 && limb < target.Limbs.Count)
             for (int i = 0; i < target.Limbs.Count; i++)

@@ -109,6 +109,9 @@ public partial class RetailContent : Node
         Field.Sound(name) ?? throw new InvalidDataException($"The disc has no sound {name}.");
 
     /// <summary>A character's definition: bones, mounts, limbs and clip events (empty when the disc has no model).</summary>
+    /// <summary>An effect's sound sequence (its block 13), empty when it has none.</summary>
+    public byte[] EffectSequence(int effect) => Field.EffectSequence(effect);
+
     public Godot.Collections.Dictionary Character(int character) =>
         Field.Character($"character_{character:X2}") is { } built ? Parse(built.Definition.ToJsonString()) : new Godot.Collections.Dictionary();
 

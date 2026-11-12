@@ -36,13 +36,19 @@ public static class EffectConversion
     /// The effect's own sound bank (block 12; SLUS 0x80046168 registers it), laid out as an event bank: a count, then
     /// offsets to AKAO sound programs. Timeline sounds of bank 1 play from it.
     /// </summary>
-    public static byte[] SoundBank(byte[] p)
+    public static byte[] SoundBank(byte[] p) => Block(p, 12);
+
+    /// <summary>The effect's sound sequence (block 13, an AKAO block; 0x800d7aec registers it in sound slot 3), which timeline sounds of bank 2 start.</summary>
+    public static byte[] SoundSequence(byte[] p) => Block(p, 13);
+
+    /// <summary>One of an effect file's blocks by type (each a u16 length, a u16 type, then its data); empty when it has none.</summary>
+    private static byte[] Block(byte[] p, int wanted)
     {
         for (int at = 0; at + 4 <= p.Length;)
         {
             int length = BitConverter.ToUInt16(p, at), type = BitConverter.ToUInt16(p, at + 2);
             if (type == 0 || length < 4) break;
-            if (type == 12) return p[(at + 4)..Math.Min(p.Length, at + length)];
+            if (type == wanted) return p[(at + 4)..Math.Min(p.Length, at + length)];
             at += length;
         }
         return Array.Empty<byte>();

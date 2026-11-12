@@ -26,6 +26,9 @@ public sealed partial class SoundDriver : Node
     private const long WriteSpu = 0x800134D0, Tick = 0x80019A58;
     // Driver commands 0x92 (the reverb, with its value) and 0x40 (the music snapshot), as event opcodes a8 and 98 send them.
     private const long SetReverb = 0x80012468, SnapshotMusic = 0x80012004;
+    // Driver commands 0xE5 (a sound sequence's volume), 0xE0 (start one) and 0xE2 (stop it), as an effect's sound slot
+    // plays and releases its sequence (SLUS 0x80046578, 0x80046634); the sequence sits after the music's 16 KB.
+    private const long SequenceVolume = 0x80013378, StartSequence = 0x800132C4, StopSequenceCommand = 0x80013328, EffectSequence = 0x80168000;
     private const long SpuSetTransferStartAddr = 0x8001EBC4;
     private static readonly long[] HostRoutines =
     {
@@ -271,6 +274,27 @@ public sealed partial class SoundDriver : Node
     {
         if (!Ready) return;
         try { Call(SetReverb, value); }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
+    /// <summary>Starts an effect's sound sequence (an AKAO block) at full volume.</summary>
+    public void PlaySequence(byte[] sequence)
+    {
+        if (!Ready || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
+        try
+        {
+            _sandbox!.Call(WriteMemoryMethod, EffectSequence, sequence);
+            Call(SequenceVolume, 0, 127);
+            Call(StartSequence, EffectSequence, 128, 1);
+        }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
+    /// <summary>Stops the effect's sound sequence.</summary>
+    public void StopSequence()
+    {
+        if (!Ready) return;
+        try { Call(StopSequenceCommand); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 

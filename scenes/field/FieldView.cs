@@ -423,6 +423,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 ["kills"] = new GArray(Array.ConvertAll(EnemyKills, a => (Variant)a)), ["attacks"] = new GArray(Array.ConvertAll(WeaponAttacks, a => (Variant)a)),
                 ["max_chain"] = MaxChain, ["heals"] = HealCount, ["streak"] = StreakScore, ["other"] = OtherScore, ["ability_kills"] = AbilityPoints, ["abilities_reclaimed"] = AbilitiesReclaimed,
+                ["clears"] = Clears, ["time_trials"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(TimeTrials, a => (Variant)a))),
             },
             ["mastered"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(Mastered, a => (Variant)a))),
             ["weapon"] = EquippedWeapon ?? new GDictionary(), ["unarmed"] = Unarmed,
@@ -542,6 +543,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         HealCount = score.GetValueOrDefault("heals", 0).AsInt32();
         StreakScore = score.GetValueOrDefault("streak", 0).AsInt64();
         OtherScore = score.GetValueOrDefault("other", 0).AsInt64();
+        Clears = score.GetValueOrDefault("clears", 0).AsInt32();
+        TimeTrials.Clear();
+        foreach (var room in score.GetValueOrDefault("time_trials", new GArray()).AsGodotArray()) TimeTrials.Add(room.AsInt32());
         AbilityPoints = score.GetValueOrDefault("ability_kills", 0).AsInt32();
         AbilitiesReclaimed = score.GetValueOrDefault("abilities_reclaimed", 0).AsInt32();
         foreach (var room in save.GetValueOrDefault("visited", new GArray()).AsGodotArray()) Visited.Add((room.AsInt32() >> 8, room.AsInt32() & 0xFF));
@@ -887,6 +891,19 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     private readonly List<Trail> _trails = new();
+
+    /// <summary>
+    /// Adds a trail to an actor's bone (its length the rig's, or for the held weapon's bones 0x40 and up, the weapon's
+    /// reach along the bone), or ends every trail, as retail's 0x800cf830 does.
+    /// </summary>
+    private void SetTrail(EventActor? actor, int part, bool on)
+    {
+        if (!on) { _trails.Clear(); Field?.DrawTriangles(TrailKey, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, EffectLayer); return; }
+        if (actor == null) return;
+        var lengths = _content.Character(actor.Character).GetValueOrDefault("bone_lengths", new GArray()).AsGodotArray();
+        float length = (part & 0xF0) == 0x40 ? actor.WeaponReach : part < lengths.Count ? lengths[part].AsSingle() : 0;
+        _trails.Add(new Trail { Actor = actor, Part = part, Length = length });
+    }
     private const string TrailKey = "trails";
 
     /// <summary>
@@ -962,7 +979,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Slot = slot => Actors.GetValueOrDefault("slot:" + slot),
             Bystanders = () => Actors.Values,
             ColourShift = (actor, operation, change, fade) => TransformPalette(actor?.Id ?? "room", operation, change, fade),
-            Sound = key => PlaySound(key, 127),
+            Sound = (key, at) => PlaySound(key, 127, at is { } place ? PlacedPan(Field.Geometry.ToGlobal(EventActor.RetailSpace * place)) : -1),
+            Sequence = id => _driver.PlaySequence(_content.EffectSequence(id)),
+            SequenceEnded = () => _driver.StopSequence(),
+            SkyShift = (operation, change, fade) => TransformPalette("sky", operation, change, fade),
+            Trail = (actor, part, on) => SetTrail(actor, part, on),
+            WeaponGlow = (actor, grey) => actor?.GlowWeapon(grey),
+            ActorSound = (actor, number) => { if (actor != null) PlayActorSound(actor, $"c{actor.Character:X2}_{number}_p128"); },
             Rumble = (_, strength) => { foreach (int pad in Input.GetConnectedJoypads()) Input.StartJoyVibration(pad, Math.Min(1f, strength / 255f), Math.Min(1f, strength / 128f), 0.3f); },
         };
         effect.Scene = Field;
@@ -1379,14 +1402,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 PlaySound(args["sound"].AsString(), args["volume"].AsInt32(), group: args.GetValueOrDefault("group", -1).AsInt32());
                 return Error.Ok;
             case "actor.trail":
-                // On adds a trail to the actor's bone; off ends every trail, as retail's 0x800cf830 does.
-                if (!args["on"].AsBool()) { _trails.Clear(); Field?.DrawTriangles(TrailKey, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, EffectLayer); return Error.Ok; }
-                if (Actor(args) is { } trailed)
-                {
-                    int part = args["part"].AsInt32();
-                    var lengths = _content.Character(trailed.Character).GetValueOrDefault("bone_lengths", new GArray()).AsGodotArray();
-                    _trails.Add(new Trail { Actor = trailed, Part = part, Length = part < lengths.Count ? lengths[part].AsSingle() : 0 });
-                }
+                SetTrail(Actor(args), args["part"].AsInt32(), args["on"].AsBool());
                 return Error.Ok;
             case "actor.mix":
                 foreach (var mixed in Targets(args))
@@ -1541,7 +1557,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 int op = args["op"].AsInt32();
                 if (op is >= 10 and <= 12) SetFlag(0xB6, new[] { 6, 4, 5 }[op - 10]);
                 else if (op == 13) SetFlag(0xB6, 1);
-                else if (op == 14 && FlagValue(0xB6) == 1) SetFlag(0xB6, 2);
+                else if (op == 14 && FlagValue(0xB6) == 1)
+                {
+                    // A time attack's end records the trial (the score's boss time-trial records, eight at most).
+                    SetFlag(0xB6, 2);
+                    if (TimeTrials.Count < 8) TimeTrials.Add(Zone * 256 + Map);
+                }
                 // A press from before the screen opened is not one it takes.
                 _pressedButtons &= ~0x20;
                 bool results = op is not (13 or 15) && FlagValue(0xAB) >= 3 && FlagValue(0xB6) == 0 && OpenResults();
@@ -1631,8 +1652,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             }
             case "game.ending":
-                // The story is over: the ending plays, then the title.
+                // The story is over: the ending plays, then the title. The clear counts toward the score for good.
                 GameEnded = true;
+                Clears++;
                 if (!KeepScene) _ = GetNode<SceneManager>("/root/SceneManager").ChangeScene(Wol.Games.Vagrant.Scenes.Ending.Ending.Scene);
                 return Error.Ok;
             case "timer.hold":
@@ -1678,10 +1700,16 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             }
             case "flag.item":
-                // Items are not kept yet: only item 0, which always counts as held.
-                SetFlag(args["flag"].AsInt32(), args["item"].AsInt32() == 0 ? 1 : 0);
+            {
+                // How many of the item Ashley carries (item 0 always counts as held): a stack's count, or each piece
+                // of equipment that is the item, at most a byte's worth.
+                int item = args["item"].AsInt32(), held = item == 0 ? 1 : Items.GetValueOrDefault(item);
+                foreach (var value in Equipment)
+                    if (value.AsGodotDictionary()["record"].AsGodotDictionary().GetValueOrDefault("id", -1).AsInt32() == item) held++;
+                SetFlag(args["flag"].AsInt32(), Math.Min(255, held));
                 _completions.Add(id);
                 return Error.Ok;
+            }
             case "battle.suspend":
                 if (Battle != null)
                     foreach (var fighter in Battle.Combatants.Values) if (fighter != Battle.Ashley) fighter.Suspended = args["suspended"].AsBool();
@@ -2181,10 +2209,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>The pan an actor's place on screen gives its sounds: 0 at the left edge to 255 at the right, centred when out of sight behind.</summary>
-    private int PlacedPan(EventActor speaker)
+    private int PlacedPan(EventActor speaker) => PlacedPan(speaker.Node.GlobalPosition);
+
+    /// <summary>The pan a place on screen gives a sound: 0 at the left edge to 255 at the right, centred when out of sight behind.</summary>
+    private int PlacedPan(Vector3 place)
     {
-        if (Field?.Camera is not { } camera || !camera.IsInsideTree() || camera.IsPositionBehind(speaker.Node.GlobalPosition)) return 0x80;
-        float across = camera.UnprojectPosition(speaker.Node.GlobalPosition).X / Math.Max(1, GetViewport().GetVisibleRect().Size.X);
+        if (Field?.Camera is not { } camera || !camera.IsInsideTree() || camera.IsPositionBehind(place)) return 0x80;
+        float across = camera.UnprojectPosition(place).X / Math.Max(1, GetViewport().GetVisibleRect().Size.X);
         return Math.Clamp((int)(across * 255), 0, 255);
     }
 
@@ -4387,7 +4418,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
         OtherScore = Math.Min(999999999L, OtherScore + Math.Max(0, 100000 - 100 * HealCount));
         HealCount = 0;
-        long score = _results.Reckon(EnemyKills, WeaponAttacks, MaxChain, 0, StreakScore, OtherScore);
+        long score = _results.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, PlayFrames / 3600, StreakScore, OtherScore);
+        // The screen's music (MENUF 0x80103748): the piece playing when it opens, 31 to 39 and 45 to 49 as their
+        // results themes 100 on, anything else as 128; loaded into slot 2 and played at full volume.
+        int playing = _musicAsset.StartsWith("music_", StringComparison.Ordinal) && int.TryParse(_musicAsset[6..], out int piece) ? piece : 0;
+        _musicSlots["2"] = $"music_{(playing is >= 31 and <= 39 or >= 45 and <= 49 ? playing + 100 : 128):d3}";
+        PlayMusic(_musicSlots["2"], 1);
         _results.Open((int)score, MapPercent(), 0, ashley.Strength, ashley.Intelligence, ashley.Agility);
         GD.Print($"FIELD: CONGRATULATIONS: score {score}, map {MapPercent()}%");
         return true;
@@ -4478,6 +4514,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
     public int MaxChain, HealCount;
     public long StreakScore, OtherScore;
+
+    /// <summary>How many times the game has been cleared, and the rooms whose boss time trials are recorded.</summary>
+    public int Clears;
+    public readonly HashSet<int> TimeTrials = new();
     private int _streakClass = -1, _streakKills, _streakCategory = -1, _weaponStreak;
 
     /// <summary>An attack or Break Art of Ashley's at an enemy: its weapon kind's count rises.</summary>
@@ -5180,9 +5220,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var head = EventActor.RetailSpace * (speaker.Position + new Vector3(0, -210, 0));
         var feet = EventActor.RetailSpace * speaker.Position;
         // Into the 320 by 240 screen, which stands centred in the window at the window's height (or width).
-        var size = GetViewport().GetVisibleRect().Size;
-        var scale = Unit(size);
-        var origin = (size - new Vector2(320, VisibleLines) * scale) / 2;
+        var (scale, origin) = Pin(GetViewport().GetVisibleRect().Size, 1);
         Vector2 Screen(Vector3 point) => (Field.Camera.UnprojectPosition(point) - origin) / scale;
         int width = geometry["width"].AsInt32(), height = geometry["height"].AsInt32();
         var top = Screen(head);

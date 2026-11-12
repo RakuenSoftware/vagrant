@@ -31,16 +31,19 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// frames) to end the screen, which fades over eight frames. The stop's amount is added to the stat for good.
 /// Circle before T 273 brings everything to its end at once.</item>
 /// </list>
-/// The score is MENUF's: kills by enemy class and attacks by weapon kind times their points, the highest chain by
-/// its band, a hundred thousand for each clear, the kill streaks' score and the other score (the heal bonus: a
+/// The score is MENUF's (0x80108ab0): kills by enemy class and attacks by weapon kind times their points, twenty
+/// thousand for each boss time trial recorded, the highest chain by its band, a hundred thousand for each clear, all
+/// multiplied by a cleared game's play time bonus, then the kill streaks' score and the other score (the heal bonus: a
 /// hundred thousand less a hundred for each heal since the last, which this screen adds as it opens). The rank is
 /// the first whose title and score thresholds are met. The bonus reel is chosen by Ashley's stats: 0 if her
 /// intelligence and agility are both at least her strength, else 1 if her strength and agility are at least her
 /// intelligence, else 2.
 /// <para>Sounds (resident ids): 0x72 as a count starts and 0x73 as it ends, 0x77 and 0x78 as the rank comes in and
 /// as the reel lands, 0x76 for the Circle that slows it, and the reel's turning loop (0x74 and 0x75) from the eighth
-/// frame of its speeding up until it lands. Not yet done: the screen's music, the time and boss time-trial terms of the score, and the
-/// additive glows are drawn on a layer of their own over the plain parts rather than in drawing order.</para>
+/// frame of its speeding up until it lands. The screen's music is the playing piece's results theme (see
+/// FieldView.OpenResults). Not yet done: the additive glows are drawn on a layer of their own over the plain parts
+/// rather than in retail's drawing order (each part one quad, additive for its first eight frames, all at one
+/// order-table entry so later parts lie under earlier ones), as the order the parts are built in was not read.</para>
 /// </summary>
 public sealed partial class ResultsScreen : RetailScreen
 {
@@ -95,7 +98,7 @@ public sealed partial class ResultsScreen : RetailScreen
     /// <paramref name="attacks"/> by weapon kind times their points, <paramref name="maxChain"/> by its band,
     /// <paramref name="clears"/> times a hundred thousand, and the streak and other scores.
     /// </summary>
-    public long Reckon(int[] kills, int[] attacks, int maxChain, int clears, long streak, long other)
+    public long Reckon(int[] kills, int[] attacks, int maxChain, int clears, int timeTrials, long playMinutes, long streak, long other)
     {
         long score = 0;
         var killPoints = _tables.GetValueOrDefault("kill_points", new GArray()).AsGodotArray();
@@ -103,7 +106,11 @@ public sealed partial class ResultsScreen : RetailScreen
         for (int i = 0; i < kills.Length && i < killPoints.Count; i++) score += (long)kills[i] * killPoints[i].AsInt32();
         for (int i = 0; i < attacks.Length && i < attackPoints.Count; i++) score += (long)attacks[i] * attackPoints[i].AsInt32();
         score += maxChain * maxChain switch { <= 5 => 10, <= 10 => 20, <= 15 => 40, <= 20 => 80, <= 25 => 160, <= 30 => 320, <= 50 => 640, _ => 1280 };
-        score += clears * 100000L + streak + other;
+        score += timeTrials * 20000L + clears * 100000L;
+        // A cleared game's play time multiplies all that (MENUF 0x80108ab0): under 300 doubles it, under 540 adds half,
+        // under 600 a quarter. The time's unit was not read; minutes is taken from the thresholds.
+        if (clears > 0 && playMinutes < 600) score = playMinutes >= 540 ? score + score / 4 : playMinutes >= 300 ? score + score / 2 : score * 2;
+        score += streak + other;
         return Math.Min(999999999L, score);
     }
 

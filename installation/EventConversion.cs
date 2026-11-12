@@ -24,7 +24,7 @@ public sealed class EventConversion
     /// <summary>Opcodes understood but not presented yet; the scene plays without their effect.</summary>
     private static readonly HashSet<int> Unpresented = new()
     {
-        0x7d,                                   // a room group header's halfword +2 (what reads it was not found)
+        0x7d,                                   // a room group header's halfword +2, the high half of its flags word (0x80091a78); no reader found
     };
 
     /// <summary>Opcodes that wait only for loading, which installed content never needs.</summary>
@@ -743,6 +743,13 @@ public sealed class EventConversion
                     case 1:
                         // The game's end: the ending (ENDING.PRG) follows.
                         Command("game.ending", new JsonObject());
+                        return null;
+                    case 0x0b:
+                        // Rescales a camera part's momentum count (+5; 0 the look-at, 1 the eye, 2 both, averaged) by the
+                        // distance its staged point still lies away, distance >> 12 times the count over 1000
+                        // (0x800be5a4, 0x800be53c); retail's own part stepper (0x800bcfb4) takes the count when a move
+                        // arrives. The engine's guided moves have no such count, so it is not presented.
+                        _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");
                         return null;
                     case 0x0f:
                         // The screen effects module's glowing frame (SCREFF2 0x800f9de8, drawn by 0x800f9fb8) on or off.

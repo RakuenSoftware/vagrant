@@ -159,8 +159,29 @@ public sealed partial class FieldEffect : Node3D
     /// <summary>Rumbles the pad by an envelope (its first value, 128 full).</summary>
     public Action<int, int>? Rumble;
 
-    /// <summary>Plays an installed sound by its key.</summary>
-    public Action<string>? Sound;
+    /// <summary>Plays an installed sound by its key, panned by where a retail point stands on the screen (none: centred).</summary>
+    public Action<string, Vector3?>? Sound;
+
+    /// <summary>Starts the effect's sound sequence (its block 13); <see cref="SequenceStarted"/> then holds until the effect is let go.</summary>
+    public Action<int>? Sequence;
+    public bool SequenceStarted { get; private set; }
+
+    /// <summary>Whether the effect has reached its hit (track 12 action 0 or 1), when its action's results land.</summary>
+    public bool Struck { get; private set; }
+    public Action? SequenceEnded;
+
+    /// <summary>A sky dome colour transform (track 10, as opcode 70 mode 2): operation, change in 8-bit steps, fade.</summary>
+    public Action<int, Vector3, int>? SkyShift;
+
+    /// <summary>A weapon trail on an actor's bone, or every trail off (track 12 actions 3 and 4).</summary>
+    public Action<EventActor?, int, bool>? Trail;
+
+    /// <summary>An actor's carried weapon drawn flat at a grey (0 back to its owner's light; track 12 action 10).</summary>
+    public Action<EventActor?, int>? WeaponGlow;
+
+    /// <summary>One of an actor's own sounds by number (track 12 action 11).</summary>
+    public Action<EventActor?, int>? ActorSound;
+    private int _lastActorSound = -1;
 
     /// <summary>
     /// The camera shake now (0x800D21C0): across, up and along the view in map units, and a roll in 4096ths of a turn.
@@ -478,12 +499,23 @@ public sealed partial class FieldEffect : Node3D
                         channel.Phase = JitterOf(channel);
                     }
                 }
-                if (track.Type == 2 && Sound != null)
+                if (track.Type == 2)
                 {
-                    // A sound: bank 1 is the effect's own (block 12); the common battle bank (0) and the effect's
-                    // sequence (2) are not played, nor the pan from an anchor.
+                    // A sound (0x800d5904): bank 0 a resident one on the one-shot voices, 1 the effect's own (block
+                    // 12), 2 starts the effect's sound sequence (block 13). Placed (bits 20 and 21), it pans by where
+                    // its anchor (bits 22 to 27) stands on the screen; otherwise it is centred.
                     uint word = Word(e);
-                    if (((word >> 18) & 3) == 1) Sound($"fx{_data["id"].AsInt32():d3}_{(word >> 9) & 0x1FF}_p128");
+                    int id = (int)(word >> 9) & 0x1FF, bank = (int)(word >> 18) & 3;
+                    Vector3? placed = ((word >> 20) & 3) != 0 ? AnchorAt(instance, (int)(word >> 22) & 0x3F) : null;
+                    if (bank == 0) Sound?.Invoke($"effect_{id}_p128", placed);
+                    if (bank == 1) Sound?.Invoke($"fx{_data["id"].AsInt32():d3}_{id}_p128", placed);
+                    if (bank == 2 && Sequence != null) { Sequence(_data["id"].AsInt32()); SequenceStarted = true; }
+                }
+                if (track.Type == 10 && SkyShift != null)
+                {
+                    // The sky dome's colours (0x800d6310, opcode 70 mode 2's call): operation e[7], the fade (halfword
+                    // 2, as it is) and r, g, b less 128 in 8-bit steps.
+                    SkyShift(e[7], new Vector3(e[4] - 128, e[5] - 128, e[6] - 128) / 255f, e[2] | e[3] << 8);
                 }
                 if (track.Type is >= 6 and <= 9 && ColourShift != null)
                 {
@@ -510,6 +542,24 @@ public sealed partial class FieldEffect : Node3D
                     int action = (e[0] | e[1] << 8) >> 9;
                     if (action == 5 && e[2] < 16 && instance.Anchors[e[2]] is { } anchor) { anchor.Started = true; anchor.Tick = 0; }
                     if (action == 6) instance.Paused = true;
+                    // 0 and 1 are the hit's moment on the target or the source (0x8006cb04, 0x8006ca20): what the action
+                    // does lands then.
+                    if (action is 0 or 1) Struck = true;
+                    // 9 stops an anchor's path (5's inverse).
+                    if (action == 9 && e[2] < 16 && instance.Anchors[e[2]] is { } stopped) stopped.Started = false;
+                    // 3 starts a weapon trail (0x800cf7a8) on the source's weapon; 4 ends every trail (0x800cf830).
+                    if (action == 3) Trail?.Invoke(instance.Source.Actor ?? Caster, 0x40, true);
+                    if (action == 4) Trail?.Invoke(null, 0, false);
+                    // 10 draws the second entity's carried weapon flat at the grey e[2] (0 gives it back its light).
+                    if (action == 10) WeaponGlow?.Invoke(instance.Secondary.Actor, e[2]);
+                    // 11 plays one of the second entity's own sounds: n + 4 below 4, else one of 4 to 6 not the last.
+                    if (action == 11 && ActorSound != null)
+                    {
+                        int sound = e[2] < 4 ? e[2] + 4 : 4 + _random.RandiRange(0, 2);
+                        if (e[2] >= 4 && sound == _lastActorSound) sound = 4 + (sound - 4 + 1 + _random.RandiRange(0, 1)) % 3;
+                        _lastActorSound = sound;
+                        ActorSound(instance.Secondary.Actor, sound);
+                    }
                     // 13 turns the camera to look at anchor a (over b ticks), 14 gives it back.
                     if (action == 13) { _focusAnchor = e[2]; _focusInstance = instance; }
                     if (action == 14) _focusInstance = null;
@@ -971,7 +1021,12 @@ public sealed partial class FieldEffect : Node3D
         Scene?.DrawTriangles(_key, drawn, FieldView.EffectLayer, Runtime.FieldLighting.Enhanced ? Runtime.FieldLighting.EffectBoost : 1f);
     }
 
-    public override void _ExitTree() => Scene?.RemoveTriangles(_key);
+    public override void _ExitTree()
+    {
+        Scene?.RemoveTriangles(_key);
+        // Letting the effect go releases its sound slot, which stops its sequence (0x80046634).
+        if (SequenceStarted) SequenceEnded?.Invoke();
+    }
 
     /// <summary>Texture coordinates in the atlas of a part of record <paramref name="index"/> (fractions of its width and height).</summary>
     private Vector2[] RecordUv(int index, float u0, float v0, float u1, float v1)
