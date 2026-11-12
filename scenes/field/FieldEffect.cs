@@ -179,6 +179,9 @@ public sealed partial class FieldEffect : Node3D
     /// <summary>A weapon trail on an actor's bone, or every trail off (track 12 actions 3 and 4).</summary>
     public Action<EventActor?, int, int, bool>? Trail;
 
+    /// <summary>Reveals the trap on the tile under a map position (track 12 action 2).</summary>
+    public Action<Vector3>? RevealTrap;
+
     /// <summary>An actor's carried weapon drawn flat at a grey (0 back to its owner's light; track 12 action 10).</summary>
     public Action<EventActor?, int>? WeaponGlow;
 
@@ -559,6 +562,8 @@ public sealed partial class FieldEffect : Node3D
                     if (action == 3 && e[2] < 16 && instance.Anchors[e[2]] is { Actor: { } bearer } placed)
                         Trail?.Invoke(bearer, placed.Bone >= 0 ? placed.Bone : 0x40, e[3], true);
                     if (action == 4) Trail?.Invoke(null, 0, 0, false);
+                    // 2 reveals the trap on the tile of the effect's point (0x8006cdd8; effects 40 and 188 use it).
+                    if (action == 2) RevealTrap?.Invoke(instance.Target.Position());
                     // 7 holds the room's platforms for 180 frames (0x8008d5a0); 8 releases the source to its next move
                     // (0x8009d854, as operation 35 does).
                     if (action == 7) HoldPlatforms?.Invoke(180);

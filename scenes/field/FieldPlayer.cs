@@ -5,7 +5,9 @@ using Godot;
 namespace Wol.Games.Vagrant.Scenes.Field;
 
 /// <summary>
-/// Ashley under the player's control, on the retail 30 Hz clock in map units (y down, 4096 units per turn).
+/// A character on foot, on the retail 30 Hz clock in map units (y down, 4096 units per turn): Ashley under the
+/// player's control, or an enemy closing in, as BATTLE.PRG moves every actor by one routine (0x800a5280) that its
+/// commands drive (walk 9 and run 10 at its record's speeds, 0x80075554).
 /// <list type="bullet">
 /// <item>The stick or d-pad points her relative to the camera; she runs by default and walks while R2 is held. Her
 /// facing turns toward the input over 12 frames.</item>
@@ -23,7 +25,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// </summary>
 public sealed class FieldPlayer
 {
-    public const float RunSpeed = 18, WalkSpeed = 9, Radius = 53, StepHeight = 96, FallHeight = 64;
+    public const float Radius = 53, StepHeight = 96, FallHeight = 64;
     /// <summary>Her base animations: standing, walking (two foot phases), running, and stopping from a walk.</summary>
     public const int Idle = 1, Walk = 13, Run = 19, Stop = 6, Crouch = 47;
     private static readonly int[][] JumpAnimations = { new[] { 44, 49, 45, 46 }, new[] { 48, 49, 50, 51 }, new[] { 53, 54, 55, 56 } };
@@ -54,6 +56,18 @@ public sealed class FieldPlayer
 
     /// <summary>Her pace: 1, or less with crippled legs or slowing, more quickened.</summary>
     public float Pace = 1;
+
+    /// <summary>Units a frame walking and running: Ashley's, or a character record's (bytes 0x25 and 0x27).</summary>
+    public float WalkSpeed = 9, RunSpeed = 18;
+
+    /// <summary>
+    /// Whether rises of more than a step are climbed (BATTLE.PRG 0x800a76bc climbs levels 2 to 4 only for an actor with
+    /// +8 bit 23 or +0x5ac bit 3); to others they are walls.
+    /// </summary>
+    public bool Climbs = true;
+
+    /// <summary>Whether it plays its own walking, running, climbing and falling animations; a fighter's are the battle's.</summary>
+    public bool Animates = true;
 
     /// <summary>Whether she is moving under the player's input this frame.</summary>
     public bool Moving { get; private set; }
@@ -102,7 +116,9 @@ public sealed class FieldPlayer
                 if (--_frames <= 0) Launch(0, Vector3.Zero);
                 return;
             case State.Air:
-                if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
+                // A leap keeps its course to its point; a jump is steered by the stick.
+                if (_leaping) { }
+                else if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
                 else _velocity = Vector3.Zero;
                 StepAir();
                 return;
@@ -113,7 +129,7 @@ public sealed class FieldPlayer
             if (heading is { } leap) { Launch(walk ? 1 : 2, Motion(leap, speed)); return; }
             _state = State.Crouch;
             _frames = 5;
-            _actor.Animate($"{_set}_{Crouch}", 4, once: true);
+            if (Animates) _actor.Animate($"{_set}_{Crouch}", 4, once: true);
             _animation = -1;
             return;
         }
@@ -124,6 +140,23 @@ public sealed class FieldPlayer
         Animate(walk);
     }
 
+    /// <summary>
+    /// Leaps to a point (a hopping enemy's tile; BATTLE.PRG lands command 23 through the same air physics, 0x800ac980):
+    /// the jump's arc (up at 30, gravity 3 a frame), over as many frames as it takes to come down to the point's height,
+    /// and across at the pace that reaches it then (0x800a208c). Nothing while it is off the ground.
+    /// </summary>
+    public void Leap(Vector3 target)
+    {
+        if (_state != State.Ground) return;
+        int frames = 0;
+        float vertical = -30, y = _actor.Position.Y;
+        do { vertical += 3; y += vertical; frames++; } while (!(vertical > 0 && y >= target.Y) && frames < 120);
+        var across = (target - _actor.Position) with { Y = 0 };
+        Launch(1, across / frames);
+        _leaping = true;
+    }
+    private bool _leaping;
+
     private void Launch(int type, Vector3 velocity)
     {
         _state = State.Air;
@@ -132,7 +165,7 @@ public sealed class FieldPlayer
         _frames = 0;
         _airVertical = -30;
         _airAnimation = 0;
-        _actor.Animate($"{_set}_{JumpAnimations[type][0]}", 4, once: true);
+        if (Animates) _actor.Animate($"{_set}_{JumpAnimations[type][0]}", 4, once: true);
         _animation = -1;
     }
 
@@ -147,7 +180,7 @@ public sealed class FieldPlayer
         _airVertical += 3;
         var position = _actor.Position;
         var next = position + _velocity;
-        if (_velocity != Vector3.Zero)
+        if (_velocity != Vector3.Zero && !_leaping)
         {
             float? ahead = _floor(next + _velocity.Normalized() * Radius);
             if (ahead is not { } floorAhead || position.Y - floorAhead > 32 && !_stairs(next))
@@ -159,13 +192,14 @@ public sealed class FieldPlayer
         next.Y = position.Y + _airVertical;
         float floor = _floor(next) ?? position.Y;
         int phase = Math.Abs(_airVertical) <= 9 ? 1 : _airVertical > 9 ? 2 : 0;
-        if (phase != _airAnimation && phase > 0) { _airAnimation = phase; _actor.Animate($"{_set}_{JumpAnimations[_jumpType][phase]}", phase == 1 ? 16 : 8, once: true); }
+        if (phase != _airAnimation && phase > 0) { _airAnimation = phase; if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][phase]}", phase == 1 ? 16 : 8, once: true); }
         if (_airVertical > 0 && next.Y >= floor)
         {
+            _leaping = false;
             _actor.Position = next with { Y = floor };
             _state = State.Ground;
-            _actor.Animate($"{_set}_{JumpAnimations[_jumpType][3]}", 8, once: true);
-            _actor.Queue($"{_set}_{Idle}", 8);
+            if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][3]}", 8, once: true);
+            if (Animates) _actor.Queue($"{_set}_{Idle}", 8);
             _animation = Idle;
             return;
         }
@@ -179,15 +213,15 @@ public sealed class FieldPlayer
     private bool Climb(Vector3 at, float ledge)
     {
         float rise = _actor.Position.Y - ledge;
-        if (rise > 256) return false;
+        if (rise > 256 || !Climbs) return false;
         int level = (int)Math.Ceiling(rise / 64);
         var direction = _velocity != Vector3.Zero ? _velocity.Normalized() : new Vector3(-Mathf.Sin(_actor.Facing * Mathf.Tau / 4096f), 0, -Mathf.Cos(_actor.Facing * Mathf.Tau / 4096f));
         _climbFrom = _actor.Position;
         _climbTo = (at + direction * (Radius + 8)) with { Y = ledge };
         _climbTotal = _climbFrames = level >= 4 ? 28 : level * 8;
         _state = State.Climb;
-        _actor.Animate($"{_set}_{(level >= 4 ? 41 : level == 3 ? 39 : 36)}", 4, once: true);
-        if (level >= 4) _actor.Queue($"{_set}_39", 4);
+        if (Animates) _actor.Animate($"{_set}_{(level >= 4 ? 41 : level == 3 ? 39 : 36)}", 4, once: true);
+        if (level >= 4 && Animates) _actor.Queue($"{_set}_39", 4);
         _animation = -1;
         return true;
     }
@@ -204,7 +238,7 @@ public sealed class FieldPlayer
         _actor.Position = _climbTo;
         _state = State.Ground;
         _push = 0;
-        _actor.Animate($"{_set}_{Idle}", 8);
+        if (Animates) _actor.Animate($"{_set}_{Idle}", 8);
         _animation = Idle;
     }
 
@@ -280,7 +314,7 @@ public sealed class FieldPlayer
             _jumpType = Moving ? 2 : 0;
             _airVertical = 0;
             _airAnimation = 2;
-            _actor.Animate($"{_set}_{Crouch}", 4, once: true);
+            if (Animates) _actor.Animate($"{_set}_{Crouch}", 4, once: true);
             _animation = -1;
             return;
         }
@@ -297,8 +331,8 @@ public sealed class FieldPlayer
     {
         int next = Moving ? walk ? Walk : Run : _animation is Walk ? Stop : _animation is Stop or Idle ? _animation : Idle;
         if (next == _animation) return;
-        _actor.Animate($"{_set}_{next}", next == Idle ? 10 : 4);
-        if (next == Stop) _actor.Queue($"{_set}_{Idle}", 10);
+        if (Animates) _actor.Animate($"{_set}_{next}", next == Idle ? 10 : 4);
+        if (next == Stop && Animates) _actor.Queue($"{_set}_{Idle}", 10);
         _animation = next;
     }
 }

@@ -162,6 +162,7 @@ public sealed class MapConversion
 
         // Crates add models, objects and a texture of their own before the textures are written.
         var crates = Crates(models, objects, textures);
+        var trapPanel = TrapPanel(textures);
         var textureFiles = new JsonObject();
         foreach (var (key, (page, clut, mask)) in textures)
         {
@@ -205,7 +206,7 @@ public sealed class MapConversion
             ["tile_attributes"] = TileAttributes(room),
             ["doors"] = Doors(room),
             ["chests"] = Chests(room),
-            ["traps"] = Traps(room),
+            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room),
             ["locks"] = Locks(room),
             ["platforms"] = Platforms(room), ["swings"] = Swings(room), ["group_scripts"] = GroupScripts(room),
             ["room_actors"] = RoomActors(),
@@ -552,8 +553,38 @@ public sealed class MapConversion
     }
 
     /// <summary>
+    /// How an enemy gets from one zone of the room (tile attribute bits 23 to 26) to another (room sub-section 5, from its
+    /// start: 16 by 16 words, to-zone by from-zone; BATTLE.PRG 0x800dfbcc): two connector tiles a word, each a halfword of
+    /// z (bits 0 to 4), x (5 to 9), a door or event step (10), a direction (11 and 12) and steps less one (13 and 14); a
+    /// word without bits 0x1be0 has none. Empty for a room without the section.
+    /// </summary>
+    private JsonArray ZoneLinks(int room)
+    {
+        var links = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length >= 1024) for (int i = 0; i < 256; i++) links.Add((long)BitConverter.ToUInt32(_map, at + i * 4));
+        return links;
+    }
+
+    /// <summary>
+    /// The revealed-trap panel (BATTLE.PRG's quad at 0x800e8548, drawn by 0x8008e19c): its texture, the zone image at
+    /// (384, 0) (retail uploads zone images 320 left and 256 down, to the page at (64, 256)) through the palette at
+    /// (832, 226), and six 32-texel tiles along row 128: the panel at rest, then the five frames 0x8008e0a8 copies over
+    /// it in turn.
+    /// </summary>
+    private static JsonObject TrapPanel(SortedDictionary<string, (int Page, int Clut, int Mask)> surfacesTextures)
+    {
+        int page = 384 / 64, clut = 832 / 16 | 226 << 6;
+        string key = $"p{page:x3}_c{clut:x4}";
+        surfacesTextures[key] = (page, clut, 0);
+        var tiles = new JsonArray();
+        for (int k = 0; k < 6; k++) tiles.Add(new JsonArray { 32 * k, 128, 32, 32 });
+        return new JsonObject { ["texture"] = key, ["tiles"] = tiles };
+    }
+
+    /// <summary>
     /// The room's traps and magic circles (room sub-section 8, 12 bytes each): tile x, z and floor level, a type (0 to
-    /// 15 traps, 16 a save circle), a word and a byte that is a circle's save location.
+    /// 15 traps, 16 a save circle), a word and a byte that is a circle's save location, or a trap's revealed flag (BATTLE.PRG reads +10 so).
     /// </summary>
     private JsonArray Traps(int room)
     {
@@ -915,7 +946,9 @@ public sealed class MapConversion
     /// <item>the model (low byte of the u16 at 2) and reach (low five bits of byte 3);</item>
     /// <item>hit and magic points (s16 at 0x1C and 0x1E);</item>
     /// <item>strength, intelligence and agility (bytes 0x20 to 0x22);</item>
-    /// <item>walk and run speed (0x25 and 0x27);</item>
+    /// <item>two movement profiles, each flags and a speed (0x24 and 0x25, 0x26 and 0x27): flags 0x42 let it walk and
+    /// 0x84 run at the profile's speed (BATTLE.PRG 0x800def8c), 0x08 hop up to 128 units a point of speed, 0x10 and
+    /// 0x20 fly at it (0x800e6828);</item>
     /// <item>the AI parameter word (0x2C) and the limb a whole-body hit lands on (0x32);</item>
     /// <item>the weapon: the blade's equipment record at 0x34 and the grip's at 0x64, each 0x30 bytes. An
     /// equipment record holds its weapon model (byte 3), category (4), signed strength, intelligence and agility
@@ -935,8 +968,7 @@ public sealed class MapConversion
             ["strength"] = (int)data[at + 0x20],
             ["intelligence"] = (int)data[at + 0x21],
             ["agility"] = (int)data[at + 0x22],
-            ["walk_speed"] = (int)data[at + 0x25],
-            ["run_speed"] = (int)data[at + 0x27],
+            ["moves"] = new JsonArray { new JsonArray { (int)data[at + 0x24], (int)data[at + 0x25] }, new JsonArray { (int)data[at + 0x26], (int)data[at + 0x27] } },
             ["ai"] = (long)BitConverter.ToUInt32(data, at + 0x2C),
             // The limb a blow or spell on the whole character lands on (BATTLE.PRG copies it to the actor's +0x36).
             ["default_limb"] = (int)data[at + 0x32],

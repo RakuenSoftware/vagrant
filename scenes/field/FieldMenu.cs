@@ -1680,7 +1680,10 @@ public sealed partial class FieldMenu : PanelContainer
         if (definition.Count == 0) return $"The {_view.ItemName(id)} cannot be used here.";
         if (definition.GetValueOrDefault("grimoire", false).AsBool()) return Read(id, definition["action"].AsInt32());
         _view.Acted(definition.GetValueOrDefault("action", 0).AsInt32());
-        _view.Battle?.HideHudFor(_view.PlayEffect(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor));
+        // Effect 33 (the Eye of Argon) plays its effect at each of the room's traps, which reveals them.
+        bool seeing = definition["effects"].AsGodotArray().Count > 0 && definition["effects"].AsGodotArray()[0].AsGodotDictionary()["effect"].AsInt32() == 33;
+        if (seeing) foreach (var effect in _view.SeeTraps(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor)) _view.Battle?.HideHudFor(effect);
+        else _view.Battle?.HideHudFor(_view.PlayEffect(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor));
         var parts = new List<string>();
         var random = new RandomNumberGenerator();
         foreach (var value in definition["effects"].AsGodotArray())

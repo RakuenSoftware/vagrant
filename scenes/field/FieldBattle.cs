@@ -125,6 +125,11 @@ public sealed class FieldBattle
         public int Struck => DefaultLimb >= 0 && DefaultLimb < Limbs.Count && Limbs[DefaultLimb].MaxHp > 0 ? DefaultLimb : Limbs.FindIndex(l => l.MaxHp > 0);
 
         public EventActor Actor = null!;
+        /// <summary>
+        /// How an enemy moves on foot: the one movement Ashley's is (BATTLE.PRG 0x800a5280), at its record's speeds, its
+        /// rises above a step walls and its drops fallen; null for Ashley, whom the player moves.
+        /// </summary>
+        public FieldPlayer? Mover;
         public string Name = "";
         public int Category, Hp, MaxHp, Mp, MaxMp, Strength, Intelligence, Agility, WeaponStrength, WeaponAgility, Class, Risk, DamageType = 1, Cost;
         public Gear Blade = new(), Shield = new(), Accessory = new();
@@ -214,9 +219,16 @@ public sealed class FieldBattle
         public int Alert, Rest;
         /// <summary>Which side of its head its balloon stands (0 right, 1 left), turned as it crosses Ashley.</summary>
         public int BalloonSide;
-        /// <summary>The enemy's route to Ashley, and frames until it looks for a new one.</summary>
-        public List<Vector3> Route = new();
-        public int RouteAge;
+        /// <summary>How it moves (BATTLE.PRG 0x800e6828, by its movement profiles' flags): walking, hopping or flying.</summary>
+        public Gait Gait;
+        /// <summary>Its speed: units a frame walking or flying, or how far a hop reaches.</summary>
+        public float Speed;
+        /// <summary>Frames since a hopper last leapt; it leaps again every 6 (0x800e153c's count at AI +0x8c).</summary>
+        public int HopCount;
+        /// <summary>A flyer's height above the floor under it, kept as it flies.</summary>
+        public float Altitude;
+        /// <summary>Whether it routes between the room's zones (its AI word's bit 14, AI +0x29; 0x800e5b68), or walks straight at her.</summary>
+        public bool Routes;
         public string Set = "base";
         /// <summary>The animation set it fights by while its weapon is drawn.</summary>
         public string BattleSet = "battle";
@@ -349,6 +361,22 @@ public sealed class FieldBattle
             Category = weapon.GetValueOrDefault("category", 0).AsInt32(),
             DefaultLimb = stats.GetValueOrDefault("default_limb", -1).AsInt32(),
         };
+        if (actor.Id != "slot:0")
+        {
+            // Its movement profiles' flags set how it moves (0x800e6828): 0x30 flies, 0x08 hops, else it walks (0x42) at
+            // the first walking profile's speed (0x800def8c), or stands when none walks; a flyer or hopper by the speed
+            // of the profile with its flag (a hop reaching 128 units a point of it, 0x800e638c).
+            var profiles = new List<(int Flags, int Speed)>();
+            foreach (var profile in stats.GetValueOrDefault("moves", new Godot.Collections.Array()).AsGodotArray())
+                profiles.Add((profile.AsGodotArray()[0].AsInt32(), profile.AsGodotArray()[1].AsInt32()));
+            int flags = 0;
+            foreach (var (f, _) in profiles) flags |= f;
+            combatant.Gait = (flags & 0x30) != 0 ? Gait.Fly : (flags & 0x08) != 0 ? Gait.Hop : Gait.Walk;
+            int mask = combatant.Gait switch { Gait.Fly => 0x30, Gait.Hop => 0x08, _ => 0x42 };
+            foreach (var (f, speed) in profiles) if ((f & mask) != 0) { combatant.Speed = combatant.Gait == Gait.Hop ? speed * 128 : speed; break; }
+            combatant.Mover = new FieldPlayer(actor, _view.FloorAt, _view.Stairs) { Crowded = Crowded, Climbs = false, Animates = false, WalkSpeed = combatant.Gait == Gait.Walk ? combatant.Speed : 0 };
+            if (_view.FloorAt(actor.Position) is { } under) combatant.Altitude = under - actor.Position.Y;
+        }
         // Ashley fights by the set for her weapon's category; others by their one battle set.
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
         combatant.Set = drawn ? combatant.BattleSet : "base";
@@ -359,6 +387,7 @@ public sealed class FieldBattle
             combatant.Cone = new[] { 360f, 190, 85, 40 }[(ai >> 16) & 3];
             combatant.Pause = new[] { 5400, 30, 60, 15, 300, 60, 60, 60 }[(ai >> 4) & 7];
             combatant.Pause = Math.Clamp(combatant.Pause, 15, 300);
+            combatant.Routes = (ai & 1 << 14) != 0;
             combatant.Timer = combatant.Pause;
         }
         var limbs = stats.GetValueOrDefault("limbs", new Godot.Collections.Array()).AsGodotArray();
@@ -1982,6 +2011,8 @@ public sealed class FieldBattle
         {
             if (!enemy.Hostile || enemy.Dead || enemy.Suspended || !enemy.Drawn || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) continue;
             var actor = enemy.Actor;
+            // One off the ground carries on falling until it lands.
+            if (enemy.Mover is { Busy: true } falling) { falling.Step(null, walk: true); continue; }
             var offset = Ashley.Actor.Position - actor.Position;
             float distance = new Vector2(offset.X, offset.Z).Length();
             if (!enemy.Engaged)
@@ -1996,24 +2027,52 @@ public sealed class FieldBattle
             if (distance > Math.Max(DetectRange, enemy.Sight) * 1.5f) { enemy.Engaged = false; continue; }
             if (!InSphere(enemy, Ashley))
             {
-                // Walk Ashley's way along a route round what stands between them, found again every half second.
-                if (--enemy.RouteAge <= 0 || enemy.Route.Count == 0)
+                var waypoint = Waypoint(enemy, Ashley.Actor.Position);
+                // It walks there as Ashley moves (walk command 9, 0x8007589c): stepping off a ledge, it falls and lands
+                // (the Ghost of "The Lamenting Mother" comes down off its ledge so).
+                if (enemy.Speed <= 0 || enemy.Mover is not { } mover) continue;
+                switch (enemy.Gait)
                 {
-                    enemy.Route = _view.Path(actor.Position, Ashley.Actor.Position);
-                    enemy.RouteAge = 15;
+                    case Gait.Walk:
+                        // One whose movement profiles let it walk neither way stands (command 2).
+                        mover.Step(actor.FacingToward(waypoint), walk: true);
+                        if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
+                        break;
+                    case Gait.Hop:
+                        // Every 6 frames a hopper leaps toward its waypoint, as far as its reach, to the nearest
+                        // standing tile on the way (eight tries, an eighth nearer each; 0x800e1388), landing at that
+                        // tile's floor whatever lies between (command 23), its take-off 19 then 20 (0x800a29e8).
+                        if (++enemy.HopCount < 6) break;
+                        enemy.HopCount = 0;
+                        var reach = (waypoint - actor.Position) with { Y = 0 };
+                        if (reach.Length() > enemy.Speed) reach = reach.Normalized() * enemy.Speed;
+                        for (int attempt = 0; attempt < 8; attempt++, reach *= 7f / 8)
+                        {
+                            var spot = actor.Position + reach;
+                            var centre = new Vector3(Mathf.Floor(spot.X / 128) * 128 + 64, 0, Mathf.Floor(spot.Z / 128) * 128 + 64);
+                            if (_view.FloorAt(centre) is not { } landing || _view.Blocked((int)(centre.X / 128), (int)(centre.Z / 128))) continue;
+                            actor.Facing = actor.FacingToward(centre);
+                            mover.Leap(centre with { Y = landing });
+                            if (Play(enemy, 19, 4, once: true) is { } set) actor.Queue($"{set}_20", 4);
+                            break;
+                        }
+                        break;
+                    case Gait.Fly:
+                        // A flyer heads straight for the point above where it is going, at the height it flies over
+                        // the floor, at its speed, over whatever lies below (commands 16 and 17; its climb toward the
+                        // height is not read, so it is taken at the same pace).
+                        float floor = _view.FloorAt(waypoint) ?? waypoint.Y;
+                        var aim = waypoint with { Y = floor - enemy.Altitude };
+                        var way = aim - actor.Position;
+                        actor.Facing = actor.FacingToward(aim);
+                        actor.Position = way.Length() <= enemy.Speed ? aim : actor.Position + way.Normalized() * enemy.Speed;
+                        if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
+                        break;
                 }
-                while (enemy.Route.Count > 1 && new Vector2(enemy.Route[0].X - actor.Position.X, enemy.Route[0].Z - actor.Position.Z).Length() < 16) enemy.Route.RemoveAt(0);
-                var waypoint = enemy.Route.Count > 0 ? enemy.Route[0] : Ashley.Actor.Position;
-                actor.Facing = actor.FacingToward(waypoint);
-                float angle = actor.Facing * Mathf.Tau / 4096f;
-                var step = new Vector3(-Mathf.Sin(angle), 0, -Mathf.Cos(angle)) * 9;
-                var next = actor.Position + step;
-                if (_view.FloorAt(next) is { } floor && Math.Abs(floor - actor.Position.Y) <= 96 && !Crowded(actor, next)) actor.Position = next with { Y = floor };
-                if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
                 continue;
             }
             actor.Facing = actor.FacingToward(Ashley.Actor.Position);
-            if (_walking.Remove(enemy)) Play(enemy, 1, 6);
+            if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
             if (--enemy.Timer > 0) continue;
             // It sets out to act: its balloon telegraphs the move for 120 frames (BATTLE.PRG 0x800D836C). Only as many set
             // out at once as the room allows (its "telegraphs"); one still alert from its last move skips the dots.
@@ -2039,6 +2098,42 @@ public sealed class FieldBattle
             return;
         }
     }
+
+    /// <summary>
+    /// Where an enemy heads for to reach a point (BATTLE.PRG 0x800e19fc): in the point's zone, or not routing, straight
+    /// at it; else for the nearer to it of the two connector tiles the room links its zone to the point's by, along z
+    /// first then x (0x800def30); and on the connector, through it into the next zone: its steps (bits 13 and 14, less
+    /// one) in its direction (bits 11 and 12: octants 2, 6, 4 and 0; 0x800f175c). A connector's door or event step
+    /// (bit 10, 0x800dfaf8) is not followed.
+    /// </summary>
+    private Vector3 Waypoint(Combatant enemy, Vector3 point)
+    {
+        var position = enemy.Actor.Position;
+        int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
+        int tx = (int)Mathf.Floor(point.X / 128), tz = (int)Mathf.Floor(point.Z / 128);
+        int from = _view.TileZone(x, z), to = _view.TileZone(tx, tz);
+        if (!enemy.Routes || from == to) return point;
+        uint link = _view.ZoneLink(to, from);
+        if ((link & 0x1be0) == 0) return point;
+        int best = -1, bestDistance = int.MaxValue;
+        foreach (int half in (link & 0x1be00000) != 0 ? new[] { (int)(link & 0xFFFF), (int)(link >> 16) } : new[] { (int)(link & 0xFFFF) })
+        {
+            int cx = half >> 5 & 31, cz = half & 31, distance = (cx - tx) * (cx - tx) + (cz - tz) * (cz - tz);
+            if (distance < bestDistance) (best, bestDistance) = (half, distance);
+        }
+        int connectorX = best >> 5 & 31, connectorZ = best & 31;
+        if (x == connectorX && z == connectorZ)
+        {
+            int octant = new[] { 2, 6, 4, 0 }[best >> 11 & 3], steps = (best >> 13 & 3) + 1;
+            float angle = octant * 512 * Mathf.Tau / 4096;
+            int dx = Mathf.RoundToInt(-Mathf.Sin(angle)), dz = Mathf.RoundToInt(-Mathf.Cos(angle));
+            return new Vector3((x + dx * steps) * 128 + 64, position.Y, (z + dz * steps) * 128 + 64);
+        }
+        return z != connectorZ ? new Vector3(position.X, position.Y, connectorZ * 128 + 64) : new Vector3(connectorX * 128 + 64, position.Y, position.Z);
+    }
+
+    /// <summary>How an enemy moves: walking (and running), hopping from tile to tile, or flying.</summary>
+    public enum Gait { Walk, Hop, Fly }
 
     // BATTLE.PRG's timings: the telegraph's end, the jagged balloon after a move, the rest before the next.
     private const int TelegraphFrames = 120, AlertFrames = 90, RestFrames = 48;

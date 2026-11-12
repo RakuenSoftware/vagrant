@@ -667,6 +667,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return;
             }
             Document = document;
+            LoadTrapPanels(document, textures);
             // The room's own weather starts with it, over its weather rectangle, drawn in the room's field (made below).
             _rain.Scene = null;
             _rain.Room(document.GetValueOrDefault("weather").VariantType == Variant.Type.Dictionary ? document["weather"].AsGodotDictionary() : null);
@@ -931,6 +932,112 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private const string TrailKey = "trails";
 
     /// <summary>
+    /// A room trap as BATTLE.PRG keeps it (12-byte records): its tile, type, whether it is revealed (byte 10) and how
+    /// far its floor panel has faded in (byte 11, to 128).
+    /// </summary>
+    private sealed class TrapPanel
+    {
+        public int X, Z, Type, Fade;
+        public bool Revealed;
+    }
+
+    private readonly List<TrapPanel> _trapPanels = new();
+
+    /// <summary>How many of the room's traps are revealed, for tests.</summary>
+    public int RevealedTraps => _trapPanels.FindAll(trap => trap.Revealed).Count;
+    private Texture2D? _trapPanelTexture;
+    private Rect2[] _trapPanelTiles = Array.Empty<Rect2>();
+    private int _trapPanelClock;
+    private const string TrapPanelKey = "trap_panels";
+    /// <summary>How far toward the eye a trap panel is drawn so that the floor under it does not hide it: 32 map units.</summary>
+    private const float TrapPanelPull = 32 / Installation.MapConversion.UnitsPerMetre;
+
+    /// <summary>The room's traps, each hidden unless its record says revealed, and the panel's texture and tiles.</summary>
+    private void LoadTrapPanels(GDictionary document, GDictionary textures)
+    {
+        _trapPanels.Clear();
+        foreach (var value in document.GetValueOrDefault("traps", new GArray()).AsGodotArray())
+        {
+            var trap = value.AsGodotDictionary();
+            var tile = trap["tile"].AsGodotArray();
+            int type = trap["type"].AsInt32();
+            _trapPanels.Add(new TrapPanel { X = tile[0].AsInt32(), Z = tile[1].AsInt32(), Type = type, Revealed = type < 16 && trap["location"].AsInt32() != 0 });
+        }
+        _trapPanelTexture = null;
+        _trapPanelTiles = Array.Empty<Rect2>();
+        if (document.GetValueOrDefault("trap_panel", new GDictionary()).AsGodotDictionary() is { Count: > 0 } panel && textures.TryGetValue(panel["texture"], out var texture))
+        {
+            _trapPanelTexture = texture.As<Texture2D>();
+            var tiles = panel["tiles"].AsGodotArray();
+            _trapPanelTiles = new Rect2[tiles.Count];
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var rect = tiles[i].AsGodotArray();
+                _trapPanelTiles[i] = new Rect2(rect[0].AsSingle(), rect[1].AsSingle(), rect[2].AsSingle(), rect[3].AsSingle());
+            }
+        }
+    }
+
+    /// <summary>
+    /// What Eureka and the Eye of Argon do (effect 33; BATTLE.PRG 0x80070cac targets every trap of the room but its save
+    /// circles): their visual effect plays from Ashley at each trap's tile centre, at the floor there, and its action 2
+    /// reveals that trap. None while flag 32 or 64 is set (0x8008e400). Returns the effects started.
+    /// </summary>
+    public List<FieldEffect> SeeTraps(int visual, EventActor caster)
+    {
+        var started = new List<FieldEffect>();
+        if (Flags[32] != 0 || Flags[64] != 0) return started;
+        foreach (var trap in _trapPanels)
+        {
+            if (trap.Type >= 16) continue;
+            var centre = new Vector3(trap.X * 128 + 64, 0, trap.Z * 128 + 64);
+            centre.Y = FloorAt(centre) ?? 0;
+            if (PlayEffect(visual, caster, null, false, -1, point: centre) is { } effect) started.Add(effect);
+        }
+        return started;
+    }
+
+    /// <summary>
+    /// Reveals the trap on a tile (BATTLE.PRG 0x8008deac): one that has been sprung (0x80074314), or that an effect's
+    /// action 2 lands on (0x8006cdd8). Its floor panel then fades in.
+    /// </summary>
+    public void RevealTrap(int x, int z)
+    {
+        foreach (var trap in _trapPanels) if (trap.X == x && trap.Z == z) trap.Revealed = true;
+    }
+
+    /// <summary>
+    /// Steps and draws the trap panels (0x8008df14): a revealed trap's fade climbs 4 a frame to 128, a hidden one's
+    /// falls 2; each with any fade is the panel tile, 128 units square, on the floor at its tile's corner height
+    /// (0x8008dc7c), added to the screen in grey at its fade. The panel's art changes every four frames through five
+    /// frames, the first after the panel at rest (every 8 of the frame-step count, 2 a frame; 0x8008e0a8).
+    /// </summary>
+    private void StepTrapPanels()
+    {
+        if (_trapPanels.Count == 0) return;
+        var triangles = new List<Wol.Engine.World.FieldTriangle>();
+        bool shown = false;
+        foreach (var trap in _trapPanels)
+        {
+            trap.Fade = trap.Revealed ? Math.Min(128, trap.Fade + 4) : Math.Max(0, trap.Fade - 2);
+            if (trap.Fade == 0 || trap.Type >= 16) continue;
+            if (!shown) { shown = true; _trapPanelClock++; }
+            float floor = FloorAt(new Vector3(trap.X * 128, 0, trap.Z * 128)) ?? 0;
+            Vector3 Corner(int dx, int dz) => EventActor.RetailSpace * new Vector3(trap.X * 128 + dx, floor, trap.Z * 128 + dz);
+            int frame = _trapPanelClock < 4 || _trapPanelTiles.Length < 6 ? 0 : 1 + _trapPanelClock / 4 % 5;
+            var tile = frame < _trapPanelTiles.Length ? _trapPanelTiles[frame] : default;
+            var size = _trapPanelTexture?.GetSize() ?? Vector2.One;
+            Vector2 Uv(float u, float v) => (tile.Position + new Vector2(u, v) * tile.Size) / size;
+            var shade = new Color(trap.Fade / 128f, trap.Fade / 128f, trap.Fade / 128f);
+            Vector3 a = Corner(128, 128), b = Corner(0, 128), c = Corner(128, 0), d = Corner(0, 0);
+            // Retail sorts it over the floor it lies on; here it is drawn a little toward the eye of it.
+            triangles.Add(new(_trapPanelTexture, Wol.Engine.World.FieldBlend.Add, a, b, c, Uv(1, 1), Uv(0, 1), Uv(1, 0), shade, shade, shade, Pull: TrapPanelPull));
+            triangles.Add(new(_trapPanelTexture, Wol.Engine.World.FieldBlend.Add, b, d, c, Uv(0, 1), Uv(0, 0), Uv(1, 0), shade, shade, shade, Pull: TrapPanelPull));
+        }
+        Field?.DrawTriangles(TrapPanelKey, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(triangles), EffectLayer);
+    }
+
+    /// <summary>
     /// Steps the trails and draws them (0x800ce174): from four places on, a ribbon from the newest place back through
     /// up to five more gaps and a half (one fewer than the places past three), in half-gap steps. Each step's point is
     /// the cubic through the four places from the gap's start on (0x800d1390). Each quad is the strip stretched from
@@ -996,7 +1103,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public FieldEffect? PlayResident(int number, EventActor caster, EventActor target, int bone = -1, int mode = 0) =>
         number is 23 or 25 or 40 or 41 or >= 44 and <= 53 ? PlayEffect(0, target, caster, false, number, bone, mode) : PlayEffect(0, caster, target, false, number, bone, mode);
 
-    private FieldEffect? PlayEffect(int id, EventActor caster, EventActor? target, bool fromOrigin, int resident, int bone = -1, int mode = 0)
+    private FieldEffect? PlayEffect(int id, EventActor caster, EventActor? target, bool fromOrigin, int resident, int bone = -1, int mode = 0, Vector3? point = null)
     {
         if (id <= 0 && resident < 0 || Field == null || !_content.Has($"effect_{id:d3}")) return null;
         var data = _content.Data($"effect_{id:d3}");
@@ -1004,7 +1111,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // An event's effect comes from the point (0, 0, 0) rather than from an actor, at the actor it was requested on
         // (BATTLE.PRG 0x8007BDC4; the other characters it lists are bystanders, whose shifts are not followed).
         var source = fromOrigin ? new FieldEffect.Entity { Point = Vector3.Zero } : new FieldEffect.Entity { Actor = caster };
-        var targets = new List<FieldEffect.Entity> { new() { Actor = target ?? caster, Bone = bone } };
+        var targets = new List<FieldEffect.Entity> { point is { } at ? new() { Point = at } : new() { Actor = target ?? caster, Bone = bone } };
         var effect = new FieldEffect(data, atlas, source, targets, resident >= 0 ? resident * 3 : 0, name => _content.Texture(name), armed: fromOrigin)
         {
             Caster = fromOrigin ? caster : null,
@@ -1017,6 +1124,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             SequenceEnded = () => _driver.StopSequence(),
             SkyShift = (operation, change, fade) => TransformPalette("sky", operation, change, fade),
             Trail = (actor, part, style, on) => SetTrail(actor, part, style, on),
+            RevealTrap = point => RevealTrap((int)Mathf.Floor(point.X / 128), (int)Mathf.Floor(point.Z / 128)),
             WeaponGlow = (actor, grey) => actor?.GlowWeapon(grey),
             HoldPlatforms = frames => { if (_platforms.Count > 0) _platformHold = frames; },
             ActorSound = (actor, number) => { if (actor != null) PlayActorSound(actor, $"c{actor.Character:X2}_{number}_p128"); },
@@ -3421,6 +3529,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Whether a collision tile's blocking class (bits 10 to 12 of its attributes) is 5.</summary>
     public bool Blocked(int x, int z) => (TileAttributes(x, z) >> 10 & 7) == 5;
 
+    /// <summary>The zone a tile is in (its attribute bits 23 to 26), which enemies route between.</summary>
+    public int TileZone(int x, int z) => (int)(TileAttributes(x, z) >> 23 & 15);
+
+    /// <summary>The room's link from one zone to another (<see cref="Installation.MapConversion"/>'s "zone_links"), 0 for none.</summary>
+    public uint ZoneLink(int to, int from)
+    {
+        var links = Document.GetValueOrDefault("zone_links", new GArray()).AsGodotArray();
+        int index = to * 16 + from;
+        return index < links.Count ? (uint)links[index].AsInt64() : 0;
+    }
+
     /// <summary>
     /// A walking route across the room's collision map from one map position to another, as the centres of the
     /// 32-unit sub-cells it passes, ending at the destination; empty when there is none. A step may climb at most
@@ -3595,7 +3714,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             foreach (var effect in _effects) shake += effect.Shake;
             Field.NudgeCamera(new Vector3(shake.X, -shake.Y, shake.Z) / Installation.MapConversion.UnitsPerMetre, shake.W * Mathf.Tau / 4096);
         }
-        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); }
+        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); StepTrapPanels(); }
         // The event camera's roll (opcode e2) is the engine's; play has none.
         if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();
@@ -4662,6 +4781,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (Battle == null || _control == null || Player is not { } ashley) return "Not now.";
         var action = _content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(spell.ToString(), new GDictionary()).AsGodotDictionary();
         var effects = action.GetValueOrDefault("effects", new GArray()).AsGodotArray();
+        // Effect 33 (Eureka) reveals the room's traps, for the spell's magic points.
+        if (effects.Count > 0 && effects[0].AsGodotDictionary()["effect"].AsInt32() == 33)
+        {
+            if (Battle.Ashley is not { } seer) return "Not now.";
+            int cost = action["cost"].AsInt32();
+            if (seer.Mp < cost) return "Not enough MP.";
+            seer.Mp -= cost;
+            SeeTraps(action.GetValueOrDefault("visual", 0).AsInt32(), ashley);
+            confirmed?.Invoke();
+            return "";
+        }
         // Effect 39 (Unlock) breaks the magic seal on the door or chest in front of Ashley.
         if (effects.Count > 0 && effects[0].AsGodotDictionary()["effect"].AsInt32() == 39)
         {
@@ -5109,6 +5239,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             int type = trap["type"].AsInt32();
             if (type == 16) { SavePoint = trap["location"].AsInt32(); return; }
             if (Battle?.Ashley == null) return;
+            // A sprung trap is revealed (BATTLE.PRG 0x80074314).
+            RevealTrap(tile.X, tile.Z);
             // The trap is its action (type + 6), announced by name as retail's information setting does it.
             var traps = _content.Has("trap_actions") ? _content.Data("trap_actions") : new GDictionary();
             if (traps.GetValueOrDefault(type.ToString(), new GDictionary()).AsGodotDictionary() is not { Count: > 0 } action) return;

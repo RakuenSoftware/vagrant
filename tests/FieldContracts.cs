@@ -45,6 +45,12 @@ public partial class FieldContracts : Node
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
     private bool _fight;
     /// <summary>
+    /// With <c>--reveal-traps</c>, once Ashley is the player's the Eye of Argon's effect plays at every trap in the room,
+    /// which reveals them; she stands beside the first, and its panel is captured every 4 frames from 80 to 120.
+    /// </summary>
+    private bool _revealTraps;
+    private int _revealedAt = -1;
+    /// <summary>
     /// With <c>--art=N</c> in a fight, Ashley uses Break Art action N once she can, captured every other frame; its blow
     /// lands while its effect plays (at the effect's hit, as a spell's), and the art is over within 240 frames.
     /// </summary>
@@ -117,6 +123,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--reveal-traps") _revealTraps = true;
             if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--carry") _carry = true;
@@ -547,6 +554,59 @@ public partial class FieldContracts : Node
                     Finish(_cubeRisk <= _cubeRiskBefore ? "striking the crate did not raise her RISK" : "");
                     return;
             }
+            return;
+        }
+        if (_revealTraps && _view.Controlled)
+        {
+            if (_revealedAt < 0)
+            {
+                int count = 0;
+                foreach (var value in _view.Document.GetValueOrDefault("traps", new Godot.Collections.Array()).AsGodotArray())
+                {
+                    var trap = value.AsGodotDictionary();
+                    if (trap["type"].AsInt32() >= 16) continue;
+                    var tile = trap["tile"].AsGodotArray();
+                    GD.Print($"FIELD: trap type {trap["type"]} at {tile[0]}, {tile[1]}");
+                    count++;
+                }
+                if (count == 0) { Finish("the room has no traps to reveal"); return; }
+                // As the Eye of Argon does: its effect (188) plays at each trap, and its action 2 reveals it.
+                if (_view.Player is { } seer && _view.SeeTraps(188, seer).Count != count) { Finish("the Eye of Argon's effect did not play at every trap"); return; }
+                // Ashley stands beside the first trap, on a neighbouring tile of its floor, so its panel is in view.
+                if (_view.Player is { } stander)
+                    foreach (var value in _view.Document["traps"].AsGodotArray())
+                    {
+                        var trap = value.AsGodotDictionary();
+                        if (trap["type"].AsInt32() >= 16) continue;
+                        var tile = trap["tile"].AsGodotArray();
+                        int tx = tile[0].AsInt32(), tz = tile[1].AsInt32();
+                        float? floor = _view.FloorAt(new Vector3(tx * 128 + 64, 0, tz * 128 + 64));
+                        foreach (var (dx, dz) in new[] { (0, 1), (-1, 0), (1, 0), (0, -1) })
+                        {
+                            var spot = new Vector3((tx + dx) * 128 + 64, 0, (tz + dz) * 128 + 64);
+                            if (_view.FloorAt(spot) is not { } beside || beside != floor) continue;
+                            stander.Position = spot with { Y = beside };
+                            _view.Gameplay.Place(stander.Position);
+                            break;
+                        }
+                        break;
+                    }
+                GD.Print($"FIELD: revealed {count} traps");
+                _revealedAt = _frame;
+            }
+            if (_frame - _revealedAt == 80)
+            {
+                var camera = _view.Field.Camera;
+                foreach (var value in _view.Document.GetValueOrDefault("traps", new Godot.Collections.Array()).AsGodotArray())
+                {
+                    var tile = value.AsGodotDictionary()["tile"].AsGodotArray();
+                    var centre = new Vector3(tile[0].AsInt32() * 128 + 64, _view.FloorAt(new Vector3(tile[0].AsInt32() * 128, 0, tile[1].AsInt32() * 128)) ?? 0, tile[1].AsInt32() * 128 + 64);
+                    var world = EventActor.RetailSpace * centre;
+                    GD.Print($"FIELD: trap panel at {centre} shows at {camera.UnprojectPosition(world)}{(camera.IsPositionBehind(world) ? " (behind)" : "")}; Ashley at {_view.Player?.Position} shows at {(_view.Player is { } a ? camera.UnprojectPosition(EventActor.RetailSpace * a.Position) : default)}");
+                }
+            }
+            if (_frame - _revealedAt >= 80 && (_frame - _revealedAt) % 4 == 0) Capture($"traps_revealed_{_frame - _revealedAt:d3}");
+            if (_frame - _revealedAt >= 120) Finish(_view.RevealedTraps > 0 ? "" : "no trap was revealed");
             return;
         }
         if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
