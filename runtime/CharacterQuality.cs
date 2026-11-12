@@ -25,7 +25,7 @@ public partial class CharacterQuality : Node
 
     public override void _Ready()
     {
-        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("characters", "enhanced", false).AsBool();
+        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("characters", "enhanced", false);
     }
 
     /// <summary>Sets the choice, saves it (unless <paramref name="save"/> is false, as the checks have it), and has the field redraw its characters.</summary>

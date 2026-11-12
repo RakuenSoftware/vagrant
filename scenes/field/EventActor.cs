@@ -384,81 +384,60 @@ public sealed class EventActor
     /// </summary>
     public void Walk(Vector3 target, float heading, int speed, int turnSpeed)
     {
-        var args = new Godot.Collections.Dictionary
-        {
-            ["actor"] = Id, ["destination"] = EngineVector(target), ["frame_rate"] = 30,
-            ["frames_per_unit"] = (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f,
-            ["frames_per_turn"] = turnSpeed < 0 ? DefaultTurnSpeed : turnSpeed,
-        };
+        float perUnit = (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f, perTurn = turnSpeed < 0 ? DefaultTurnSpeed : turnSpeed;
         // Retail tests the bytes as given: both 0 is the teleport, a default (0xff) is not.
-        if (speed == 0 && turnSpeed == 0) args["frames_per_unit"] = args["frames_per_turn"] = 0;
-        if (heading >= 0) args["heading"] = Installation.EventConversion.Heading(heading);
-        Command("actor.walk", args);
+        if (speed == 0 && turnSpeed == 0) perUnit = perTurn = 0;
+        Command(new Wol.Engine.World.ActorWalkTo(Id, RetailSpace * target, false, heading >= 0 ? Installation.EventConversion.Heading(heading) : null, perUnit, perTurn));
     }
-
-    /// <summary>A retail-space point as the engine's.</summary>
-    private static Godot.Collections.Array EngineVector(Vector3 point) { var engine = RetailSpace * point; return new() { engine.X, engine.Y, engine.Z }; }
 
 
     /// <summary>Hands the actor a command of the engine's field; an actor not in a field takes the end state at once.</summary>
-    private void Command(string type, Godot.Collections.Dictionary args)
+    private void Command(Wol.Engine.World.FieldCommand command)
     {
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) return;
-        var error = Scene.Present(default, new Wol.Engine.World.FieldCommand(type, args, false), _ => { });
-        if (error != Error.Ok) GD.PushWarning($"{Id}: {type} could not be presented ({error}).");
+        var error = Scene.Present(default, command with { FrameRate = 30 }, _ => { });
+        if (error != Error.Ok) GD.PushWarning($"{Id}: {command.GetType().Name} could not be presented ({error}).");
     }
 
     /// <summary>Retail 2a: walks a route of points, facing each in turn; an empty route ends at once.</summary>
     public void Follow(System.Collections.Generic.IEnumerable<Vector3> route)
     {
-        var points = new Godot.Collections.Array();
-        foreach (var point in route) points.Add(EngineVector(point));
-        Command("actor.route", new Godot.Collections.Dictionary { ["actor"] = Id, ["points"] = points, ["speed"] = RouteSpeed / Installation.MapConversion.UnitsPerMetre, ["frame_rate"] = 30 });
+        var points = new System.Collections.Generic.List<Vector3>();
+        foreach (var point in route) points.Add(RetailSpace * point);
+        Command(new Wol.Engine.World.ActorRouteTo(Id, points.ToArray(), RouteSpeed / Installation.MapConversion.UnitsPerMetre));
     }
 
     /// <summary>Retail 28: a straight glide that keeps the facing.</summary>
     public void Glide(Vector3 target, int speed)
     {
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Position = target; return; }
-        Command("actor.glide", new Godot.Collections.Dictionary
-        {
-            ["actor"] = Id, ["destination"] = EngineVector(target), ["frame_rate"] = 30,
-            ["frames_per_unit"] = (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f,
-        });
+        Command(new Wol.Engine.World.ActorGlide(Id, RetailSpace * target, false, (speed < 0 ? DefaultMoveSpeed : speed) * Installation.MapConversion.UnitsPerMetre / 128f));
     }
 
     /// <summary>Turns to a heading the shorter way, evenly over a number of event frames (as the player turns, 12).</summary>
     public void TurnOver(float heading, int frames) =>
-        Command("actor.turn", new Godot.Collections.Dictionary { ["actor"] = Id, ["heading"] = Installation.EventConversion.Heading(heading), ["frames"] = frames, ["frame_rate"] = 30 });
+        Command(new Wol.Engine.World.ActorTurn(Id, Installation.EventConversion.Heading(heading), 0, frames, 0));
 
     /// <summary>Retail 2b: turn to a heading the shortest way (direction 0), or up (above 0) or down (below 0) the facings.</summary>
     public void TurnTo(float heading, int direction, float speed)
     {
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Facing = Mathf.PosMod(heading, 4096); return; }
-        Command("actor.turn", new Godot.Collections.Dictionary
-        {
-            ["actor"] = Id, ["heading"] = Installation.EventConversion.Heading(heading), ["direction"] = -Math.Sign(direction), ["frame_rate"] = 30,
-            ["frames_per_turn"] = speed < 0 ? DefaultTurnSpeed : speed,
-        });
+        Command(new Wol.Engine.World.ActorTurn(Id, Installation.EventConversion.Heading(heading), -Math.Sign(direction), null, speed < 0 ? DefaultTurnSpeed : speed));
     }
 
     /// <summary>Retail 33: eases its extra angles to new ones (or by them), at a speed in frames a turn (0 at once).</summary>
     public void Rotate(Vector3 angles, bool relative, int speed)
     {
         float unit = Mathf.Tau / 4096;
-        Command("actor.shape", new Godot.Collections.Dictionary
-        {
-            ["actor"] = Id, ["angles"] = new Godot.Collections.Array { angles.X * unit, -angles.Y * unit, -angles.Z * unit }, ["relative"] = relative,
-            ["frames_per_turn"] = Math.Max(0, speed), ["frame_rate"] = 30,
-        });
+        Command(new Wol.Engine.World.ActorReshape(Id, new Vector3(angles.X * unit, -angles.Y * unit, -angles.Z * unit), relative, Math.Max(0, speed), null, 0));
     }
 
     /// <summary>Retail 2e: eases its scale (1 its own size) over the frames.</summary>
     public void ScaleTo(Vector3 scale, int frames) =>
-        Command("actor.shape", new Godot.Collections.Dictionary { ["actor"] = Id, ["scale"] = new Godot.Collections.Array { scale.X, scale.Y, scale.Z }, ["frames"] = frames, ["frame_rate"] = 30 });
+        Command(new Wol.Engine.World.ActorReshape(Id, null, false, 0, scale, frames));
 
     /// <summary>Retail 5d: the body's idle sway, its count climbing to the period (twice the script's byte) and back; 0 stops it.</summary>
-    public void Sway(int period) => Command("actor.sway", new Godot.Collections.Dictionary { ["actor"] = Id, ["period"] = period, ["frame_rate"] = 30 });
+    public void Sway(int period) => Command(new Wol.Engine.World.ActorSway(Id, period));
 
     /// <summary>The sway's count now.</summary>
     public int SwayCount => Scene != null && Scene.TryGetActorShape(Id, out var shape) ? shape.SwayCount : 0;
@@ -472,17 +451,12 @@ public sealed class EventActor
     public bool Animate(string clip, int blendFrames, int skipFrames = 0, bool once = false)
     {
         if (Player == null || Scene == null || !HasClip(clip)) return false;
-        return Scene.Present(default, new Wol.Engine.World.FieldCommand("actor.play", Clip(clip, blendFrames, skipFrames, once), false), _ => { }) == Error.Ok;
+        return Scene.Present(default, Clip(clip, blendFrames, skipFrames, once, false), _ => { }) == Error.Ok;
     }
 
-    /// <summary>A clip's arguments for the engine: its loop as made, or none played once; the blend in 30ths of a second; its start in animation frames.</summary>
-    private Godot.Collections.Dictionary Clip(string clip, int blendFrames, int skipFrames, bool once)
-    {
-        var args = new Godot.Collections.Dictionary { ["actor"] = Id, ["clip"] = clip, ["blend_seconds"] = blendFrames >= 2 ? blendFrames / 30f : 0 };
-        if (once) args["loop"] = false;
-        if (skipFrames > 0) args["start_seconds"] = skipFrames / Installation.CharacterConversion.FramesPerSecond;
-        return args;
-    }
+    /// <summary>A clip for the engine, now or queued: its loop as made, or none played once; the blend in 30ths of a second; its start in animation frames.</summary>
+    private Wol.Engine.World.ActorClip Clip(string clip, int blendFrames, int skipFrames, bool once, bool queue) =>
+        new(Id, clip, queue, once ? false : null, blendFrames >= 2 ? blendFrames / 30f : 0, skipFrames > 0 ? skipFrames / Installation.CharacterConversion.FramesPerSecond : 0);
 
     /// <summary>Adds an animation set (an event's "esqnnn", Ashley's "btn" and "artna") to the actor's rig.</summary>
     public Action<EventActor, string>? LoadSet;
@@ -498,7 +472,7 @@ public sealed class EventActor
     /// <summary>Retail 32: a clip that starts by itself when the current one reaches its last frame.</summary>
     public void Queue(string clip, int blendFrames)
     {
-        if (Player != null && Scene != null && HasClip(clip)) Command("actor.queue", Clip(clip, blendFrames, 0, false));
+        if (Player != null && Scene != null && HasClip(clip)) Command(Clip(clip, blendFrames, 0, false, true));
     }
 
     /// <summary>The flags retail 23 sets (bits 0 and 1 both set draw it).</summary>

@@ -1822,6 +1822,71 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// with the floor's height where it asks for it and the clip's set loaded. A base clip the rig has no slot for plays
     /// clip 0 instead (BATTLE.PRG 0x800A0204 looks it up again as 0). A wait on no actor is over at once.
     /// </summary>
+    /// <summary>
+    /// A converted command as the engine's field command (<see cref="Wol.Engine.World.FieldCommand"/>), for the actor
+    /// it falls to and, for a camera following a bone, the bone's node.
+    /// </summary>
+    private static Wol.Engine.World.FieldCommand EngineCommand(string type, GDictionary args, string actor, Node3D? anchor)
+    {
+        static Vector3 V3(Variant value) { var p = value.AsGodotArray(); return new Vector3(p[0].AsSingle(), p[1].AsSingle(), p[2].AsSingle()); }
+        static Vector2 V2(Variant value) { var p = value.AsGodotArray(); return new Vector2(p[0].AsSingle(), p[1].AsSingle()); }
+        float F(string key, float fallback = 0) => args.GetValueOrDefault(key, fallback).AsSingle();
+        int I(string key, int fallback = 0) => args.GetValueOrDefault(key, fallback).AsInt32();
+        bool B(string key, bool fallback = false) => args.GetValueOrDefault(key, fallback).AsBool();
+        var part = args.GetValueOrDefault("part", "target").AsString() == "eye" ? Wol.Engine.World.CameraPart.Eye : Wol.Engine.World.CameraPart.Target;
+        return type switch
+        {
+            "actor.turn" => new Wol.Engine.World.ActorTurn(actor, F("heading"), I("direction"), args.ContainsKey("frames") ? F("frames") : null, F("frames_per_turn")),
+            "actor.glide" => new Wol.Engine.World.ActorGlide(actor, V3(args["destination"]), B("relative"), F("frames_per_unit")),
+            "actor.walk" => new Wol.Engine.World.ActorWalkTo(actor, V3(args["destination"]), B("relative"), args.ContainsKey("heading") ? F("heading") : null, F("frames_per_unit"), F("frames_per_turn")),
+            "actor.play" or "actor.queue" => new Wol.Engine.World.ActorClip(actor, args["clip"].AsString(), type == "actor.queue", args.ContainsKey("loop") ? B("loop") : null, F("blend_seconds"), F("start_seconds")),
+            "actor.shape" => new Wol.Engine.World.ActorReshape(actor, args.ContainsKey("angles") ? V3(args["angles"]) : null, B("relative"), F("frames_per_turn"), args.ContainsKey("scale") ? V3(args["scale"]) : null, F("frames")),
+            "actor.sway" => new Wol.Engine.World.ActorSway(actor, I("period")),
+            "actor.rim" => new Wol.Engine.World.ActorRimCommand(actor, args.ContainsKey("offset") ? V3(args["offset"]) : Vector3.Zero, F("push"), args.ContainsKey("tint") ? new Color(V3(args["tint"]).X, V3(args["tint"]).Y, V3(args["tint"]).Z) : null),
+            "actor.wait" => new Wol.Engine.World.ActorWait(actor, (Wol.Engine.World.ActorActivity)I("activity")),
+            "camera.stage" => new Wol.Engine.World.CameraStage(part, V3(args["position"])),
+            "camera.snap" => new Wol.Engine.World.CameraSnap(part),
+            "camera.guide" => new Wol.Engine.World.CameraGuide(part, args.GetValueOrDefault("path", "line").AsString() switch
+                {
+                    "radius" => Wol.Engine.World.CameraPathKind.Radius, "orbit" => Wol.Engine.World.CameraPathKind.Orbit, "turn" => Wol.Engine.World.CameraPathKind.Turn,
+                    "follow" => Wol.Engine.World.CameraPathKind.Follow, "actor" => Wol.Engine.World.CameraPathKind.Actor, _ => Wol.Engine.World.CameraPathKind.Line,
+                }, I("ease"), F("frames", 1))
+            {
+                HeadingEase = I("heading_ease"), DistanceEase = I("distance_ease"), HeightEase = I("height_ease"), Direction = I("direction"), Turn = F("turn"),
+                DistanceScale = F("distance_scale", 1), EndHeight = F("end_height"), Actor = actor, Anchor = anchor, Offset = args.ContainsKey("offset") ? V3(args["offset"]) : Vector3.Zero,
+            },
+            "camera.wait" => new Wol.Engine.World.CameraStillWait(I("mask")),
+            "camera.roll" => new Wol.Engine.World.CameraRollTo(F("angle"), I("direction"), I("ease"), F("frames")),
+            "camera.projection" => new Wol.Engine.World.CameraProjectionTo(F("value"), I("ease"), F("frames")),
+            "camera.shake" => new Wol.Engine.World.CameraShake(I("cycles"), F("amplitude"), V3(args["eye_axes"]), V3(args["target_axes"]), (Wol.Engine.World.CameraShakeEnvelope)(I("envelope") & 3), F("frames")),
+            "camera.anchor" => new Wol.Engine.World.CameraAnchorTo(actor),
+            "camera.momentum" => new Wol.Engine.World.CameraMomentumOf(B("eye"), B("target")),
+            "camera.stop" => new Wol.Engine.World.CameraStop(),
+            "camera.curve" => new Wol.Engine.World.CameraCurveSet(I("slot"), (Wol.Engine.World.CameraEaseShape)(I("shape") & 3), I("power")),
+            "screen.fade" => new Wol.Engine.World.ScreenFade(args.GetValueOrDefault("mode", "mix").AsString() switch { "subtract" => Wol.Engine.World.ScreenFadeMode.Subtract, "add" => Wol.Engine.World.ScreenFadeMode.Add, _ => Wol.Engine.World.ScreenFadeMode.Mix }, B("out", true), F("rate")),
+            "screen.blank" => new Wol.Engine.World.ScreenBlank(B("blank")),
+            "screen.wait" => new Wol.Engine.World.ScreenFadeWait(),
+            "screen.echo" => new Wol.Engine.World.ScreenEchoCommand
+            {
+                Reset = B("reset"), Preset = B("preset"), Enabled = args.ContainsKey("enabled") ? B("enabled") : null, StopFrames = F("stop_frames"),
+                Blend = args.ContainsKey("blend") ? args["blend"].AsString() switch { "add" => Wol.Engine.World.ScreenEchoBlend.Add, "subtract" => Wol.Engine.World.ScreenEchoBlend.Subtract, "quarter_add" => Wol.Engine.World.ScreenEchoBlend.QuarterAdd, _ => Wol.Engine.World.ScreenEchoBlend.Half } : null,
+                Scale = args.ContainsKey("scale") ? V2(args["scale"]) : null, Tint = args.ContainsKey("tint") ? V3(args["tint"]) : null, Offset = args.ContainsKey("offset") ? V2(args["offset"]) : null,
+                Trail = args.ContainsKey("trail") ? B("trail") : null, Depth = args.ContainsKey("depth") ? F("depth") : null, Turn = args.ContainsKey("turn") ? F("turn") : null,
+                Ease = I("ease"), Frames = F("frames"),
+            },
+            "screen.warp" => new Wol.Engine.World.ScreenWarp(F("scale"), F("falloff"), I("ease"), F("frames"), B("unless_busy")),
+            "screen.scanlines" => new Wol.Engine.World.ScreenScanlines(F("amount"), F("period_frames")),
+            "screen.glow" => new Wol.Engine.World.ScreenGlowTo(F("depth")),
+            "screen.filters_off" => new Wol.Engine.World.ScreenFiltersOff(),
+            "picture.set" => new Wol.Engine.World.PictureSet(I("layer"), args.GetValueOrDefault("blend", "over").AsString() switch { "add_until_full" => Wol.Engine.World.ScreenPictureBlend.AddUntilFull, "quarter_add" => Wol.Engine.World.ScreenPictureBlend.QuarterAdd, "wipe" => Wol.Engine.World.ScreenPictureBlend.Wipe, _ => Wol.Engine.World.ScreenPictureBlend.Over },
+                V2(args["position"]), F("scale"), F("brightness"), B("behind"), args.ContainsKey("rows") ? args["rows"].AsInt32Array() : Array.Empty<int>()),
+            "picture.ease" => new Wol.Engine.World.PictureEase(I("layer"), V2(args["position"]), F("scale"), F("brightness"), I("ease"), F("frames")),
+            "picture.wait" => new Wol.Engine.World.PictureWait(),
+            "picture.clear" => new Wol.Engine.World.PictureClear(),
+            _ => throw new ArgumentException($"No engine command for {type}."),
+        };
+    }
+
     private Error Engine(PresentationReceipt id, string type, GDictionary args, bool awaited)
     {
         // The staff credits' wipe has a ragged edge (0x800C8550): each row 320 plus the sine, in eighths, of an angle
@@ -1842,7 +1907,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             args["rows"] = rows;
         }
         // A command without an actor goes as it is.
-        if (!args.ContainsKey("actor")) return Field.Present(id, new Wol.Engine.World.FieldCommand(type, args, awaited), done => _completions.Add(done));
+        if (!args.ContainsKey("actor")) return Field.Present(id, EngineCommand(type, args, "", null) with { Awaited = awaited, FrameRate = args.GetValueOrDefault("frame_rate", 0).AsDouble() }, done => _completions.Add(done));
         var targets = type == "actor.sway" ? new List<EventActor>(Targets(args)) : Actor(args) is { } one ? new List<EventActor> { one } : new List<EventActor>();
         if (targets.Count == 0 && type == "actor.wait") { _completions.Add(id); return Error.Ok; }
         // An anchor letting go names no actor.
@@ -1859,13 +1924,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 own["destination"] = new GArray { grounded.X, grounded.Y, grounded.Z };
             }
             // A camera following a bone follows the bone's node.
-            if (own.ContainsKey("bone")) own["anchor"] = actor.BoneAnchor(own["bone"].AsInt32());
+            var anchor = own.ContainsKey("bone") ? actor.BoneAnchor(own["bone"].AsInt32()) : null;
             if (own.TryGetValue("clip", out var named) && !actor.HasClip(named.AsString()))
             {
                 if (named.AsString().StartsWith("base_", StringComparison.Ordinal) && actor.HasClip("base_0")) own["clip"] = "base_0";
                 else continue;
             }
-            var error = Field.Present(id, new Wol.Engine.World.FieldCommand(type, own, awaited), done => _completions.Add(done));
+            var error = Field.Present(id, EngineCommand(type, own, actor.Id, anchor) with { Awaited = awaited, FrameRate = own.GetValueOrDefault("frame_rate", 0).AsDouble() }, done => _completions.Add(done));
             if (error != Error.Ok) return error;
         }
         return Error.Ok;

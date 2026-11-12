@@ -36,7 +36,7 @@ public partial class AudioSettings : Node
 
     public override void _Ready()
     {
-        _volume = Math.Clamp(Wol.Engine.Display.DisplaySettings.Preference("audio", "volume", 1.0).AsSingle(), 0f, 1f);
+        _volume = Math.Clamp(Wol.Engine.Display.DisplaySettings.Preference("audio", "volume", 1f), 0f, 1f);
         Apply();
     }
 
