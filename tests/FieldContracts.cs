@@ -44,6 +44,11 @@ public partial class FieldContracts : Node
     private int? _yaw;
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
     private bool _fight;
+    /// <summary>
+    /// With <c>--art=N</c> in a fight, Ashley uses Break Art action N once she can, captured every other frame; its blow
+    /// lands while its effect plays (at the effect's hit, as a spell's), and the art is over within 240 frames.
+    /// </summary>
+    private int _art = -1, _artAt = -1, _artTargetHp;
     /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
     private bool _shortcuts;
     /// <summary>With <c>--carry</c>, Ashley lifts the nearest block (kinds 4 to 6), turns about with it and sets it down.</summary>
@@ -112,6 +117,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--carry") _carry = true;
             if (argument == "--cube") _cube = true;
@@ -552,6 +558,27 @@ public partial class FieldContracts : Node
             // The sphere is held open long enough to be seen whole, and captured once it is.
             if (!brawl.Paused) _sphereFrames = 0;
             else if (++_sphereFrames < 40) { if (_sphereFrames == 36) Capture($"fight_sphere_{_frame:d5}"); return; }
+            if (_art >= 0 && _artAt < 0 && brawl.Drawn && _view.UseArt(_art) is { Length: 0 })
+            {
+                _artAt = _frame;
+                _artTargetHp = brawl.Combatants.Values.Where(c => c.Hostile).Sum(c => c.Hp);
+                GD.Print($"FIELD: Break Art {_art} under way at frame {_frame}, its effect {_view.Content.Data("spells")["actions"].AsGodotDictionary()[_art.ToString()].AsGodotDictionary().GetValueOrDefault("visual", 0)}");
+            }
+            if (_artAt >= 0)
+            {
+                int since = _frame - _artAt;
+                if (since % 2 == 0 && since <= 240) Capture($"art_{_art}_{since:d3}");
+                int hp = brawl.Combatants.Values.Where(c => c.Hostile).Sum(c => c.Hp);
+                if (hp < _artTargetHp)
+                {
+                    GD.Print($"FIELD: Break Art {_art} landed {since} frames after it began, with {_view.EffectsPlaying} effects playing");
+                    if (_view.EffectsPlaying == 0) { Finish($"Break Art {_art} landed with no effect playing"); return; }
+                    _artTargetHp = hp;
+                }
+                if (since > 10 && !brawl.Busy) { GD.Print($"FIELD: Break Art {_art} was over {since} frames after it began"); Finish(""); return; }
+                if (since >= 240) { Finish($"Break Art {_art} was not over after 240 frames"); return; }
+                return;
+            }
             if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
             if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
             Fight(brawl, brawler, _frame);

@@ -970,6 +970,15 @@ public sealed class FieldBattle
             start();
             return;
         }
+        bool playing = _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished;
+        // What the spell or art does lands at its effect's hit, even while her motion still runs.
+        if (_landing && Lands(_castEffect))
+        {
+            _landing = false;
+            if (_artNumber >= 0) StrikeArt(_spell!, _spellTarget!);
+            else Release(Ashley!, _spell!, _spellTarget!, play: false);
+            if (Ashley!.Dead) return;
+        }
         if (--_frames > 0) return;
         if (!_released)
         {
@@ -979,38 +988,29 @@ public sealed class FieldBattle
                 var offset = Aim(_spellTarget!, _victimLimb) - (Ashley!.Actor.Position + new Vector3(0, -150, 0));
                 float pitch = Mathf.Atan2(-offset.Y, new Vector2(offset.X, offset.Z).Length()) * 4096 / Mathf.Tau;
                 Ashley.Actor.Animate($"art{Ashley.Category:X}{_artNumber}_{(pitch < -228 ? 0 : pitch >= 172 ? 2 : 1)}", 4, once: true);
-                _frames = Math.Max(10, (int)Math.Ceiling((Ashley.Actor.Player?.CurrentAnimationLength ?? 0.5) * 30));
-                StrikeArt(_spell!, _spellTarget!);
-                return;
             }
-            EndChant();
-            if (_itemApply is { } apply)
+            else
             {
-                // The item takes effect as its casting ends: its effect plays (and puts the HUD away).
-                _itemApply = null;
-                apply();
-                _frames = 1;
-                return;
+                EndChant();
+                if (_itemApply is { } apply)
+                {
+                    // The item takes effect as its casting ends: its effect plays (and puts the HUD away).
+                    _itemApply = null;
+                    apply();
+                    _frames = 1;
+                    return;
+                }
+                if (Play(Ashley!, 88, 4) == null) Play(Ashley!, 89, 4);
             }
-            if (Play(Ashley!, 88, 4) == null) Play(Ashley!, 89, 4);
             _frames = Math.Max(10, (int)Math.Ceiling((Ashley!.Actor.Player?.CurrentAnimationLength ?? 0.5) * 30));
-            // The spell's effect plays from her release; what it does lands at the effect's hit (its timeline's
-            // action 0 or 1), or once it has run when it has none (footage: Heal's 59 shows as the camera comes back).
+            // The spell's or art's effect plays from her release or swing.
             _castEffect = _view.PlayEffect(_spell!.GetValueOrDefault("visual", 0).AsInt32(), Ashley!.Actor, _spellTarget!.Actor);
             _landing = true;
             return;
         }
-        // A spell's action lasts until its effect has run (footage: Heal's burst ends and the HUD is back before
-        // "Mastered" shows).
-        if (_artNumber < 0 && _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished && !(_landing && _castEffect.Struck)) return;
-        if (_landing)
-        {
-            _landing = false;
-            Release(Ashley!, _spell!, _spellTarget!, play: false);
-            if (Ashley!.Dead) return;
-            // Landed at the effect's hit, the action still lasts until the effect has run.
-            if (_artNumber < 0 && _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished) return;
-        }
+        // The action lasts until its effect has run and its blow has landed (footage: Heal's burst ends and the HUD is
+        // back before "Mastered" shows).
+        if (playing || _landing) return;
         // A spell's first cast to the end masters it (BATTLE.PRG 0x8007B63C): retail says so as the action ends.
         if (_artNumber < 0 && _spellAction > 0 && _view.Mastered.Add(_spellAction)) _view.Announce(30, _spell!["name"].AsString());
         _artNumber = -1;
@@ -1019,12 +1019,11 @@ public sealed class FieldBattle
         _phase = Phase.Free;
     }
 
-    /// <summary>An art's hit: it rolls to hit as an attack does, and deals the attack's damage scaled by its factor (a tenth each, over 100).</summary>
+    /// <summary>An art's hit, at its effect's: it rolls to hit as an attack does, and deals the attack's damage scaled by its factor (a tenth each, over 100).</summary>
     private void StrikeArt(GDictionary art, Combatant target)
     {
         int factor = art["effects"].AsGodotArray()[0].AsGodotDictionary()["factor"].AsInt32();
         int limb = _victimLimb;
-        _view.PlayEffect(art.GetValueOrDefault("visual", 0).AsInt32(), Ashley!.Actor, target.Actor);
         if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(Ashley!, target, limb, vary: true) + 10)) { Number(target, "Miss"); return; }
         int damage = Damage(Ashley!, target, limb) * (factor * 10 + 100) / 100;
         Strike(target, damage, 184);
@@ -1360,12 +1359,17 @@ public sealed class FieldBattle
     private FieldEffect? _enemyEffect;
     private (Combatant Caster, GDictionary Spell, Combatant Target)? _enemyRelease;
 
-    /// <summary>An enemy's spell lands at its effect's hit, or once its effect has run (or when it has none).</summary>
+    /// <summary>
+    /// Whether what a spell or art does lands now: at its effect's hit (its timeline's action 0 or 1), or with no hit
+    /// once the effect has run, or at once with none (footage: Heal's 59 shows as the camera comes back).
+    /// </summary>
+    private static bool Lands(FieldEffect? effect) => effect == null || !GodotObject.IsInstanceValid(effect) || effect.Finished || effect.Struck;
+
+    /// <summary>An enemy's spell lands as <see cref="Lands"/> has it.</summary>
     private void StepEnemyRelease()
     {
         if (_enemyRelease is not { } release) return;
-        bool playing = _enemyEffect != null && GodotObject.IsInstanceValid(_enemyEffect) && !_enemyEffect.Finished;
-        if (playing && !_enemyEffect!.Struck) return;
+        if (!Lands(_enemyEffect)) return;
         _enemyRelease = null;
         _enemyEffect = null;
         if (release.Caster.Dead || release.Target.Dead) return;
