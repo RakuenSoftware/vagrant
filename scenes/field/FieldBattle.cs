@@ -439,6 +439,12 @@ public sealed class FieldBattle
         if (limb < c.Limbs.Count) c.Limbs[limb].Armour = gear;
     }
 
+    /// <summary>
+    /// Whether Unseal breaks a seal (BATTLE.PRG 0x8007f434): a roll under 100 beats the caster's risk plus 150, times
+    /// 100 over 256 (100 at most), and 20 more.
+    /// </summary>
+    public bool Unseals(Combatant caster) => _random.RandiRange(0, 99) < Math.Min(100, (caster.Risk + 150) * 100 / 256) + 20;
+
     /// <summary>Hit points as a percentage of the most, as the retail condition reads them; 0 for anyone not in battle.</summary>
     public int HitPointPercent(string id) =>
         Combatants.TryGetValue(id, out var c) && c.MaxHp > 0 ? (int)Math.Ceiling(c.Hp * 100.0 / c.MaxHp) : 0;

@@ -880,66 +880,99 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     /// <summary>
     /// A weapon trail (retail aa; BATTLE.PRG 0x800ce174): the last eight places, one an event frame, of a bone's base
-    /// and tip (its length along its own -x; 0x800a1c10), newest first.
+    /// and tip (its length along its own -x; 0x800a1c10), newest first; once ended it runs on for eight more frames.
     /// </summary>
     private sealed class Trail
     {
         public required EventActor Actor;
-        public int Part, Count;
+        public int Part, Count, Strip, Ending = -1;
         public float Length;
+        /// <summary>Its colour and blend (0x800cdcbc): red, green and blue over 128, subtracted for colour 7, else added.</summary>
+        public Color Colour;
+        public Wol.Engine.World.FieldBlend Blend;
         public readonly Vector3[] Bases = new Vector3[8], Tips = new Vector3[8];
     }
 
     private readonly List<Trail> _trails = new();
+    private Texture2D? _trailAtlas;
+    private Rect2[] _trailStrips = Array.Empty<Rect2>();
 
     /// <summary>
     /// Adds a trail to an actor's bone (its length the rig's, or for the held weapon's bones 0x40 and up, the weapon's
-    /// reach along the bone), or ends every trail, as retail's 0x800cf830 does.
+    /// reach along the bone) in a style: its last digit the colour (<see cref="FieldContent.TrailColour"/>), its tens the
+    /// strip of E000's page it is drawn with. Or ends every trail, as retail's 0x800cf830 does.
     /// </summary>
-    private void SetTrail(EventActor? actor, int part, bool on)
+    private void SetTrail(EventActor? actor, int part, int style, bool on)
     {
-        if (!on) { _trails.Clear(); Field?.DrawTriangles(TrailKey, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, EffectLayer); return; }
+        if (!on) { foreach (var trail in _trails) if (trail.Ending < 0) trail.Ending = 8; return; }
         if (actor == null) return;
+        if (_trailAtlas == null && _content.Has("effect_000"))
+        {
+            var resident = _content.Data("effect_000");
+            var records = resident["records"].AsGodotArray();
+            var strips = resident.GetValueOrDefault("trails", new GArray()).AsGodotArray();
+            _trailStrips = new Rect2[strips.Count];
+            for (int i = 0; i < strips.Count; i++)
+            {
+                var rect = records[strips[i].AsInt32()].AsGodotDictionary()["rect"].AsGodotArray();
+                _trailStrips[i] = new Rect2(rect[0].AsSingle(), rect[1].AsSingle(), rect[2].AsSingle(), rect[3].AsSingle());
+            }
+            if (resident.ContainsKey("atlas")) _trailAtlas = _content.Texture(resident["atlas"].AsString());
+        }
         var lengths = _content.Character(actor.Character).GetValueOrDefault("bone_lengths", new GArray()).AsGodotArray();
         float length = (part & 0xF0) == 0x40 ? actor.WeaponReach : part < lengths.Count ? lengths[part].AsSingle() : 0;
-        _trails.Add(new Trail { Actor = actor, Part = part, Length = length });
+        var (red, green, blue) = _content.Field.TrailColour(style % 10);
+        _trails.Add(new Trail
+        {
+            Actor = actor, Part = part, Length = length, Strip = style / 10, Colour = new Color(red / 128f, green / 128f, blue / 128f),
+            Blend = style % 10 == 7 ? Wol.Engine.World.FieldBlend.Subtract : Wol.Engine.World.FieldBlend.Add,
+        });
     }
     private const string TrailKey = "trails";
 
     /// <summary>
-    /// Steps the trails and draws them: from four places on, the ribbon between the base and tip curves through the
-    /// kept places (each gap cut into at most five steps; 0x800d1390), added to the screen in the trail's colour
-    /// (0x90, 0x70, 0x60 at 0x800ec2e8), each step dimmer toward the oldest (0x800cdcbc).
+    /// Steps the trails and draws them (0x800ce174): from four places on, a ribbon from the newest place back through
+    /// up to five more gaps and a half (one fewer than the places past three), in half-gap steps. Each step's point is
+    /// the cubic through the four places from the gap's start on (0x800d1390). Each quad is the strip stretched from
+    /// base to tip, blended in the trail's colour at eighths of it that count down a half a quad, from one more than the
+    /// gaps, the base a half-step ahead of the tip (0x800cdcbc).
     /// </summary>
     private void StepTrails()
     {
         var triangles = new List<Wol.Engine.World.FieldTriangle>();
+        _trails.RemoveAll(trail => trail.Ending == 0);
         foreach (var trail in _trails)
         {
+            if (trail.Ending > 0) trail.Ending--;
             Array.Copy(trail.Bases, 0, trail.Bases, 1, 7);
             Array.Copy(trail.Tips, 0, trail.Tips, 1, 7);
             trail.Bases[0] = trail.Actor.BonePosition(trail.Part);
             trail.Tips[0] = trail.Actor.BonePoint(trail.Part, new Vector3(-trail.Length, 0, 0));
-            trail.Count = Math.Min(8, trail.Count + 1);
+            trail.Count++;
             if (trail.Count < 4) continue;
-            int steps = Math.Min(5, trail.Count - 2), points = (trail.Count - 1) * steps + 1;
-            Vector3 Curve(Vector3[] kept, float at)
+            int gaps = Math.Min(trail.Count - 3, 5), quads = 2 * gaps + 1;
+            // The point half-step h along: the cubic through places g to g + 3 (g the gap of h past the first two),
+            // at t = h / 2 - g - 1 from place g + 1.
+            Vector3 At(Vector3[] kept, int h)
             {
-                int i = Math.Min((int)at, trail.Count - 2);
-                float t = at - i;
-                Vector3 p0 = kept[Math.Max(0, i - 1)], p1 = kept[i], p2 = kept[i + 1], p3 = kept[Math.Min(trail.Count - 1, i + 2)];
-                return 0.5f * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (3 * p1 - p0 - 3 * p2 + p3) * t * t * t);
+                int g = Math.Max(0, (h - 2) / 2);
+                float t = h / 2f - g - 1;
+                Vector3 p0 = kept[g], p1 = kept[g + 1], p2 = kept[g + 2], p3 = kept[g + 3];
+                return -t * (t - 1) * (t - 2) / 6 * p0 + (t + 1) * (t - 1) * (t - 2) / 2 * p1 - (t + 1) * t * (t - 2) / 2 * p2 + (t + 1) * t * (t - 1) / 6 * p3;
             }
-            var colour = new Color(0x90 / 128f, 0x70 / 128f, 0x60 / 128f);
-            for (int k = 0; k + 1 < points; k++)
+            var texture = trail.Strip < _trailStrips.Length ? _trailAtlas : null;
+            var strip = texture != null ? _trailStrips[trail.Strip] : default;
+            var size = texture?.GetSize() ?? Vector2.One;
+            Vector2 Uv(float across, float along) => texture == null ? default : (strip.Position + new Vector2(across, along) * strip.Size) / size;
+            for (int k = 0; k < quads; k++)
             {
-                float a = (float)k / steps, b = (float)(k + 1) / steps;
-                Vector3 baseA = EventActor.RetailSpace * Curve(trail.Bases, a), tipA = EventActor.RetailSpace * Curve(trail.Tips, a);
-                Vector3 baseB = EventActor.RetailSpace * Curve(trail.Bases, b), tipB = EventActor.RetailSpace * Curve(trail.Tips, b);
-                Color near = colour * (1 - (float)k / points), far = colour * (1 - (float)(k + 1) / points);
-                near.A = far.A = 1;
-                triangles.Add(new(null, Wol.Engine.World.FieldBlend.Add, baseA, tipA, tipB, default, default, default, near, near, far));
-                triangles.Add(new(null, Wol.Engine.World.FieldBlend.Add, baseA, tipB, baseB, default, default, default, near, far, far));
+                Vector3 baseA = EventActor.RetailSpace * At(trail.Bases, k), tipA = EventActor.RetailSpace * At(trail.Tips, k);
+                Vector3 baseB = EventActor.RetailSpace * At(trail.Bases, k + 1), tipB = EventActor.RetailSpace * At(trail.Tips, k + 1);
+                int count = 2 * gaps + 2 - k;
+                Color baseShade = trail.Colour * (count / 2 / 8f), tipShade = trail.Colour * ((count - 1) / 2 / 8f);
+                baseShade.A = tipShade.A = 1;
+                triangles.Add(new(texture, trail.Blend, baseA, baseB, tipA, Uv(0, 0), Uv(0, 1), Uv(1, 0), baseShade, baseShade, tipShade));
+                triangles.Add(new(texture, trail.Blend, baseB, tipB, tipA, Uv(0, 1), Uv(1, 1), Uv(1, 0), baseShade, tipShade, tipShade));
             }
         }
         Field?.DrawTriangles(TrailKey, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(triangles), EffectLayer);
@@ -983,8 +1016,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Sequence = id => _driver.PlaySequence(_content.EffectSequence(id)),
             SequenceEnded = () => _driver.StopSequence(),
             SkyShift = (operation, change, fade) => TransformPalette("sky", operation, change, fade),
-            Trail = (actor, part, on) => SetTrail(actor, part, on),
+            Trail = (actor, part, style, on) => SetTrail(actor, part, style, on),
             WeaponGlow = (actor, grey) => actor?.GlowWeapon(grey),
+            HoldPlatforms = frames => { if (_platforms.Count > 0) _platformHold = frames; },
             ActorSound = (actor, number) => { if (actor != null) PlayActorSound(actor, $"c{actor.Character:X2}_{number}_p128"); },
             Rumble = (_, strength) => { foreach (int pad in Input.GetConnectedJoypads()) Input.StartJoyVibration(pad, Math.Min(1f, strength / 255f), Math.Min(1f, strength / 128f), 0.3f); },
         };
@@ -1402,7 +1436,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 PlaySound(args["sound"].AsString(), args["volume"].AsInt32(), group: args.GetValueOrDefault("group", -1).AsInt32());
                 return Error.Ok;
             case "actor.trail":
-                SetTrail(Actor(args), args["part"].AsInt32(), args["on"].AsBool());
+                SetTrail(Actor(args), args["part"].AsInt32(), 0, args["on"].AsBool());
                 return Error.Ok;
             case "actor.mix":
                 foreach (var mixed in Targets(args))
@@ -1919,6 +1953,23 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     private Error Engine(PresentationReceipt id, string type, GDictionary args, bool awaited)
     {
+        // A guide b7 0b paces: its frames are per thousand units of the way its part still has to go, kept to a byte;
+        // paced together, the eye and look-at both take the mean.
+        if (type == "camera.guide" && args.ContainsKey("pace"))
+        {
+            int Paced(string part)
+            {
+                var which = part == "eye" ? Wol.Engine.World.CameraPart.Eye : Wol.Engine.World.CameraPart.Target;
+                var now = part == "eye" ? Field.CameraEye : Field.CameraTarget;
+                float distance = (Field.CameraPoints[(int)which].End - now).Length() * Installation.MapConversion.UnitsPerMetre;
+                int perThousand = args["pace_frames"].AsGodotDictionary().GetValueOrDefault(part, args["frames"]).AsInt32();
+                return (int)(perThousand * distance / 1000) & 0xFF;
+            }
+            var frames = args["pace_frames"].AsGodotDictionary();
+            int paced = args["pace"].AsString() == "both" && frames.ContainsKey("eye") && frames.ContainsKey("target") ? (Paced("eye") + Paced("target")) >> 1 : Paced(args["part"].AsString());
+            args = args.Duplicate();
+            args["frames"] = Math.Max(1, paced);
+        }
         // The staff credits' wipe has a ragged edge (0x800C8550): each row 320 plus the sine, in eighths, of an angle
         // that walks toward random targets by random steps.
         if (type == "picture.set" && args.GetValueOrDefault("blend", "").AsString() == "wipe")
@@ -3538,12 +3589,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             }
         if (_oddFrame && Field != null)
         {
-            // The effects' camera shake: across and up the view (map units; y is down). Its push along the view and its
-            // roll are not followed.
+            // The effects' camera shake (BATTLE.PRG 0x800d1b80): eye and target moved together across, up (y is down)
+            // and toward the target in map units, and the view rolled in 4096ths of a turn.
             var shake = Vector4.Zero;
             foreach (var effect in _effects) shake += effect.Shake;
-            Field.Camera.HOffset = shake.X / Installation.MapConversion.UnitsPerMetre;
-            Field.Camera.VOffset = -shake.Y / Installation.MapConversion.UnitsPerMetre;
+            Field.NudgeCamera(new Vector3(shake.X, -shake.Y, shake.Z) / Installation.MapConversion.UnitsPerMetre, shake.W * Mathf.Tau / 4096);
         }
         if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); }
         // The event camera's roll (opcode e2) is the engine's; play has none.
@@ -4622,7 +4672,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return Battle.Cast(spell, _control, confirmed);
     }
 
-    /// <summary>Breaks a magic seal (lock 2) on the door or the chest facing Ashley, for the spell's magic points.</summary>
+    /// <summary>
+    /// Breaks a magic seal (lock 2 or 3) on the door or the chest facing Ashley, for the spell's magic points, with
+    /// resident sound 126 (BATTLE.PRG 0x8006ce70), when the roll on Ashley's risk allows (<see cref="FieldBattle.Unseals"/>);
+    /// else it fails as with no seal there.
+    /// </summary>
     private string Unseal(EventActor ashley, int cost)
     {
         if (Battle?.Ashley is not { } caster) return "Not now.";
@@ -4634,18 +4688,20 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         {
             var record = value.AsGodotDictionary();
             var tile = record["tile"].AsGodotArray();
-            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && record["lock"].AsInt32() == 2) seal = record;
+            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && record["lock"].AsInt32() is 2 or 3) seal = record;
         }
         foreach (var value in Document.GetValueOrDefault("chests", new GArray()).AsGodotArray())
         {
             var chest = value.AsGodotDictionary();
             var tile = chest["tile"].AsGodotArray();
-            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && chest["lock"].AsInt32() == 2 && chest["facing"].AsInt32() / 1024 == quadrant) seal = chest;
+            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && chest["lock"].AsInt32() is 2 or 3 && chest["facing"].AsInt32() / 1024 == quadrant) seal = chest;
         }
         if (seal == null) return "There is no magic seal here.";
         caster.Mp -= cost;
+        if (!Battle.Unseals(caster)) return "There is no magic seal here.";
         // The seal is gone; whatever key the lock also names still holds it.
         seal["lock"] = seal["key"].AsInt32() > 0 ? 1 : 0;
+        PlaySound("effect_126_p128", 127);
         return "The magic seal was broken.";
     }
     public readonly GArray Equipment = new();

@@ -60,8 +60,15 @@ public sealed partial class ResultsScreen : RetailScreen
     private Texture2D? _sheet, _reelSheet, _labels;
     private GDictionary _tables = new();
     private Runtime.HudLettering? _lettering;
-    private readonly List<Quad> _plain = new(), _glow = new();
-    private Control _glowLayer = null!;
+    /// <summary>The frame's parts in the order MENUF builds them, each drawn added (its first eight frames) or plain.</summary>
+    private readonly List<(Quad Quad, bool Added)> _parts = new();
+
+    /// <summary>
+    /// Canvas layers the parts are drawn on, a run of parts of one blend to each, stacked as retail's order table has
+    /// them: each new part goes in at the head of the one entry they all share (AddPrim, 0x8002b4d4), so the parts are
+    /// drawn in the reverse of their building, the first built on top.
+    /// </summary>
+    private readonly List<(Control Layer, List<Quad> Quads)> _layers = new();
     private readonly RandomNumberGenerator _random = new();
 
     private int _score, _percent, _shownScore, _shownPercent, _rank, _reel;
@@ -87,10 +94,31 @@ public sealed partial class ResultsScreen : RetailScreen
         _labels = labels;
         _lettering = lettering;
         Visible = false;
-        _glowLayer = new Control { Name = "Glow", MouseFilter = MouseFilterEnum.Ignore, Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add }, TextureFilter = TextureFilterEnum.Nearest };
-        _glowLayer.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        _glowLayer.Draw += () => { foreach (var quad in _glow) Emit(_glowLayer, quad); };
-        AddChild(_glowLayer);
+    }
+
+    /// <summary>Lays the frame's parts onto the layers: the last built first, each run of one blend a layer over the last.</summary>
+    private void Layer()
+    {
+        int used = 0;
+        for (int i = _parts.Count - 1; i >= 0;)
+        {
+            bool added = _parts[i].Added;
+            if (used == _layers.Count)
+            {
+                var layer = new Control { Name = $"Parts{used}", MouseFilter = MouseFilterEnum.Ignore, TextureFilter = TextureFilterEnum.Nearest };
+                layer.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+                var quads = new List<Quad>();
+                layer.Draw += () => { foreach (var quad in quads) Emit(layer, quad); };
+                AddChild(layer);
+                _layers.Add((layer, quads));
+            }
+            var (canvas, run) = _layers[used++];
+            canvas.Material = added ? new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add } : null;
+            run.Clear();
+            for (; i >= 0 && _parts[i].Added == added; i--) run.Add(_parts[i].Quad);
+            canvas.QueueRedraw();
+        }
+        for (int k = used; k < _layers.Count; k++) { _layers[k].Quads.Clear(); _layers[k].Layer.QueueRedraw(); }
     }
 
     /// <summary>
@@ -108,7 +136,8 @@ public sealed partial class ResultsScreen : RetailScreen
         score += maxChain * maxChain switch { <= 5 => 10, <= 10 => 20, <= 15 => 40, <= 20 => 80, <= 25 => 160, <= 30 => 320, <= 50 => 640, _ => 1280 };
         score += timeTrials * 20000L + clears * 100000L;
         // A cleared game's play time multiplies all that (MENUF 0x80108ab0): under 300 doubles it, under 540 adds half,
-        // under 600 a quarter. The time's unit was not read; minutes is taken from the thresholds.
+        // under 600 a quarter. The time is the game record's word at +0x90 (0x8005FF30), in minutes: ENDING marks a
+        // clear under 600 of it in the record's flags (0x801031FC), which only ten hours makes reachable.
         if (clears > 0 && playMinutes < 600) score = playMinutes >= 540 ? score + score / 4 : playMinutes >= 300 ? score + score / 2 : score * 2;
         score += streak + other;
         return Math.Min(999999999L, score);
@@ -221,7 +250,7 @@ public sealed partial class ResultsScreen : RetailScreen
         if (bottom <= top) return;
         source = new Rect2(source.Position.X, source.Position.Y + top - target.Position.Y, source.Size.X, bottom - top);
         target = new Rect2(target.Position.X, top, target.Size.X, bottom - top);
-        (glow ? _glow : _plain).Add(new Quad(texture, source, target, new[] { left, right, right, left }));
+        _parts.Add((new Quad(texture, source, target, new[] { left, right, right, left }), glow));
     }
 
     private void Add(int index, float x, float y, Color colour, bool glow) => Add(index, x, y, colour, colour, glow);
@@ -262,16 +291,15 @@ public sealed partial class ResultsScreen : RetailScreen
             float scale = Math.Clamp(edge - (x + column), 0, 64) / 64;
             if (scale <= 0) continue;
             float width = Math.Min(12, source.Size.X - column);
-            _glow.Add(new Quad(_sheet, new Rect2(source.Position.X + column, source.Position.Y, width, source.Size.Y), new Rect2(x + column, y, width, source.Size.Y),
-                new[] { Blue * scale, Blue * scale, Blue * scale, Blue * scale }));
+            _parts.Add((new Quad(_sheet, new Rect2(source.Position.X + column, source.Position.Y, width, source.Size.Y), new Rect2(x + column, y, width, source.Size.Y),
+                new[] { Blue * scale, Blue * scale, Blue * scale, Blue * scale }), true));
         }
     }
 
     /// <summary>Lays out the frame's sprites, each element at its own time (in the closing fade, all at 8 less the frames gone).</summary>
     private void Compose()
     {
-        _plain.Clear();
-        _glow.Clear();
+        _parts.Clear();
         int Time(int start) => _state == 3 ? 8 - _stateTimer : Math.Clamp(_timer - start, 0, 64);
 
         // CONGRATULATIONS, its halves shaded opposite ways.
@@ -343,8 +371,8 @@ public sealed partial class ResultsScreen : RetailScreen
                 Add(stop[1].AsInt32() % 10, plusAt + Sprite(Plus).Size.X + 1, y - 1, colour, colour, !middle || t < 8, _reelSheet, top, bottom);
             }
         }
+        Layer();
         QueueRedraw();
-        _glowLayer.QueueRedraw();
     }
 
     private void Emit(CanvasItem canvas, Quad quad)
@@ -360,8 +388,7 @@ public sealed partial class ResultsScreen : RetailScreen
 
     public override void _Draw()
     {
-        foreach (var quad in _plain) Emit(this, quad);
-        // The prompt: PRESS BUTTON in the HUD lettering, sliding in from the right, the Circle button bobbing beside it.
+        // The prompt, built last and so under every other part: PRESS BUTTON in the HUD lettering, sliding in from the right, the Circle button bobbing beside it.
         if (_labels == null || _lettering == null || _slide <= 0 || _state == 3) return;
         var (unit, offset) = FieldView.Pin(Size, 1);
         DrawSetTransform(offset);

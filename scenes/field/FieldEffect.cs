@@ -43,6 +43,9 @@ public sealed partial class FieldEffect : Node3D
         public Basis Basis = Basis.Identity;
         public bool Path, Spline, Started;
         public int Tick, Limit, Ease, Curve;
+        /// <summary>The actor and bone it is placed on (the record's +52 and +53 in BATTLE.PRG), which a trail is drawn from.</summary>
+        public EventActor? Actor;
+        public int Bone = -1;
     }
 
     private sealed class Particle
@@ -71,7 +74,7 @@ public sealed partial class FieldEffect : Node3D
         public readonly int[] Vars = new int[4];
         public Instance? Parent;
         public bool Root, Ended;
-        public Entity Source = null!, Secondary = null!, Target = null!, Tertiary = null!;
+        public Entity Source = null!, Secondary = null!, Target = null!;
         public List<Track>? Timeline;
         public int TimelineFrame, ChildAt;
         public bool Paused;
@@ -174,17 +177,21 @@ public sealed partial class FieldEffect : Node3D
     public Action<int, Vector3, int>? SkyShift;
 
     /// <summary>A weapon trail on an actor's bone, or every trail off (track 12 actions 3 and 4).</summary>
-    public Action<EventActor?, int, bool>? Trail;
+    public Action<EventActor?, int, int, bool>? Trail;
 
     /// <summary>An actor's carried weapon drawn flat at a grey (0 back to its owner's light; track 12 action 10).</summary>
     public Action<EventActor?, int>? WeaponGlow;
+
+    /// <summary>Holds the room's moving platforms for a number of frames (track 12 action 7).</summary>
+    public Action<int>? HoldPlatforms;
 
     /// <summary>One of an actor's own sounds by number (track 12 action 11).</summary>
     public Action<EventActor?, int>? ActorSound;
     private int _lastActorSound = -1;
 
     /// <summary>
-    /// The camera shake now (0x800D21C0): across, up and along the view in map units, and a roll in 4096ths of a turn.
+    /// The camera shake now (0x800d206c, each channel its wave times its envelope and gain over 256): across, up and
+    /// toward the target in map units, and a roll in 4096ths of a turn.
     /// </summary>
     public Vector4 Shake { get; private set; }
 
@@ -276,7 +283,7 @@ public sealed partial class FieldEffect : Node3D
                 _pageTextures.Add(texture(asset.AsString()));
             }
         // Part 0 starts at once (the cast); its program begins at script address 0.
-        if (!armed) _instances.Add(new Instance { Pc = entry, Root = true, Source = source, Secondary = source, Target = _targets[0], Tertiary = _targets[0] });
+        if (!armed) _instances.Add(new Instance { Pc = entry, Root = true, Source = source, Secondary = source, Target = _targets[0] });
     }
 
     /// <summary>Starts part <paramref name="part"/> (BATTLE.PRG 0x800CEF74): a root instance at script address 3 n.</summary>
@@ -288,7 +295,7 @@ public sealed partial class FieldEffect : Node3D
         var first = _instances.Count > 0 ? _instances[0] : null;
         var source = first?.Source ?? (Armed ? _source : new Entity());
         var target = first?.Target ?? _targets[0];
-        _instances.Add(new Instance { Pc = part * 3, Root = true, Source = source, Secondary = source, Target = target, Tertiary = target });
+        _instances.Add(new Instance { Pc = part * 3, Root = true, Source = source, Secondary = source, Target = target });
     }
 
     /// <summary>
@@ -363,7 +370,7 @@ public sealed partial class FieldEffect : Node3D
                 case 0: instance.Pc = Word(pc + 1); return;
                 case 1: instance.Pc = Word(pc + 1); continue;
                 case 2:
-                    _instances.Add(new Instance { Pc = Word(pc + 1), Source = instance.Source, Secondary = instance.Secondary, Target = instance.Target, Tertiary = instance.Tertiary });
+                    _instances.Add(new Instance { Pc = Word(pc + 1), Source = instance.Source, Secondary = instance.Secondary, Target = instance.Target });
                     instance.Pc += 3; continue;
                 case 3: instance.Ended = true; return;
                 case 4: instance.Pc += 2; continue;
@@ -547,9 +554,15 @@ public sealed partial class FieldEffect : Node3D
                     if (action is 0 or 1) Struck = true;
                     // 9 stops an anchor's path (5's inverse).
                     if (action == 9 && e[2] < 16 && instance.Anchors[e[2]] is { } stopped) stopped.Started = false;
-                    // 3 starts a weapon trail (0x800cf7a8) on the source's weapon; 4 ends every trail (0x800cf830).
-                    if (action == 3) Trail?.Invoke(instance.Source.Actor ?? Caster, 0x40, true);
-                    if (action == 4) Trail?.Invoke(null, 0, false);
+                    // 3 starts a weapon trail (0x800d6448) on the actor and bone of the anchor byte 2 names, in the style
+                    // byte 3 gives; 4 ends every trail.
+                    if (action == 3 && e[2] < 16 && instance.Anchors[e[2]] is { Actor: { } bearer } placed)
+                        Trail?.Invoke(bearer, placed.Bone >= 0 ? placed.Bone : 0x40, e[3], true);
+                    if (action == 4) Trail?.Invoke(null, 0, 0, false);
+                    // 7 holds the room's platforms for 180 frames (0x8008d5a0); 8 releases the source to its next move
+                    // (0x8009d854, as operation 35 does).
+                    if (action == 7) HoldPlatforms?.Invoke(180);
+                    if (action == 8 && instance.Source.Actor != null) Released?.Invoke();
                     // 10 draws the second entity's carried weapon flat at the grey e[2] (0 gives it back its light).
                     if (action == 10) WeaponGlow?.Invoke(instance.Secondary.Actor, e[2]);
                     // 11 plays one of the second entity's own sounds: n + 4 below 4, else one of 4 to 6 not the last.
@@ -572,7 +585,7 @@ public sealed partial class FieldEffect : Node3D
             if (delay > 0) { instance.Pending[i] = (delay - 1, target, timeline); continue; }
             instance.Pending.RemoveAt(i);
             if (timeline >= _timelines.Count) continue;
-            var child = new Instance { Pc = instance.ChildAt, Parent = instance, Source = instance.Source, Secondary = instance.Source, Target = target, Tertiary = target };
+            var child = new Instance { Pc = instance.ChildAt, Parent = instance, Source = instance.Source, Secondary = instance.Source, Target = target };
             child.Vars[1] = timeline;
             instance.Children++;
             _instances.Add(child);
@@ -653,6 +666,7 @@ public sealed partial class FieldEffect : Node3D
         // so on an actor's bone it turns and scales with the bone.
         // On an actor, the anchor turns with its bone; with 0x4000 by the actor's facing alone (0x800D0D08).
         int boneFrame = (flags & 4) != 0 ? entity.Bone : bone;
+        (anchor.Actor, anchor.Bone) = (entity.Actor, boneFrame);
         bool yawOnly = (flags & 0xC000) == 0x4000;
         anchor.Basis = (flags & 2) != 0 && entity.Actor != null
             ? yawOnly || boneFrame < 0 ? new Basis(Vector3.Up, -entity.Actor.Facing * Mathf.Tau / 4096f) : entity.Actor.BoneBasis(boneFrame)

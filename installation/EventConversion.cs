@@ -24,7 +24,7 @@ public sealed class EventConversion
     /// <summary>Opcodes understood but not presented yet; the scene plays without their effect.</summary>
     private static readonly HashSet<int> Unpresented = new()
     {
-        0x7d,                                   // a room group header's halfword +2, the high half of its flags word (0x80091a78); no reader found
+        0x7d,                                   // a room group's sort bias (+2, 0x80091a78; added to each polygon's order slot at 0x80098104); the depth buffer draws by depth
     };
 
     /// <summary>Opcodes that wait only for loading, which installed content never needs.</summary>
@@ -745,12 +745,22 @@ public sealed class EventConversion
                         Command("game.ending", new JsonObject());
                         return null;
                     case 0x0b:
-                        // Rescales a camera part's momentum count (+5; 0 the look-at, 1 the eye, 2 both, averaged) by the
-                        // distance its staged point still lies away, distance >> 12 times the count over 1000
-                        // (0x800be5a4, 0x800be53c); retail's own part stepper (0x800bcfb4) takes the count when a move
-                        // arrives. The engine's guided moves have no such count, so it is not presented.
-                        _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");
+                    {
+                        // A guide's frames per thousand units (0x800be5a4, 0x800be53c): the guide just given to the
+                        // look-at (0), the eye (1) or both (2, then both take the mean so they arrive together) lasts
+                        // its frames times the distance it still has to go over 1000, kept to a byte. The guides it
+                        // paces are the batch's; one given earlier is not.
+                        int which = Byte(pc + 2);
+                        var paced = new List<JsonObject>();
+                        foreach (var command in _batch)
+                            if ((string)command["type"]! == "camera.guide" && command["args"] is JsonObject guide
+                                && (which == 2 || (which == 0) == ((string)guide["part"]! == "target"))) paced.Add(guide);
+                        if (paced.Count == 0) { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
+                        var frames = new JsonObject();
+                        foreach (var guide in paced) frames[(string)guide["part"]!] = (int)guide["frames"]!;
+                        foreach (var guide in paced) { guide["pace"] = which == 2 ? "both" : "own"; guide["pace_frames"] = frames.DeepClone(); }
                         return null;
+                    }
                     case 0x0f:
                         // The screen effects module's glowing frame (SCREFF2 0x800f9de8, drawn by 0x800f9fb8) on or off.
                         Command("screen.frame", new JsonObject { ["on"] = Byte(pc + 2) != 0 });

@@ -24,6 +24,7 @@ public sealed class FieldContent
     // Sound driver tables in the verified US executable (SLUS_010.40, loaded at 0x80010000 after a 2048-byte header).
     private const long MusicSectors = 0x8004A6C0, SoundFileMap = 0x8004B1B0, SoundSectors = 0x8004A530, EffectSectors = 0x8004A9E0;
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
+    private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -515,6 +516,16 @@ public sealed class FieldContent
         var swings = new int[16];
         for (int category = 0; category < 16; category++) swings[category] = _battle[SwingSounds + category];
         return swings;
+    }
+
+    /// <summary>
+    /// A weapon trail's colour (BATTLE.PRG 0x800EC2E8, red, green and blue a word): the last digit of the style an effect
+    /// starts the trail with (0x800d6448), 0 for the event scripts' trails.
+    /// </summary>
+    public (int Red, int Green, int Blue) TrailColour(int colour)
+    {
+        int at = TrailColours + colour % 10 * 4;
+        return (_battle[at], _battle[at + 1], _battle[at + 2]);
     }
 
     /// <summary>Whether the disc has a character model or weapon ("character_XX", "weapon_XX_p").</summary>

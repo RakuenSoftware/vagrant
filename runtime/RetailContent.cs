@@ -77,11 +77,11 @@ public partial class RetailContent : Node
 
     private Texture2D LoadTexture(string name) => ImageTexture.CreateFromImage(LoadImage(name));
 
-    /// <summary>Whether the disc has a document or model of that name.</summary>
+    /// <summary>Whether the disc has a document, image or model of that name.</summary>
     public bool Has(string name)
     {
         if (name.StartsWith("character_", StringComparison.Ordinal) || name.StartsWith("weapon_", StringComparison.Ordinal)) return Field.HasModel(name);
-        return Field.Data(name) != null;
+        return Field.Data(name) != null || Field.Image(name) != null;
     }
 
     /// <summary>A verified disc file as the disc holds it, by its disc path.</summary>

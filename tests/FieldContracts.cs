@@ -1173,10 +1173,6 @@ public partial class FieldContracts : Node
     }
 
     /// <summary>
-    /// In a room with a magic seal: Ashley, standing before it and facing it, casts Unlock (action 92), which breaks it
-    /// for 3 magic points.
-    /// </summary>
-    /// <summary>
     /// A rolling crate (kind 0 or 1) pushed from beside it moves a tile on and turns to the orientation BATTLE.PRG's
     /// roll table gives for that direction (facing quadrant q pushes towards -z, -x, +z, +x for q = 0 to 3).
     /// </summary>
@@ -1312,6 +1308,10 @@ public partial class FieldContracts : Node
         }
     }
 
+    /// <summary>
+    /// In a room with a magic seal: Ashley, standing before it and facing it, casts Unlock (action 92) for 3 magic points
+    /// a time until its roll on her risk breaks it.
+    /// </summary>
     private string CheckSeal()
     {
         if (_view.Player is not { } ashley || _view.Battle?.Ashley is not { } caster) return "";
@@ -1325,11 +1325,17 @@ public partial class FieldContracts : Node
                 var (dx, dz) = quadrant switch { 0 => (0, 1), 1 => (1, 0), 2 => (0, -1), _ => (-1, 0) };
                 ashley.Position = new Vector3((x + dx) * 128 + 64, ashley.Position.Y, (z + dz) * 128 + 64);
                 ashley.Facing = quadrant * 1024;
-                int mp = caster.Mp;
-                string note = _view.Cast(92);
-                if (record["lock"].AsInt32() == 2 || caster.Mp != mp - 3) return $"Unlock left the seal at {x}, {z}: {note}";
-                GD.Print($"FIELD: Unlock broke the seal at {x}, {z}");
-                return "";
+                for (int cast = 1; cast <= 30; cast++)
+                {
+                    caster.Mp = Math.Max(caster.Mp, 3);
+                    int mp = caster.Mp;
+                    string note = _view.Cast(92);
+                    if (caster.Mp != mp - 3) return $"Unlock at {x}, {z} did not take 3 magic points: {note}";
+                    if (record["lock"].AsInt32() == 2) continue;
+                    GD.Print($"FIELD: Unlock broke the seal at {x}, {z} on cast {cast}");
+                    return "";
+                }
+                return $"Unlock left the seal at {x}, {z} after 30 casts";
             }
         return "";
     }
