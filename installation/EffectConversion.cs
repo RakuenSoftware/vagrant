@@ -26,23 +26,33 @@ namespace Wol.Games.Vagrant.Installation;
 /// </list>
 /// Textures are read through an emulated VRAM, as the game loads them: Ennn_k.FBT at x 512 + 64 k, y 256 (E000_0
 /// resident at 512), the palettes in rows 240 (E000) and up from 241 at x 768. Each texture record is cut out into one
-/// atlas; a colour of 0 is transparent.
+/// atlas; a colour of 0 is transparent. E000 also gives the weapon trails their strips (BATTLE.PRG 0x800cdcbc): style
+/// s's is 32 by 8 at u 0x68 + 40 (s / 3), v 0x48 + 10 (s mod 3) of the resident page, 4-bit, through palette row 240,
+/// its texels across the trail from base to tip; they follow the file's records, listed as "trails".
 /// </remarks>
 public static class EffectConversion
 {
+    /// <summary>The trail styles a strip is cut for: the tens of an effect's style byte, 0 to 8 staying inside the page.</summary>
+    private const int TrailStyles = 9;
     private const int VramX = 512, VramY = 256, VramWidth = 512, VramHeight = 256, ClutX = 768, ClutY = 240;
 
     /// <summary>
     /// The effect's own sound bank (block 12; SLUS 0x80046168 registers it), laid out as an event bank: a count, then
     /// offsets to AKAO sound programs. Timeline sounds of bank 1 play from it.
     /// </summary>
-    public static byte[] SoundBank(byte[] p)
+    public static byte[] SoundBank(byte[] p) => Block(p, 12);
+
+    /// <summary>The effect's sound sequence (block 13, an AKAO block; 0x800d7aec registers it in sound slot 3), which timeline sounds of bank 2 start.</summary>
+    public static byte[] SoundSequence(byte[] p) => Block(p, 13);
+
+    /// <summary>One of an effect file's blocks by type (each a u16 length, a u16 type, then its data); empty when it has none.</summary>
+    private static byte[] Block(byte[] p, int wanted)
     {
         for (int at = 0; at + 4 <= p.Length;)
         {
             int length = BitConverter.ToUInt16(p, at), type = BitConverter.ToUInt16(p, at + 2);
             if (type == 0 || length < 4) break;
-            if (type == 12) return p[(at + 4)..Math.Min(p.Length, at + length)];
+            if (type == wanted) return p[(at + 4)..Math.Min(p.Length, at + length)];
             at += length;
         }
         return Array.Empty<byte>();
@@ -174,6 +184,8 @@ public static class EffectConversion
         var frames = new JsonArray();
         var records = new JsonArray();
         var images = new List<(byte[] Pixels, int Width, int Height)>();
+        // Each record's CLUT and page words, u, v, width, height and the offset of its corners (-1 for none).
+        var cuts = new List<(int ClutWord, int Page, int U, int V, int W, int H, int Corners)>();
         if (blocks.TryGetValue(1, out var textures))
         {
             int b = textures.At, tables = S16(b), recordsAt = U16(b + 2);
@@ -191,45 +203,58 @@ public static class EffectConversion
             for (int i = 0; i < recordCount; i++)
             {
                 int r = b + recordsAt + i * 24;
-                int clutWord = U16(r), page = U16(r + 2), u = p[r + 4], v = p[r + 5], w = p[r + 6], h = p[r + 7];
-                int pageX = (page & 15) * 64 - VramX, pageY = ((page >> 4) & 1) * 256 - VramY, depth = (page >> 7) & 3;
-                int clutColumn = (clutWord & 0x3F) * 16 - ClutX, clutRow = ((clutWord >> 6) & 0x1FF) - ClutY;
-                int iw = Math.Max(1, w), ih = Math.Max(1, h);
-                var image = new byte[iw * ih * 4];
-                for (int y = 0; y < h; y++)
-                    for (int x = 0; x < w; x++)
-                    {
-                        int tu = u + x, tv = v + y, row = pageY + tv;
-                        if (row < 0 || row >= VramHeight) continue;
-                        int index;
-                        if (depth == 1)
-                        {
-                            int column = pageX + tu / 2;
-                            if (column < 0 || column >= VramWidth) continue;
-                            index = (vram[row * VramWidth + column] >> ((tu & 1) * 8)) & 0xFF;
-                        }
-                        else if (depth == 0)
-                        {
-                            int column = pageX + tu / 4;
-                            if (column < 0 || column >= VramWidth) continue;
-                            index = (vram[row * VramWidth + column] >> ((tu & 3) * 4)) & 0xF;
-                        }
-                        else
-                        {
-                            int column = pageX + tu;
-                            if (column < 0 || column >= VramWidth) continue;
-                            Put(image, (y * iw + x) * 4, vram[row * VramWidth + column]);
-                            continue;
-                        }
-                        int entry = clutRow * 256 + clutColumn + index;
-                        if (clutRow < 0 || entry < 0 || entry >= clut.Length) continue;
-                        Put(image, (y * iw + x) * 4, clut[entry]);
-                    }
-                images.Add((image, iw, ih));
-                var corners = new JsonArray();
-                for (int c = 0; c < 8; c++) corners.Add(S16(r + 8 + c * 2));
-                records.Add(new JsonObject { ["blend"] = (page >> 5) & 3, ["semi"] = (clutWord & 0x8000) != 0, ["corners"] = corners });
+                cuts.Add((U16(r), U16(r + 2), p[r + 4], p[r + 5], p[r + 6], p[r + 7], r + 8));
             }
+        }
+        if (id == 0)
+        {
+            var trails = new JsonArray();
+            for (int style = 0; style < TrailStyles; style++)
+            {
+                trails.Add(cuts.Count);
+                cuts.Add((0x3C30, 0x38, 0x68 + 40 * (style / 3), 0x48 + 10 * (style % 3), 32, 8, -1));
+            }
+            effect["trails"] = trails;
+        }
+        foreach (var (clutWord, page, u, v, w, h, cornersAt) in cuts)
+        {
+            int pageX = (page & 15) * 64 - VramX, pageY = ((page >> 4) & 1) * 256 - VramY, depth = (page >> 7) & 3;
+            int clutColumn = (clutWord & 0x3F) * 16 - ClutX, clutRow = ((clutWord >> 6) & 0x1FF) - ClutY;
+            int iw = Math.Max(1, w), ih = Math.Max(1, h);
+            var image = new byte[iw * ih * 4];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    int tu = u + x, tv = v + y, row = pageY + tv;
+                    if (row < 0 || row >= VramHeight) continue;
+                    int index;
+                    if (depth == 1)
+                    {
+                        int column = pageX + tu / 2;
+                        if (column < 0 || column >= VramWidth) continue;
+                        index = (vram[row * VramWidth + column] >> ((tu & 1) * 8)) & 0xFF;
+                    }
+                    else if (depth == 0)
+                    {
+                        int column = pageX + tu / 4;
+                        if (column < 0 || column >= VramWidth) continue;
+                        index = (vram[row * VramWidth + column] >> ((tu & 3) * 4)) & 0xF;
+                    }
+                    else
+                    {
+                        int column = pageX + tu;
+                        if (column < 0 || column >= VramWidth) continue;
+                        Put(image, (y * iw + x) * 4, vram[row * VramWidth + column]);
+                        continue;
+                    }
+                    int entry = clutRow * 256 + clutColumn + index;
+                    if (clutRow < 0 || entry < 0 || entry >= clut.Length) continue;
+                    Put(image, (y * iw + x) * 4, clut[entry]);
+                }
+            images.Add((image, iw, ih));
+            var corners = new JsonArray();
+            for (int c = 0; c < 8; c++) corners.Add(cornersAt < 0 ? 0 : S16(cornersAt + c * 2));
+            records.Add(new JsonObject { ["blend"] = (page >> 5) & 3, ["semi"] = (clutWord & 0x8000) != 0, ["corners"] = corners });
         }
         // Shelf-packs the records into one atlas.
         if (images.Count > 0)

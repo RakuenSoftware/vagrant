@@ -24,6 +24,7 @@ public sealed class FieldContent
     // Sound driver tables in the verified US executable (SLUS_010.40, loaded at 0x80010000 after a 2048-byte header).
     private const long MusicSectors = 0x8004A6C0, SoundFileMap = 0x8004B1B0, SoundSectors = 0x8004A530, EffectSectors = 0x8004A9E0;
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
+    private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -517,6 +518,16 @@ public sealed class FieldContent
         return swings;
     }
 
+    /// <summary>
+    /// A weapon trail's colour (BATTLE.PRG 0x800EC2E8, red, green and blue a word): the last digit of the style an effect
+    /// starts the trail with (0x800d6448), 0 for the event scripts' trails.
+    /// </summary>
+    public (int Red, int Green, int Blue) TrailColour(int colour)
+    {
+        int at = TrailColours + colour % 10 * 4;
+        return (_battle[at], _battle[at + 1], _battle[at + 2]);
+    }
+
     /// <summary>Whether the disc has a character model or weapon ("character_XX", "weapon_XX_p").</summary>
     public bool HasModel(string name) =>
         name.StartsWith("weapon_", StringComparison.Ordinal) ? name.Length > 9 && Exists($"OBJ/{name[7..9]}.WEP")
@@ -711,6 +722,9 @@ public sealed class FieldContent
     /// executable's table), "resident_…" and "effect_…" from the resident sounds, "room&lt;zzzmm&gt;_…" from a room's
     /// bank, "fx&lt;nnn&gt;_…" from an effect's and "c&lt;XX&gt;_…" from a character's model. Null when its bank lacks it.
     /// </summary>
+    /// <summary>An effect's sound sequence (its block 13), empty when it has none.</summary>
+    public byte[] EffectSequence(int effect) => Exists($"EFFECT/E{effect:d3}.P") ? EffectConversion.SoundSequence(Read($"EFFECT/E{effect:d3}.P")) : Array.Empty<byte>();
+
     public (string BankName, byte[]? Bank, int Id, int Pan, int Group)? Sound(string key)
     {
         string[] parts = key.Split('_');
@@ -725,7 +739,8 @@ public sealed class FieldContent
             if (!_roomBanks.ContainsKey(kind[4..])) Data($"field_z{kind[4..7]}_m{kind[7..]}");
             bank = _roomBanks.GetValueOrDefault(kind[4..]);
         }
-        else if (kind.StartsWith("fx", StringComparison.Ordinal) && Exists($"EFFECT/E{kind[2..]}.P")) bank = EffectConversion.SoundBank(Read($"EFFECT/E{kind[2..]}.P"));
+        // An effect's own sounds play on the voices 20 to 23 (mask 0xf00000, the driver's group 4).
+        else if (kind.StartsWith("fx", StringComparison.Ordinal) && Exists($"EFFECT/E{kind[2..]}.P")) { bank = EffectConversion.SoundBank(Read($"EFFECT/E{kind[2..]}.P")); group = 4; }
         else if (kind.StartsWith("se", StringComparison.Ordinal) && int.TryParse(kind[2..], out int file)) bank = Read(PathAt(Word(EffectSectors + file * 4)));
         else if (kind.StartsWith("c", StringComparison.Ordinal) && kind.Length == 3)
         {

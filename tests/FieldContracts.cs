@@ -44,6 +44,17 @@ public partial class FieldContracts : Node
     private int? _yaw;
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
     private bool _fight;
+    /// <summary>
+    /// With <c>--reveal-traps</c>, once Ashley is the player's the Eye of Argon's effect plays at every trap in the room,
+    /// which reveals them; she stands beside the first, and its panel is captured every 4 frames from 80 to 120.
+    /// </summary>
+    private bool _revealTraps;
+    private int _revealedAt = -1;
+    /// <summary>
+    /// With <c>--art=N</c> in a fight, Ashley uses Break Art action N once she can, captured every other frame; its blow
+    /// lands while its effect plays (at the effect's hit, as a spell's), and the art is over within 240 frames.
+    /// </summary>
+    private int _art = -1, _artAt = -1, _artTargetHp;
     /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
     private bool _shortcuts;
     /// <summary>With <c>--carry</c>, Ashley lifts the nearest block (kinds 4 to 6), turns about with it and sets it down.</summary>
@@ -112,6 +123,8 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--reveal-traps") _revealTraps = true;
+            if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--carry") _carry = true;
             if (argument == "--cube") _cube = true;
@@ -543,6 +556,59 @@ public partial class FieldContracts : Node
             }
             return;
         }
+        if (_revealTraps && _view.Controlled)
+        {
+            if (_revealedAt < 0)
+            {
+                int count = 0;
+                foreach (var value in _view.Document.GetValueOrDefault("traps", new Godot.Collections.Array()).AsGodotArray())
+                {
+                    var trap = value.AsGodotDictionary();
+                    if (trap["type"].AsInt32() >= 16) continue;
+                    var tile = trap["tile"].AsGodotArray();
+                    GD.Print($"FIELD: trap type {trap["type"]} at {tile[0]}, {tile[1]}");
+                    count++;
+                }
+                if (count == 0) { Finish("the room has no traps to reveal"); return; }
+                // As the Eye of Argon does: its effect (188) plays at each trap, and its action 2 reveals it.
+                if (_view.Player is { } seer && _view.SeeTraps(188, seer).Count != count) { Finish("the Eye of Argon's effect did not play at every trap"); return; }
+                // Ashley stands beside the first trap, on a neighbouring tile of its floor, so its panel is in view.
+                if (_view.Player is { } stander)
+                    foreach (var value in _view.Document["traps"].AsGodotArray())
+                    {
+                        var trap = value.AsGodotDictionary();
+                        if (trap["type"].AsInt32() >= 16) continue;
+                        var tile = trap["tile"].AsGodotArray();
+                        int tx = tile[0].AsInt32(), tz = tile[1].AsInt32();
+                        float? floor = _view.FloorAt(new Vector3(tx * 128 + 64, 0, tz * 128 + 64));
+                        foreach (var (dx, dz) in new[] { (0, 1), (-1, 0), (1, 0), (0, -1) })
+                        {
+                            var spot = new Vector3((tx + dx) * 128 + 64, 0, (tz + dz) * 128 + 64);
+                            if (_view.FloorAt(spot) is not { } beside || beside != floor) continue;
+                            stander.Position = spot with { Y = beside };
+                            _view.Gameplay.Place(stander.Position);
+                            break;
+                        }
+                        break;
+                    }
+                GD.Print($"FIELD: revealed {count} traps");
+                _revealedAt = _frame;
+            }
+            if (_frame - _revealedAt == 80)
+            {
+                var camera = _view.Field.Camera;
+                foreach (var value in _view.Document.GetValueOrDefault("traps", new Godot.Collections.Array()).AsGodotArray())
+                {
+                    var tile = value.AsGodotDictionary()["tile"].AsGodotArray();
+                    var centre = new Vector3(tile[0].AsInt32() * 128 + 64, _view.FloorAt(new Vector3(tile[0].AsInt32() * 128, 0, tile[1].AsInt32() * 128)) ?? 0, tile[1].AsInt32() * 128 + 64);
+                    var world = EventActor.RetailSpace * centre;
+                    GD.Print($"FIELD: trap panel at {centre} shows at {camera.UnprojectPosition(world)}{(camera.IsPositionBehind(world) ? " (behind)" : "")}; Ashley at {_view.Player?.Position} shows at {(_view.Player is { } a ? camera.UnprojectPosition(EventActor.RetailSpace * a.Position) : default)}");
+                }
+            }
+            if (_frame - _revealedAt >= 80 && (_frame - _revealedAt) % 4 == 0) Capture($"traps_revealed_{_frame - _revealedAt:d3}");
+            if (_frame - _revealedAt >= 120) Finish(_view.RevealedTraps > 0 ? "" : "no trap was revealed");
+            return;
+        }
         if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
         {
             if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
@@ -552,6 +618,27 @@ public partial class FieldContracts : Node
             // The sphere is held open long enough to be seen whole, and captured once it is.
             if (!brawl.Paused) _sphereFrames = 0;
             else if (++_sphereFrames < 40) { if (_sphereFrames == 36) Capture($"fight_sphere_{_frame:d5}"); return; }
+            if (_art >= 0 && _artAt < 0 && brawl.Drawn && _view.UseArt(_art) is { Length: 0 })
+            {
+                _artAt = _frame;
+                _artTargetHp = brawl.Combatants.Values.Where(c => c.Hostile).Sum(c => c.Hp);
+                GD.Print($"FIELD: Break Art {_art} under way at frame {_frame}, its effect {_view.Content.Data("spells")["actions"].AsGodotDictionary()[_art.ToString()].AsGodotDictionary().GetValueOrDefault("visual", 0)}");
+            }
+            if (_artAt >= 0)
+            {
+                int since = _frame - _artAt;
+                if (since % 2 == 0 && since <= 240) Capture($"art_{_art}_{since:d3}");
+                int hp = brawl.Combatants.Values.Where(c => c.Hostile).Sum(c => c.Hp);
+                if (hp < _artTargetHp)
+                {
+                    GD.Print($"FIELD: Break Art {_art} landed {since} frames after it began, with {_view.EffectsPlaying} effects playing");
+                    if (_view.EffectsPlaying == 0) { Finish($"Break Art {_art} landed with no effect playing"); return; }
+                    _artTargetHp = hp;
+                }
+                if (since > 10 && !brawl.Busy) { GD.Print($"FIELD: Break Art {_art} was over {since} frames after it began"); Finish(""); return; }
+                if (since >= 240) { Finish($"Break Art {_art} was not over after 240 frames"); return; }
+                return;
+            }
             if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
             if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
             Fight(brawl, brawler, _frame);
@@ -1173,10 +1260,6 @@ public partial class FieldContracts : Node
     }
 
     /// <summary>
-    /// In a room with a magic seal: Ashley, standing before it and facing it, casts Unlock (action 92), which breaks it
-    /// for 3 magic points.
-    /// </summary>
-    /// <summary>
     /// A rolling crate (kind 0 or 1) pushed from beside it moves a tile on and turns to the orientation BATTLE.PRG's
     /// roll table gives for that direction (facing quadrant q pushes towards -z, -x, +z, +x for q = 0 to 3).
     /// </summary>
@@ -1312,6 +1395,10 @@ public partial class FieldContracts : Node
         }
     }
 
+    /// <summary>
+    /// In a room with a magic seal: Ashley, standing before it and facing it, casts Unlock (action 92) for 3 magic points
+    /// a time until its roll on her risk breaks it.
+    /// </summary>
     private string CheckSeal()
     {
         if (_view.Player is not { } ashley || _view.Battle?.Ashley is not { } caster) return "";
@@ -1325,11 +1412,17 @@ public partial class FieldContracts : Node
                 var (dx, dz) = quadrant switch { 0 => (0, 1), 1 => (1, 0), 2 => (0, -1), _ => (-1, 0) };
                 ashley.Position = new Vector3((x + dx) * 128 + 64, ashley.Position.Y, (z + dz) * 128 + 64);
                 ashley.Facing = quadrant * 1024;
-                int mp = caster.Mp;
-                string note = _view.Cast(92);
-                if (record["lock"].AsInt32() == 2 || caster.Mp != mp - 3) return $"Unlock left the seal at {x}, {z}: {note}";
-                GD.Print($"FIELD: Unlock broke the seal at {x}, {z}");
-                return "";
+                for (int cast = 1; cast <= 30; cast++)
+                {
+                    caster.Mp = Math.Max(caster.Mp, 3);
+                    int mp = caster.Mp;
+                    string note = _view.Cast(92);
+                    if (caster.Mp != mp - 3) return $"Unlock at {x}, {z} did not take 3 magic points: {note}";
+                    if (record["lock"].AsInt32() == 2) continue;
+                    GD.Print($"FIELD: Unlock broke the seal at {x}, {z} on cast {cast}");
+                    return "";
+                }
+                return $"Unlock left the seal at {x}, {z} after 30 casts";
             }
         return "";
     }
@@ -1507,7 +1600,8 @@ public partial class FieldContracts : Node
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         var battle = _view.Battle;
         if (battle?.Ashley is not { } ashley) { if (_leftBattle) { Tap("ps_circle"); return; } Finish("the battle has no Ashley"); return; }
-        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && elapsed % 30 == 0) Capture($"battle_{elapsed:d4}");
+        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && elapsed % Math.Min(30, _storyEvery) == 0)
+            Capture(_storyEvery < 30 ? $"battle_{elapsed:d5}_{(_view.Events.Count > 0 ? _view.Events[^1] : "none")}" : $"battle_{elapsed:d4}");
         if (battle.GameOver) { Finish("Ashley fell in the first battle"); return; }
         // The attack sphere reads out its target in the system box, as retail's does: the part, then TARGET.
         if (battle.Paused && !_sphereSeen)

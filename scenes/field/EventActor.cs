@@ -458,6 +458,14 @@ public sealed class EventActor
     private Wol.Engine.World.ActorClip Clip(string clip, int blendFrames, int skipFrames, bool once, bool queue) =>
         new(Id, clip, queue, once ? false : null, blendFrames >= 2 ? blendFrames / 30f : 0, skipFrames > 0 ? skipFrames / Installation.CharacterConversion.FramesPerSecond : 0);
 
+    /// <summary>The clip's frame now (in the rig's animation frames); a clip played once and ended is no longer current, and stands at its end.</summary>
+    public int ClipFrame(string clip)
+    {
+        if (Player == null) return 0;
+        double position = !Player.CurrentAnimation.IsEmpty ? Player.CurrentAnimationPosition : Player.HasAnimation(clip) ? Player.GetAnimation(clip).Length : 0;
+        return (int)(position * Installation.CharacterConversion.FramesPerSecond);
+    }
+
     /// <summary>Adds an animation set (an event's "esqnnn", Ashley's "btn" and "artna") to the actor's rig.</summary>
     public Action<EventActor, string>? LoadSet;
 
@@ -596,6 +604,45 @@ public sealed class EventActor
             if (index >= 0) return rig.GlobalTransform * rig.GetBoneGlobalPose(index);
         }
         return model.GlobalTransform;
+    }
+
+    /// <summary>
+    /// How far the held weapon reaches along its bone's -x (rig units): the weapon model's extent that way, standing
+    /// in for its bone's length, which the weapon model does not carry.
+    /// </summary>
+    public float WeaponReach
+    {
+        get
+        {
+            if (Skeleton?.GetNodeOrNull<Node3D>("Weapon") is not { } mount || mount.GetChildCount() == 0 || mount.GetChild(0) is not Node3D model) return 0;
+            float reach = 0;
+            foreach (var found in model.FindChildren("*", "MeshInstance3D", true, false))
+                if (((MeshInstance3D)found).Mesh is { } mesh) reach = Math.Max(reach, Math.Max(-mesh.GetAabb().Position.X, mesh.GetAabb().End.X));
+            return reach;
+        }
+    }
+
+    /// <summary>
+    /// Draws the held weapon flat at a grey (of 128, its texture times it, unlit), as an effect's track 12 action 10
+    /// does (BATTLE.PRG 0x800b261c with bit 6 of its flags); 0 gives it back its owner's light.
+    /// </summary>
+    public void GlowWeapon(int grey)
+    {
+        if (Skeleton?.GetNodeOrNull<Node3D>("Weapon") is not { } mount) return;
+        foreach (var found in mount.FindChildren("*", "MeshInstance3D", true, false))
+        {
+            var instance = (MeshInstance3D)found;
+            if (instance.Mesh == null) continue;
+            for (int surface = 0; surface < instance.Mesh.GetSurfaceCount(); surface++)
+            {
+                if (grey == 0 || instance.Mesh.SurfaceGetMaterial(surface) is not StandardMaterial3D made) { instance.SetSurfaceOverrideMaterial(surface, null); continue; }
+                var flat = (StandardMaterial3D)made.Duplicate();
+                flat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+                flat.VertexColorUseAsAlbedo = false;
+                flat.AlbedoColor = new Color(grey / 128f, grey / 128f, grey / 128f, made.AlbedoColor.A);
+                instance.SetSurfaceOverrideMaterial(surface, flat);
+            }
+        }
     }
 
     /// <summary>A point in a model bone's own frame (rig units, turned and scaled with it), in retail map space.</summary>

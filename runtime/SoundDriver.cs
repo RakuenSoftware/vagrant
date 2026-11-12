@@ -26,6 +26,9 @@ public sealed partial class SoundDriver : Node
     private const long WriteSpu = 0x800134D0, Tick = 0x80019A58;
     // Driver commands 0x92 (the reverb, with its value) and 0x40 (the music snapshot), as event opcodes a8 and 98 send them.
     private const long SetReverb = 0x80012468, SnapshotMusic = 0x80012004;
+    // Driver commands 0xE5 (a sound sequence's volume), 0xE0 (start one) and 0xE2 (stop it), as an effect's sound slot
+    // plays and releases its sequence (SLUS 0x80046578, 0x80046634); the sequence sits after the music's 16 KB.
+    private const long SequenceVolume = 0x80013378, StartSequence = 0x800132C4, StopSequenceCommand = 0x80013328, EffectSequence = 0x80168000;
     private const long SpuSetTransferStartAddr = 0x8001EBC4;
     private static readonly long[] HostRoutines =
     {
@@ -274,6 +277,27 @@ public sealed partial class SoundDriver : Node
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 
+    /// <summary>Starts an effect's sound sequence (an AKAO block) at full volume.</summary>
+    public void PlaySequence(byte[] sequence)
+    {
+        if (!Ready || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
+        try
+        {
+            _sandbox!.Call(WriteMemoryMethod, EffectSequence, sequence);
+            Call(SequenceVolume, 0, 127);
+            Call(StartSequence, EffectSequence, 128, 1);
+        }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
+    /// <summary>Stops the effect's sound sequence.</summary>
+    public void StopSequence()
+    {
+        if (!Ready) return;
+        try { Call(StopSequenceCommand); }
+        catch (InvalidDataException error) { Failure = error.Message; }
+    }
+
     /// <summary>Takes the driver's music snapshot (driver command 0x40, event opcode 98).</summary>
     public void Snapshot()
     {
@@ -307,8 +331,17 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void SlideSound(string bankName, byte[]? bank, int id, bool pan, int value, int frames)
     {
-        if (!Ready || Target(bankName, bank, id) is not long target) return;
-        try { Call(pan ? PanSfx : FadeSfx, target, 0, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
+        if (Target(bankName, bank, id) is long target) Slide(target, 0, pan, value, frames);
+    }
+
+    /// <summary>Slides the volume or pan of every voice of a group, as an id of 0 asks the driver.</summary>
+    public void SlideGroup(int group, bool pan, int value, int frames) => Slide(0, Groups[Math.Clamp(group, 0, Groups.Length - 1)], pan, value, frames);
+
+    /// <summary>The driver's volume or pan slide (0x8001264C, 0x80012738) of a sound (by program or id) or of a group's voices.</summary>
+    private void Slide(long target, long voices, bool pan, int value, int frames)
+    {
+        if (!Ready) return;
+        try { Call(pan ? PanSfx : FadeSfx, target, voices, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 

@@ -77,11 +77,11 @@ public partial class RetailContent : Node
 
     private Texture2D LoadTexture(string name) => ImageTexture.CreateFromImage(LoadImage(name));
 
-    /// <summary>Whether the disc has a document or model of that name.</summary>
+    /// <summary>Whether the disc has a document, image or model of that name.</summary>
     public bool Has(string name)
     {
         if (name.StartsWith("character_", StringComparison.Ordinal) || name.StartsWith("weapon_", StringComparison.Ordinal)) return Field.HasModel(name);
-        return Field.Data(name) != null;
+        return Field.Data(name) != null || Field.Image(name) != null;
     }
 
     /// <summary>A verified disc file as the disc holds it, by its disc path.</summary>
@@ -109,6 +109,9 @@ public partial class RetailContent : Node
         Field.Sound(name) ?? throw new InvalidDataException($"The disc has no sound {name}.");
 
     /// <summary>A character's definition: bones, mounts, limbs and clip events (empty when the disc has no model).</summary>
+    /// <summary>An effect's sound sequence (its block 13), empty when it has none.</summary>
+    public byte[] EffectSequence(int effect) => Field.EffectSequence(effect);
+
     public Godot.Collections.Dictionary Character(int character) =>
         Field.Character($"character_{character:X2}") is { } built ? Parse(built.Definition.ToJsonString()) : new Godot.Collections.Dictionary();
 
@@ -130,6 +133,11 @@ public partial class RetailContent : Node
     public Texture2D Texture(string name) => LoadTexture(name);
 
     /// <summary>A document decoded from the disc, such as a room's event.</summary>
+    /// <summary>The HUD's hand-lettered alphabet on its labels page, made once; null when the installation lacks it.</summary>
+    public HudLettering? HudLettering => _hudLettering ??= Has("hud_labels") && Has("hud") && Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font
+        ? new HudLettering(ScreenTexture("hud_labels", true), font) : null;
+    private HudLettering? _hudLettering;
+
     public Godot.Collections.Dictionary Data(string name) =>
         Parse((Field.Data(name) ?? throw new InvalidDataException($"The disc has no {name}.")).ToJsonString());
 
@@ -179,6 +187,13 @@ public partial class RetailContent : Node
         font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
         font.SetGlyphSize(0, new Vector2I(size, 0), DialogueConversion.HairSpace, Vector2.Zero);
         return font;
+    }
+
+    /// <summary>A screen picture, or null where the installation lacks it or it cannot be read.</summary>
+    public Texture2D? ScreenTextureIfAny(string name)
+    {
+        try { return ScreenTexture(name); }
+        catch (Exception error) when (error is IOException or InvalidDataException) { return null; }
     }
 
     /// <summary>

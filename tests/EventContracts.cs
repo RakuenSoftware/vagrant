@@ -34,6 +34,25 @@ public partial class EventContracts : Node
             if (disc.Length == 0) throw new InvalidOperationException("pass --disc=");
             using var image = PlayStationDisc.Open(disc, RetailDisc.Catalog);
             byte[] battle = image.ReadFile("BATTLE/BATTLE.PRG");
+            // Each zone's rooms by number, as MAP script names, and the zone each room is in, from the zones' MPD lists.
+            var rooms = new Dictionary<(int Zone, int Room), string>();
+            var zoneOf = new Dictionary<string, int>();
+            foreach (string path in RetailDisc.Catalog.FileDigests.Keys.Where(p => p.StartsWith("MAP/ZONE", StringComparison.Ordinal) && p.EndsWith(".ZND", StringComparison.Ordinal)))
+            {
+                int zone = int.Parse(path[8..11]);
+                byte[] znd = image.ReadFile(path);
+                int list = BitConverter.ToInt32(znd, 0), count = BitConverter.ToInt32(znd, 4) / 8;
+                for (int room = 0; room < count; room++)
+                {
+                    uint sector = BitConverter.ToUInt32(znd, list + room * 8);
+                    if (sector == 0) continue;
+                    string map = image.PathAt(sector);
+                    if (!map.StartsWith("MAP/MAP", StringComparison.Ordinal)) continue;
+                    string script = map[4..^4].ToLowerInvariant();
+                    rooms[(zone, room)] = script;
+                    zoneOf.TryAdd(script, zone);
+                }
+            }
             var unpresented = new Dictionary<string, int>();
             int scripts = 0;
             var unusable = new List<string>();
@@ -57,7 +76,15 @@ public partial class EventContracts : Node
                 if (gathering)
                 {
                     foreach (var value in result["chains"]!.AsArray()) parents.TryAdd($"evt{(int)value!:d4}", conversion.SoundBanks);
-                    if (!name.Contains("_l", StringComparison.Ordinal) && name.StartsWith("map", StringComparison.Ordinal)) parents.TryAdd(name + "_room", conversion.SoundBanks);
+                    if (!name.Contains("_l", StringComparison.Ordinal) && name.StartsWith("map", StringComparison.Ordinal)) parents[name + "_room"] = conversion.SoundBanks;
+                    // A room an event changes to starts its script with the banks the event left (zone 0: this room's zone).
+                    string here = name.Contains("_l", StringComparison.Ordinal) ? name[..name.IndexOf("_l", StringComparison.Ordinal)] : name;
+                    foreach (var value in result["transitions"]!.AsArray())
+                    {
+                        int zone = (int)value!["zone"]!;
+                        if (zone == 0 && !zoneOf.TryGetValue(here, out zone)) continue;
+                        if (rooms.TryGetValue((zone, (int)value["map"]!), out var room)) parents.TryAdd(room, conversion.SoundBanks);
+                    }
                     return;
                 }
                 if (name == dump) GD.Print("EVENT_DUMP " + result.ToJsonString());
@@ -75,9 +102,11 @@ public partial class EventContracts : Node
                 }
                 scripts++;
             }
-            for (int pass = 0; pass < 2; pass++)
+            // Banks pass on along chains and room changes, and on from a room's script to its local events: two
+            // gathering passes carry them through, then the check.
+            for (int pass = 0; pass < 3; pass++)
             {
-                gathering = pass == 0;
+                gathering = pass < 2;
                 unusable.Clear();
                 foreach (string path in RetailDisc.Catalog.FileDigests.Keys.Where(p => p.StartsWith("EVENT/", StringComparison.Ordinal) && p.EndsWith(".EVT", StringComparison.Ordinal)).OrderBy(p => p, StringComparer.Ordinal))
                     Check("evt" + path[6..10], image.ReadFile(path), 0);

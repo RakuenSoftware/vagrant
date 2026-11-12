@@ -190,6 +190,29 @@ public sealed class InventoryConversion
         return new JsonObject { ["weapons"] = weapons, ["blades"] = blades, ["grips"] = grips, ["armour"] = armour, ["items"] = items };
     }
 
+    /// <summary>The executable's action table: 52-byte records.</summary>
+    private const int Actions = 0x3C1DC;
+
+    /// <summary>
+    /// An action record's effects, its two words at 0x14 and 0x18 (an effect of 0 is none): the effect, its
+    /// prerequisite, hit function, reckoning, factor, damage type and affinity.
+    /// </summary>
+    private static JsonArray Effects(byte[] executable, int record)
+    {
+        var effects = new JsonArray();
+        for (int i = 0; i < 2; i++)
+        {
+            uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
+            if ((word & 0x7F) == 0) continue;
+            effects.Add(new JsonObject
+            {
+                ["effect"] = (int)(word & 0x7F), ["prerequisite"] = (int)(word >> 7 & 0x3F), ["hit"] = (int)(word >> 13 & 7),
+                ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F), ["type"] = (int)(word >> 27 & 3), ["affinity"] = (int)(word >> 29),
+            });
+        }
+        return effects;
+    }
+
     /// <summary>
     /// What each consumable (items 323 to 356) does: MAINMENU.PRG (loading at 0x800F9800) maps each to an action, one
     /// byte apiece from 0x80102214, and the executable's action table (52-byte records from 0x8004B9DC) gives the
@@ -199,19 +222,13 @@ public sealed class InventoryConversion
     /// </summary>
     public static JsonObject Consumables(byte[] mainMenu, byte[] executable)
     {
-        const int map = unchecked((int)(0x80102214u - 0x800F9800u)), actions = 0x3C1DC;
+        const int map = unchecked((int)(0x80102214u - 0x800F9800u));
         var consumables = new JsonObject();
         for (int id = 323; id <= 457; id++)
         {
-            int action = mainMenu[map + id - 323], record = actions + action * 52;
+            int action = mainMenu[map + id - 323], record = Actions + action * 52;
             if (action == 0) continue;
-            var effects = new JsonArray();
-            for (int i = 0; i < 2; i++)
-            {
-                uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-                if ((word & 0x7F) == 0) continue;
-                effects.Add(new JsonObject { ["effect"] = (int)(word & 0x7F), ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F) });
-            }
+            var effects = Effects(executable, record);
             // Grimoires (386 and up) teach the spell they map to rather than acting at once.
             consumables[id.ToString()] = new JsonObject { ["action"] = action, ["name"] = DialogueConversion.Decode(executable, record + 0x1C).Text, ["visual"] = (int)executable[record + 1], ["effects"] = effects, ["grimoire"] = id >= 386,
                 ["camera"] = executable[record + 13] >> 4 & 3, ["range"] = new JsonArray { (int)executable[record + 4], (int)executable[record + 5], (int)executable[record + 6] } };
@@ -226,18 +243,11 @@ public sealed class InventoryConversion
     /// </summary>
     public static JsonObject Abilities(byte[] executable)
     {
-        const int actions = 0x3C1DC;
         var abilities = new JsonObject();
         for (int id = 22; id <= 53; id++)
         {
-            int record = actions + id * 52;
-            var effects = new JsonArray();
-            for (int i = 0; i < 2; i++)
-            {
-                uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-                if ((word & 0x7F) == 0) continue;
-                effects.Add(new JsonObject { ["effect"] = (int)(word & 0x7F), ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F) });
-            }
+            int record = Actions + id * 52;
+            var effects = Effects(executable, record);
             if (effects.Count == 0) continue;
             abilities[id.ToString()] = new JsonObject { ["name"] = DialogueConversion.Decode(executable, record + 0x1C).Text, ["cost"] = (int)executable[record + 3], ["visual"] = (int)executable[record + 1], ["effects"] = effects };
         }
@@ -258,22 +268,11 @@ public sealed class InventoryConversion
     /// </summary>
     public static JsonObject TrapActions(byte[] executable)
     {
-        const int actions = 0x3C1DC;
         var traps = new JsonObject();
         for (int type = 0; type < 16; type++)
         {
-            int record = actions + (type + 6) * 52;
-            var effects = new JsonArray();
-            for (int i = 0; i < 2; i++)
-            {
-                uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-                if ((word & 0x7F) == 0) continue;
-                effects.Add(new JsonObject
-                {
-                    ["effect"] = (int)(word & 0x7F), ["hit"] = (int)(word >> 13 & 7), ["reckoning"] = (int)(word >> 16 & 0x3F),
-                    ["factor"] = (int)(word >> 22 & 0x1F), ["type"] = (int)(word >> 27 & 3), ["affinity"] = (int)(word >> 29),
-                });
-            }
+            int record = Actions + (type + 6) * 52;
+            var effects = Effects(executable, record);
             if (effects.Count == 0) continue;
             traps[type.ToString()] = new JsonObject
             {
@@ -370,23 +369,13 @@ public sealed class InventoryConversion
 
     public static JsonObject Spells(byte[] executable)
     {
-        const int actions = 0x3C1DC, thresholds = unchecked((int)(0x8004FDE4u - 0x8000F800u));
+        const int thresholds = unchecked((int)(0x8004FDE4u - 0x8000F800u));
         var spells = new JsonObject();
         foreach (var (first, last) in new[] { (54, 140), (141, 183), (184, 223) })
             for (int id = first; id <= last; id++)
             {
-                int record = actions + id * 52;
-                var effects = new JsonArray();
-                for (int i = 0; i < 2; i++)
-                {
-                    uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-                    if ((word & 0x7F) == 0) continue;
-                    effects.Add(new JsonObject
-                    {
-                        ["effect"] = (int)(word & 0x7F), ["prerequisite"] = (int)(word >> 7 & 0x3F), ["hit"] = (int)(word >> 13 & 7),
-                        ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F), ["type"] = (int)(word >> 27 & 3), ["affinity"] = (int)(word >> 29),
-                    });
-                }
+                int record = Actions + id * 52;
+                var effects = Effects(executable, record);
                 if (effects.Count == 0) continue;
                 spells[id.ToString()] = new JsonObject
                 {

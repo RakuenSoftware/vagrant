@@ -30,7 +30,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// to 160 at x 60; Select hides them.</item>
 /// </list>
 /// </summary>
-public sealed partial class MapCanvas : Control
+public sealed partial class MapCanvas : RetailScreen
 {
     private const float Projection = 512, CentreX = 144, CentreY = 136, FogNear = 768;
 
@@ -68,12 +68,7 @@ public sealed partial class MapCanvas : Control
 
     public void Configure(Wol.Games.Vagrant.Runtime.RetailContent content)
     {
-        Texture2D? Page(string name)
-        {
-            try { return content.ScreenTexture(name); }
-            catch (System.IO.InvalidDataException) { return null; }
-            catch (System.IO.IOException) { return null; }
-        }
+        Texture2D? Page(string name) => content.ScreenTextureIfAny(name);
         if (content.Has("map_menu"))
         {
             var menu = content.Data("map_menu");
@@ -95,11 +90,7 @@ public sealed partial class MapCanvas : Control
         _compassNeedle = Page("hud_second_992_222");
         _compassRing = _compassRim;
         _system = content.Has("system_font") ? content.BitmapFont("system_font") : null;
-        _lettering = _labels != null && content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font ? new Runtime.HudLettering(_labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = content.HudLettering;
     }
 
     /// <summary>The areas with a room Ashley has visited, hers among them, by scene id.</summary>

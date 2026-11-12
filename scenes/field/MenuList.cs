@@ -13,7 +13,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// command as a teal header in the top row from x 181. Below, the INFORMATION label and the chosen entry's help in the
 /// system font, left-aligned from x 16 on the system box's four lines (the first at y 190).
 /// </summary>
-public sealed partial class MenuList : Control
+public sealed partial class MenuList : RetailScreen
 {
     internal static readonly Color BarDark = Color.Color8(0x00, 0x02, 0x2E), BarLight = Color.Color8(0x00, 0x32, 0x61);
     internal static readonly Color ChosenLight = Color.Color8(0x08, 0x34, 0x5C), ChosenDark = Color.Color8(0x00, 0x03, 0x2E);
@@ -50,16 +50,12 @@ public sealed partial class MenuList : Control
     private static readonly Color OliveDark = Color.Color8(0x08, 0x07, 0x05), OliveLight = Color.Color8(0x36, 0x2C, 0x1B), Dimmed = Color.Color8(0x70, 0x90, 0x90), CostDark = Color.Color8(0x04, 0x03, 0x1B), CostLight = Color.Color8(0x36, 0x25, 0x5D);
     private Runtime.HudLettering? _lettering;
 
-    public void Configure(Texture2D? labels, Texture2D? cursor, Font? system, Godot.Collections.Dictionary? font = null)
+    public void Configure(Texture2D? labels, Texture2D? cursor, Font? system, Runtime.HudLettering? lettering = null)
     {
         _labels = labels;
         _cursor = cursor;
         _system = system;
-        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = lettering;
     }
 
     /// <summary>

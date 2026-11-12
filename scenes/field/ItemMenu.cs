@@ -30,7 +30,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// </list>
 /// Measured against PSX longplay footage; the positions are MENU3.PRG's.
 /// </summary>
-public sealed partial class ItemMenu : Control
+public sealed partial class ItemMenu : RetailScreen
 {
     /// <summary>A row: its name, its count (-1 for none), its icon cell (-1 for none) and its help.</summary>
     /// <summary>A row: its name, count (-1 none), icon (-1 none), help and material letter; a greyed one cannot be chosen now (its name in MENU1's grey-blue), and a cautionary help shows under CAUTION.</summary>
@@ -114,12 +114,7 @@ public sealed partial class ItemMenu : Control
 
     public void Configure(Wol.Games.Vagrant.Runtime.RetailContent content)
     {
-        Texture2D? Page(string name)
-        {
-            try { return content.ScreenTexture(name); }
-            catch (System.IO.InvalidDataException) { return null; }
-            catch (System.IO.IOException) { return null; }
-        }
+        Texture2D? Page(string name) => content.ScreenTextureIfAny(name);
         _backdrop = Page("item_menu_backdrop");
         _menuPage = Page("hud_page_848");
         _chosenIcons = Page("hud_page_976");
@@ -133,11 +128,7 @@ public sealed partial class ItemMenu : Control
         _digits = Page("hud_digits");
         _cursor = Page("hud_cursor");
         _system = content.Has("system_font") ? content.BitmapFont("system_font") : null;
-        _lettering = _labels != null && content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font ? new Runtime.HudLettering(_labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = content.HudLettering;
     }
 
     /// <summary>Starts the menu's entrance: the backdrop fades in and its parts slide into place.</summary>
@@ -773,6 +764,13 @@ public sealed partial class ItemMenu : Control
             _lettering!.Draw(this, held, new Vector2(end - _lettering!.Width(held), y + 1), unit);
         }
         float slide = Ease[Math.Max(0, 10 - Math.Min(10, _frames))];
+        // A header bar down the right with its words (and a count at its end), as each page heads its list.
+        void Header(string text, float y, string count = "")
+        {
+            Bar(180 + slide, y, 140, MenuList.HeaderLight, MenuList.HeaderDark);
+            Text(text, 186 + slide, y);
+            if (count.Length > 0) Count(count, 316 + slide, y);
+        }
         Side(2);
         void Row(Row row, float x, float y, float width, bool chosen, bool held = false)
         {
@@ -795,8 +793,7 @@ public sealed partial class ItemMenu : Control
         if (_mode == Mode.Slots)
         {
             // EQUIP: the header, then the eight slots from y 34, each labelled to its left in the HUD capitals.
-            Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_header, 186 + slide, 18);
+            Header(_header, 18);
             for (int i = 0; i < _rows.Count; i++)
             {
                 float y = 34 + 16 * i;
@@ -857,8 +854,7 @@ public sealed partial class ItemMenu : Control
         }
         else if (_mode == Mode.Data)
         {
-            Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_header, 186 + slide, 18);
+            Header(_header, 18);
             for (int i = 0; i < _rows.Count; i++) Row(_rows[i], 194 + slide, 34 + 16 * i, 126, i == _chosen);
             if (_chosen >= 0 && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(180, 34 + 16 * _chosen - 10), unit);
             if (_labels != null && _lettering != null)
@@ -871,8 +867,7 @@ public sealed partial class ItemMenu : Control
         else if (_mode == Mode.ContainerTop && _container is { } top)
         {
             // CONTAINER, then REMOVE and STORE as rows and OK bare; below, the bag's and the container's counts.
-            Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_header, 186 + slide, 18);
+            Header(_header, 18);
             for (int i = 0; i < _rows.Count; i++)
             {
                 if (i < _rows.Count - 1) Row(_rows[i], 194 + slide, 34 + 16 * i, 126, i == _chosen);
@@ -884,11 +879,8 @@ public sealed partial class ItemMenu : Control
         }
         else if (_mode == Mode.ContainerList && _container is { } list)
         {
-            Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_header, 186 + slide, 18);
-            Bar(180 + slide, 34, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_title, 186 + slide, 34);
-            if (_count.Length > 0) Count(_count, 316 + slide, 34);
+            Header(_header, 18);
+            Header(_title, 34, _count);
             for (int i = _first; i < _rows.Count && i < _first + 8; i++)
                 Row(_rows[i], 169 + slide, 50 + 16 * (i - _first), 151, i == _chosen && list.Confirm == null && _actions == null, i == _chosen && _actions != null);
             if (list.Confirm == null && _actions == null && _chosen >= _first && _chosen < _rows.Count)
@@ -926,11 +918,8 @@ public sealed partial class ItemMenu : Control
         }
         else
         {
-            Bar(180 + slide, 18, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_header, 186 + slide, 18);
-            Bar(180 + slide, 34, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-            Text(_title, 186 + slide, 34);
-            if (_count.Length > 0) Count(_count, 316 + slide, 34);
+            Header(_header, 18);
+            Header(_title, 34, _count);
             bool options = _category == Options;
             float rowX = options ? 194 : 169, rowWidth = options ? 126 : 151;
             for (int i = _first; i < _rows.Count && i < _first + 8; i++)

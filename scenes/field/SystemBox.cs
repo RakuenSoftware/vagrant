@@ -14,7 +14,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// the bottom of the screen from three lines above its first line, with three lines darkening into it, over the HUD
 /// (retail footage). It prints in the system font (the upright set, white).
 /// </summary>
-public sealed partial class SystemBox : Control
+public sealed partial class SystemBox : RetailScreen
 {
     private const int Left = 16, Columns = 24, Cell = 12, LineHeight = 13;
 
@@ -51,10 +51,6 @@ public sealed partial class SystemBox : Control
     {
         _font = font;
         _labels = labels;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
     }
 
     /// <summary>The text shown, a line to each newline; empty clears the box.</summary>

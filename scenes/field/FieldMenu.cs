@@ -154,11 +154,10 @@ public sealed partial class FieldMenu : PanelContainer
         AddChild(_text);
         _list = new MenuList { Name = "Commands", Visible = false };
         _list.Configure(view.Content.Has("hud_labels") ? view.Content.ScreenTexture("hud_labels", true) : null, view.Content.Has("hud_cursor") ? view.Content.ScreenTexture("hud_cursor") : null,
-            view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null,
-            view.Content.Has("hud") ? view.Content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null);
+            view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null, view.Content.HudLettering);
         _bag = new GadgetBag { Name = "GadgetBag", Visible = false };
         _bag.Configure(view.Content.Has("hud_labels") ? view.Content.ScreenTexture("hud_labels", true) : null, view.Content.Has("hud_cursor") ? view.Content.ScreenTexture("hud_cursor") : null,
-            view.Content.Has("hud") ? view.Content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null, view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null,
+            view.Content.HudLettering, view.Content.Has("system_font") ? view.Content.BitmapFont("system_font") : null,
             view.Content.Has("gadget_bag") ? view.Content.Data("gadget_bag") : null);
         // The list and the bag draw over the whole screen, so they stand beside the menu's panel rather than in it.
         TreeEntered += () =>
@@ -467,6 +466,16 @@ public sealed partial class FieldMenu : PanelContainer
         _pending.Clear();
         _cursor = 0;
         Draw();
+    }
+
+    /// <summary>EQUIP's eight slots under a header: each slot's name (MENU3 strings 12 to 19, the part after a slash) and what it has on.</summary>
+    private void ShowSlots(Godot.Collections.Array strings, string header, bool strip)
+    {
+        var labels = new string[8];
+        for (int i = 0; i < 8; i++) labels[i] = SystemBox.Entry(strings, 12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
+        var slots = new List<ItemMenu.Row>();
+        for (int i = 0; i < 8; i++) slots.Add(SlotRow(i));
+        _items.SetSlots(header, labels, slots, _slot, strip: strip);
     }
 
     private string CheckString(int index) =>
@@ -1671,7 +1680,10 @@ public sealed partial class FieldMenu : PanelContainer
         if (definition.Count == 0) return $"The {_view.ItemName(id)} cannot be used here.";
         if (definition.GetValueOrDefault("grimoire", false).AsBool()) return Read(id, definition["action"].AsInt32());
         _view.Acted(definition.GetValueOrDefault("action", 0).AsInt32());
-        _view.Battle?.HideHudFor(_view.PlayEffect(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor));
+        // Effect 33 (the Eye of Argon) plays its effect at each of the room's traps, which reveals them.
+        bool seeing = definition["effects"].AsGodotArray().Count > 0 && definition["effects"].AsGodotArray()[0].AsGodotDictionary()["effect"].AsInt32() == 33;
+        if (seeing) foreach (var effect in _view.SeeTraps(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor)) _view.Battle?.HideHudFor(effect);
+        else _view.Battle?.HideHudFor(_view.PlayEffect(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor));
         var parts = new List<string>();
         var random = new RandomNumberGenerator();
         foreach (var value in definition["effects"].AsGodotArray())
@@ -2052,12 +2064,8 @@ public sealed partial class FieldMenu : PanelContainer
                 var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
                 if (_statusEquip == 1)
                 {
-                    var labels = new string[8];
-                    for (int i = 0; i < 8; i++) labels[i] = SystemBox.Entry(strings, 12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
-                    var slots = new List<ItemMenu.Row>();
-                    for (int i = 0; i < 8; i++) slots.Add(SlotRow(i));
                     // Under the character's name (MENU4 keeps its header up), without the item menu's strip.
-                    _items.SetSlots(StatusWho?.Name ?? SystemBox.Entry(strings, 12 + _slot), labels, slots, _slot, strip: false);
+                    ShowSlots(strings, StatusWho?.Name ?? SystemBox.Entry(strings, 12 + _slot), strip: false);
                 }
                 else _items.SetList(SystemBox.Entry(strings, 12 + _slot), new List<ItemMenu.Row> { SlotRow(_slot) }, 0, SlotStats(_slot, Worn(_slot)));
             }
@@ -2099,11 +2107,7 @@ public sealed partial class FieldMenu : PanelContainer
             }
             else if (_equip == 1)
             {
-                var labels = new string[8];
-                for (int i = 0; i < 8; i++) labels[i] = SystemBox.Entry(strings, 12 + i) is var line && line.IndexOf('/') is >= 0 and var at ? line[(at + 1)..] : line;
-                var slots = new List<ItemMenu.Row>();
-                for (int i = 0; i < 8; i++) slots.Add(SlotRow(i));
-                _items.SetSlots(SystemBox.Entry(strings, 12 + _slot), labels, slots, _slot);
+                ShowSlots(strings, SystemBox.Entry(strings, 12 + _slot), strip: true);
             }
             else if (_equip == 2)
             {
