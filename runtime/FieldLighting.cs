@@ -20,7 +20,7 @@ public partial class FieldLighting : Node
 
     public override void _Ready()
     {
-        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("lighting", "enhanced", false).AsBool();
+        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("lighting", "enhanced", false);
     }
 
     /// <summary>Sets the choice and saves it (unless <paramref name="save"/> is false, as the checks have it).</summary>
