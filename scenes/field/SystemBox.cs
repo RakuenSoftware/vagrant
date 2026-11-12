@@ -72,6 +72,10 @@ public sealed partial class SystemBox : Control
         }
     }
 
+    /// <summary>Entry <paramref name="index"/> of a converted string table, its places filled with <paramref name="strings"/>; empty where the table has none.</summary>
+    public static string Entry(Godot.Collections.Array table, int index, params string[] strings) =>
+        index >= 0 && index < table.Count ? Fill(table[index].AsGodotDictionary(), strings) : "";
+
     /// <summary>
     /// A retail string (an installed entry: its text and tokens) with what the game fills in: its string tokens (ff n)
     /// from <paramref name="strings"/> and its number tokens (fe n) from <paramref name="numbers"/>, by slot.

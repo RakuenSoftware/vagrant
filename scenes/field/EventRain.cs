@@ -16,12 +16,12 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// the rectangle's share, one per four tiles) and how fast. While the weather drifts (opcode 78), the direction,
 /// intensity and angle wander a step at a time within the room's ranges.
 /// </summary>
-public partial class EventRain : Node3D
+public sealed class EventRain
 {
     private const int MaximumDrops = 128;
     private readonly Vector3[] _drops = new Vector3[MaximumDrops], _speeds = new Vector3[MaximumDrops];
     private readonly RandomNumberGenerator _random = new() { Seed = 0x5a17 };
-    private readonly ImmediateMesh _mesh = new();
+    private readonly System.Collections.Generic.List<Wol.Engine.World.FieldLine> _lines = new();
     private int _type, _capacity, _tick, _frames, _time;
     private float _intensity, _yaw, _pitch;
     private (float Intensity, float Yaw, float Pitch) _from, _to;
@@ -32,15 +32,8 @@ public partial class EventRain : Node3D
     /// <summary>Whether the weather wanders within the room's ranges (opcode 78 turns it off and on).</summary>
     public bool Drifting = true;
 
-    public override void _Ready()
-    {
-        var material = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, VertexColorUseAsAlbedo = true, BlendMode = BaseMaterial3D.BlendModeEnum.Add,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha, DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled, CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-        };
-        AddChild(new MeshInstance3D { Mesh = _mesh, MaterialOverride = material, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, Layers = FieldView.EffectLayer });
-    }
+    /// <summary>The engine's field the streaks are drawn in.</summary>
+    public Wol.Engine.World.FieldScene? Scene;
 
     /// <summary>Takes a room's weather (its kind, rectangle and ranges) and starts it as the room loads.</summary>
     public void Room(GDictionary? weather)
@@ -147,22 +140,19 @@ public partial class EventRain : Node3D
         Walk(ref _intensity, "intensity", 1, 60);
     }
 
+    /// <summary>Hands the engine this frame's streaks, added (on the effects' render layer).</summary>
     private void Draw(int active = 0, Vector3 wind = default)
     {
-        _mesh.ClearSurfaces();
-        if (active == 0) return;
-        _mesh.SurfaceBegin(Mesh.PrimitiveType.Lines);
+        _lines.Clear();
         for (int i = 0; i < active; i++)
         {
             Vector3 head = _drops[i], tail = _type == 4 ? head + new Vector3(0, 192, 0) : head - wind;
             // Rain streaks fade from (96, 96, 128) to (32, 32, 100), added at a quarter; embers glow red.
             var (bright, dim) = _type == 4 ? (Color.Color8(192, 64, 64), Color.Color8(32, 8, 32)) : (Color.Color8(96, 96, 128), Color.Color8(32, 32, 100));
-            _mesh.SurfaceSetColor(bright * (_type == 4 ? 1 : 0.5f));
-            _mesh.SurfaceAddVertex(EventActor.RetailSpace * head);
-            _mesh.SurfaceSetColor(dim * (_type == 4 ? 1 : 0.5f));
-            _mesh.SurfaceAddVertex(EventActor.RetailSpace * tail);
+            float level = _type == 4 ? 1 : 0.5f;
+            _lines.Add(new(EventActor.RetailSpace * head, EventActor.RetailSpace * tail, bright * level, dim * level));
         }
-        _mesh.SurfaceEnd();
+        Scene?.DrawLines("weather", System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_lines), true, FieldView.EffectLayer);
     }
 
     /// <summary>Stops the weather.</summary>

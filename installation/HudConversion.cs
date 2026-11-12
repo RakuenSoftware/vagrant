@@ -34,7 +34,6 @@ public sealed class HudConversion
         _battle = battle;
     }
 
-    private ushort Word(int at) => BitConverter.ToUInt16(_system, at);
 
     /// <summary>
     /// A palette colour from section 7: VRAM x 832 to 1023 on row 223 (the first two blocks are 224 rows from y 0, the
@@ -45,7 +44,7 @@ public sealed class HudConversion
         int fonts = (int)BitConverter.ToUInt32(_system, 28);
         int block = (x - 832) / 64, column = x - 832 - block * 64 + index;
         int row = block < 2 ? 223 : 223 - 66;
-        return Word(fonts + block * 64 * 224 * 2 + (row * 64 + column) * 2);
+        return BitConverter.ToUInt16(_system, fonts + block * 64 * 224 * 2 + (row * 64 + column) * 2);
     }
 
     /// <summary>The HUD page (256 by 224 texels) through the palette at (<paramref name="clut"/>, 223).</summary>
@@ -57,10 +56,9 @@ public sealed class HudConversion
         for (int y = 0; y < 224; y++)
             for (int u = 0; u < 256; u++)
             {
-                int index = (Word(page + (y * 64 + u / 4) * 2) >> (u % 4 * 4)) & 15;
+                int index = (BitConverter.ToUInt16(_system, page + (y * 64 + u / 4) * 2) >> (u % 4 * 4)) & 15;
                 ushort colour = Clut(clut, index);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                image.SetPixel(u, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
+                image.SetPixel(u, y, TitleConversion.ToColor(colour, true));
             }
         return image;
     }
@@ -80,69 +78,30 @@ public sealed class HudConversion
         for (int y = 0; y < 240; y++)
             for (int x = 0; x < 256; x++)
             {
-                int index = (Word(second + (y * 64 + x / 4) * 2) >> (x % 4 * 4)) & 15;
-                ushort colour = Word(third + ((clutY - 66) * 64 + clutX - 960 + index) * 2);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                image.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
+                int index = (BitConverter.ToUInt16(_system, second + (y * 64 + x / 4) * 2) >> (x % 4 * 4)) & 15;
+                ushort colour = BitConverter.ToUInt16(_system, third + ((clutY - 66) * 64 + clutX - 960 + index) * 2);
+                image.SetPixel(x, y, TitleConversion.ToColor(colour, true));
             }
         return image;
     }
 
-    /// <summary>Writes the HUD page through each palette and returns the asset names by palette.</summary>
-    public JsonObject Export(string directory, IDictionary<string, string> files)
+    /// <summary>Makes the HUD page through each palette, among the images, and returns the asset names by palette.</summary>
+    public JsonObject Export(IDictionary<string, Image> images)
     {
         var assets = new JsonObject();
         foreach (var (name, x) in new[] { ("digits", 832), ("labels", 864), ("cursor", 896) })
         {
-            var image = Page(x);
-            string file = $"hud_{name}.png";
-            image.SavePng(Path.Combine(directory, file));
-            files["hud_" + name] = file;
+            images["hud_" + name] = Page(x);
             assets[name] = "hud_" + name;
         }
-        // BATTLE MODE, from section 1's page through its palette in section 7's third block, (960, 66) 64 by 158.
-        int second = (int)BitConverter.ToUInt32(_system, 4) + 8;
-        int fonts = (int)BitConverter.ToUInt32(_system, 28), third = fonts + 2 * 64 * 224 * 2;
-        if (second + 64 * 240 * 2 > _system.Length || third + 64 * 158 * 2 > _system.Length) throw new InvalidDataException("SYSTEM.DAT's second HUD page is truncated.");
-        var banner = Image.CreateEmpty(73, 10, false, Image.Format.Rgba8);
-        for (int y = 0; y < 10; y++)
-            for (int x = 0; x < 73; x++)
-            {
-                int u = 64 + x;
-                int index = (Word(second + (y * 64 + u / 4) * 2) >> (u % 4 * 4)) & 15;
-                ushort colour = Word(third + ((220 - 66) * 64 + 976 - 960 + index) * 2);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                banner.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
-            }
-        banner.SavePng(Path.Combine(directory, "hud_battle_mode.png"));
-        files["hud_battle_mode"] = "hud_battle_mode.png";
+        // BATTLE MODE: 73 by 10 at (64, 0) of section 1's page, through the palette at (976, 220).
+        images["hud_battle_mode"] = SecondPage(976, 220).GetRegion(new Rect2I(64, 0, 73, 10));
         // The chain timing's "!" (BATTLE.PRG 0x800970BC): 22 by 32 at (0xC0, 0) of the same page, through the palette at
         // (960, 221).
-        var cue = Image.CreateEmpty(22, 32, false, Image.Format.Rgba8);
-        for (int y = 0; y < 32; y++)
-            for (int x = 0; x < 22; x++)
-            {
-                int u = 0xC0 + x;
-                int index = (Word(second + (y * 64 + u / 4) * 2) >> (u % 4 * 4)) & 15;
-                ushort colour = Word(third + ((221 - 66) * 64 + index) * 2);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                cue.SetPixel(x, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
-            }
-        cue.SavePng(Path.Combine(directory, "hud_chain_cue.png"));
-        files["hud_chain_cue"] = "hud_chain_cue.png";
+        images["hud_chain_cue"] = SecondPage(960, 221).GetRegion(new Rect2I(0xC0, 0, 22, 32));
         // The enemies' balloons (BATTLE.PRG 0x80095C18): the page's top 64 rows through the palette at (992, 220), the
         // rounded and jagged balloons, the small one, their dots and marks.
-        var emotes = Image.CreateEmpty(256, 64, false, Image.Format.Rgba8);
-        for (int y = 0; y < 64; y++)
-            for (int u = 0; u < 256; u++)
-            {
-                int index = (Word(second + (y * 64 + u / 4) * 2) >> (u % 4 * 4)) & 15;
-                ushort colour = Word(third + ((220 - 66) * 64 + 992 - 960 + index) * 2);
-                int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-                emotes.SetPixel(u, y, Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), colour == 0 ? (byte)0 : (byte)255));
-            }
-        emotes.SavePng(Path.Combine(directory, "hud_emotes.png"));
-        files["hud_emotes"] = "hud_emotes.png";
+        images["hud_emotes"] = SecondPage(992, 220).GetRegion(new Rect2I(0, 0, 256, 64));
         assets["emotes"] = "hud_emotes";
         assets["battle_mode"] = "hud_battle_mode";
         assets["chain_cue"] = "hud_chain_cue";

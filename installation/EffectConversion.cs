@@ -122,10 +122,8 @@ public static class EffectConversion
     /// </summary>
     private static void Put(byte[] data, int at, ushort colour)
     {
-        int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
-        data[at] = (byte)((r << 3) | (r >> 2));
-        data[at + 1] = (byte)((g << 3) | (g >> 2));
-        data[at + 2] = (byte)((b << 3) | (b >> 2));
+        var shown = TitleConversion.ToColor(colour, false);
+        (data[at], data[at + 1], data[at + 2]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8);
         data[at + 3] = colour == 0 ? (byte)0 : (colour & 0x8000) != 0 ? (byte)255 : (byte)254;
     }
 

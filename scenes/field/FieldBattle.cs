@@ -131,6 +131,34 @@ public sealed class FieldBattle
 
         public bool Has(int status) => Statuses.ContainsKey(status);
 
+        /// <summary>Restores up to <paramref name="amount"/> hit points, never past its most; returns what it restored.</summary>
+        public int Heal(int amount) { int healed = Math.Clamp(amount, 0, MaxHp - Hp); Hp += healed; return healed; }
+
+        /// <summary>Restores up to <paramref name="amount"/> magic points, never past its most; returns what it restored.</summary>
+        public int Restore(int amount) { int restored = Math.Clamp(amount, 0, MaxMp - Mp); Mp += restored; return restored; }
+
+        /// <summary>Sets <paramref name="status"/> for its whole <see cref="Duration"/>.</summary>
+        public void Afflict(int status) => Statuses[status] = Duration(status);
+
+        /// <summary>
+        /// A cure effect: 27 paralysis, 28 poison, 29 curse, 30 numbness, 31 the magic cancel (every raising and
+        /// lowering status), 32 paralysis, poison and numbness together. Returns whether it cured anything.
+        /// </summary>
+        public bool Cure(int effect)
+        {
+            int before = Statuses.Count;
+            switch (effect)
+            {
+                case 27: Statuses.Remove(Paralysis); break;
+                case 28: Statuses.Remove(Poison); break;
+                case 29: Statuses.Remove(Curse); break;
+                case 30: Statuses.Remove(Numbness); break;
+                case 31: foreach (int status in new List<int>(Statuses.Keys)) if (status is <= 12 or >= 19) Statuses.Remove(status); break;
+                case 32: foreach (int status in new[] { Paralysis, Poison, Numbness }) Statuses.Remove(status); break;
+            }
+            return Statuses.Count < before;
+        }
+
         /// <summary>A stat with its statuses: a tenth less for a lowering one (or curse), a tenth more for a raising one.</summary>
         public int Scaled(int value, int lower, int raise) =>
             value * (100 - (Has(lower) ? 10 : 0) - (Has(Curse) ? 10 : 0) + (Has(raise) ? 10 : 0)) / 100;
@@ -141,6 +169,8 @@ public sealed class FieldBattle
         public Vector3 Range;
         public int Reach;
         public bool Hostile, Marked, Drawn, Dead;
+        /// <summary>A crate taken as a target: BATTLE.PRG gives each crate an actor and a fighter record named "Cube" (0x8007647C, 1 of 1 HP).</summary>
+        public bool Cube;
         /// <summary>What it may drop when felled (its record's drop table) and its room record's three items.</summary>
         public GDictionary? Drops;
         public Godot.Collections.Array? DropItems;
@@ -222,7 +252,9 @@ public sealed class FieldBattle
         _status.Visible = shown;
     }
     /// <summary>The abilities Ashley has set to Circle, Triangle and Square: chains when she attacks, defenses when struck.</summary>
-    public readonly int[] ChainSlots = new int[3], DefenseSlots = new int[3];
+    /// <summary>The abilities on Circle, Triangle and Square (0 none): the field's own arrays, shared, so a choice made in the menu outlives the room.</summary>
+    public int[] ChainSlots { get; private set; } = new int[3];
+    public int[] DefenseSlots { get; private set; } = new int[3];
     private static readonly string[] SlotButtons = { "ps_circle", "ps_triangle", "ps_square" };
     /// <summary>Frames left to chain onto, or defend against, the hit that just landed; the hit's damage; the chain so far.</summary>
     private int _lastDamage, _chain;
@@ -250,6 +282,7 @@ public sealed class FieldBattle
                     hudData.ContainsKey("emotes") ? view.Content.ScreenTexture("hud_emotes") : null,
                     hudData.GetValueOrDefault("font", default).AsGodotDictionary(), view.Content.ScreenTexture("hud_page_976", true));
                 if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.ScreenTexture("hud_chain_cue");
+                if (view.Content.Has("hud_cursor")) _hud.StatusPage = view.Content.ScreenTexture("hud_cursor", true);
                 hud.AddChild(_hud);
             }
             catch (System.IO.IOException) { _hud = null; }
@@ -666,21 +699,17 @@ public sealed class FieldBattle
                     case 58:
                     {
                         int damage = reckoning switch { 4 => _lastDamage * factor / 10, 5 => (Ashley.MaxHp - Ashley.Hp) * Math.Max(1, factor) / 10, _ => _lastDamage } + _chain;
-                        target.Hp = Math.Max(0, target.Hp - damage);
-                        Number(target, damage.ToString());
                         _lastDamage = damage;
-                        if (target.Hp == 0 && !target.Dead) { target.Dead = true; Play(target, Death, 4, once: true); Felled?.Invoke(target, id); Defeated?.Invoke(target); }
+                        Strike(target, damage, id, flinch: false);
                         break;
                     }
                     case 62:
                     {
-                        int heal = Math.Min(Ashley.MaxHp - Ashley.Hp, _lastDamage * Math.Max(1, factor) / 10 + _chain);
-                        Ashley.Hp += heal;
-                        Number(Ashley, "+" + heal);
+                        Number(Ashley, "+" + Ashley.Heal(_lastDamage * Math.Max(1, factor) / 10 + _chain));
                         break;
                     }
                     case 63:
-                        Ashley.Mp = Math.Min(Ashley.MaxMp, Ashley.Mp + _lastDamage * Math.Max(1, factor) / 10 + _chain);
+                        Ashley.Restore(_lastDamage * Math.Max(1, factor) / 10 + _chain);
                         break;
                 }
             }
@@ -689,17 +718,16 @@ public sealed class FieldBattle
                 switch (kind)
                 {
                     case 58 when reckoning == 10:
-                        if (_attacker is { } source) { int back = _lastDamage * factor / 10; source.Hp = Math.Max(0, source.Hp - back); Number(source, back.ToString()); }
+                        if (_attacker is { } source) Strike(source, _lastDamage * factor / 10, flinch: false);
                         break;
                     case 42:
                     {
-                        int eased = _lastDamage * factor / 10;
-                        Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + eased);
+                        Ashley.Heal(_lastDamage * factor / 10);
                         Number(Ashley, "Guard");
                         break;
                     }
                     case 41:
-                        Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + _lastDamage * factor / 10);
+                        Ashley.Heal(_lastDamage * factor / 10);
                         break;
                 }
             }
@@ -946,16 +974,7 @@ public sealed class FieldBattle
         _view.PlayEffect(art.GetValueOrDefault("visual", 0).AsInt32(), Ashley!.Actor, target.Actor);
         if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(Ashley!, target, limb, vary: true) + 10)) { Number(target, "Miss"); return; }
         int damage = Damage(Ashley!, target, limb) * (factor * 10 + 100) / 100;
-        target.Hp = Math.Max(0, target.Hp - damage);
-        Number(target, damage.ToString());
-        if (target.Hp == 0 && !target.Dead)
-        {
-            target.Dead = true;
-            Play(target, Death, 4, once: true);
-            Felled?.Invoke(target, 184);
-            Defeated?.Invoke(target);
-        }
-        else if (Play(target, FlinchFront, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        Strike(target, damage, 184);
     }
 
     /// <summary>
@@ -992,7 +1011,7 @@ public sealed class FieldBattle
                 if (hit == 3 && _random.RandiRange(0, 99) >= HitChance(caster, target, -1, vary: true) - guard) continue;
                 if (hit == 5 && _random.RandiRange(0, 99) >= Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard) { Number(target, "Miss"); continue; }
                 if (hit != 3 && hit != 5 && _random.RandiRange(0, 99) >= 100 - guard) { Number(target, "Miss"); continue; }
-                target.Statuses[kind] = Duration(kind);
+                target.Afflict(kind);
                 Number(target, spell["name"].AsString());
                 continue;
             }
@@ -1127,8 +1146,8 @@ public sealed class FieldBattle
     /// A trap's action on Ashley (<see cref="Installation.InventoryConversion.TrapActions"/>), at the room's trap
     /// level. Its damage is <see cref="TrapDamage"/>'s, on one of her limbs at random (how retail picks the limb was not
     /// read); a heal panel heals the same value before defence: a tenth of her most hit points times the effect's
-    /// factor, plus ten for each level and ten more. A status trap sets its status (15 paralysis, 16 poison, 18 curse); the cure panel (32, 29) clears them
-    /// and numbness.
+    /// factor, plus ten for each level and ten more. A status trap sets its status (15 paralysis, 16 poison, 18 curse); the cure panels
+    /// clear by <see cref="Combatant.Cure"/> (32 paralysis, poison and numbness, 29 curse).
     /// </summary>
     public void Trap(GDictionary action, int level)
     {
@@ -1151,16 +1170,14 @@ public sealed class FieldBattle
                 }
                 case 62:
                 {
-                    int heal = Math.Min(ashley.MaxHp - ashley.Hp, strength);
-                    ashley.Hp += heal;
-                    Number(ashley, "+" + heal);
+                    Number(ashley, "+" + ashley.Heal(strength));
                     break;
                 }
                 case Paralysis or Poison or Curse:
-                    ashley.Statuses[kind] = Duration(kind);
+                    ashley.Afflict(kind);
                     break;
-                case 32 or 29:
-                    foreach (int status in new[] { Paralysis, Poison, Numbness, Curse }) ashley.Statuses.Remove(status);
+                case >= 27 and <= 32:
+                    ashley.Cure(kind);
                     break;
             }
         }
@@ -1192,19 +1209,28 @@ public sealed class FieldBattle
         target.Shield.Gain(damage / 10 * (target.Shield.Has(9) ? 95 : 100) / 100);
     }
 
-    /// <summary>A spell's or action's damage: off the hit points, then death (70) at none, or a flinch.</summary>
-    public void Strike(Combatant target, int damage)
+    /// <summary>
+    /// Damage off the hit points, its number shown (to at most 999), then death (70) at none (Ashley's ends the
+    /// battle; an enemy's is counted as felled by the action <paramref name="felledBy"/>, -1 for none), or else a
+    /// flinch from the front or back unless <paramref name="flinch"/> is false. Returns whether the target is dead.
+    /// </summary>
+    public bool Strike(Combatant target, int damage, int felledBy = -1, bool flinch = true, bool front = true)
     {
         target.Hp = Math.Max(0, target.Hp - damage);
-        Number(target, damage.ToString());
-        if (target.Hp == 0 && !target.Dead)
+        Number(target, Math.Min(999, damage).ToString());
+        if (target.Dead) return true;
+        if (target.Hp == 0)
         {
             target.Dead = true;
             Play(target, Death, 4, once: true);
-            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
+            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return true; }
+            if (felledBy >= 0) Felled?.Invoke(target, felledBy);
             Defeated?.Invoke(target);
+            return true;
         }
-        else if (Play(target, target == Ashley ? AshleyFlinchFront : FlinchFront, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        int flinched = target == Ashley ? (front ? AshleyFlinchFront : AshleyFlinchBack) : front ? FlinchFront : FlinchBack;
+        if (flinch && Play(target, flinched, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
+        return false;
     }
 
     /// <summary>
@@ -1275,16 +1301,27 @@ public sealed class FieldBattle
         cast.Caster.Timer = EnemyPause;
     }
 
-    /// <summary>Sets the learned abilities to the buttons: chains (actions below 40) and defenses each fill Circle, Triangle, Square in order learned.</summary>
-    public void Assign(IEnumerable<int> learned)
+    /// <summary>
+    /// Sets the learned abilities to the buttons. With <paramref name="chain"/> and <paramref name="defense"/> the field's
+    /// own arrays are taken and kept. A button keeps the ability it has while Ashley knows it; an empty one takes the
+    /// next learned ability of its kind not on a button, chains (actions 22 to 39) and defenses (40 to 53) each filling
+    /// Circle, Triangle and Square in turn.
+    /// </summary>
+    public void Assign(IEnumerable<int> learned, int[]? chain = null, int[]? defense = null)
     {
-        Array.Clear(ChainSlots);
-        Array.Clear(DefenseSlots);
-        int chains = 0, defenses = 0;
-        foreach (int id in learned)
+        if (chain != null) ChainSlots = chain;
+        if (defense != null) DefenseSlots = defense;
+        var known = new List<int>(learned);
+        foreach (var (slots, low, high) in new[] { (ChainSlots, 22, 39), (DefenseSlots, 40, 53) })
         {
-            if (id is >= 22 and < 40 && chains < 3) ChainSlots[chains++] = id;
-            else if (id is >= 40 and <= 53 && defenses < 3) DefenseSlots[defenses++] = id;
+            for (int i = 0; i < 3; i++) if (!known.Contains(slots[i])) slots[i] = 0;
+            foreach (int id in known)
+            {
+                if (id < low || id > high || Array.IndexOf(slots, id) >= 0) continue;
+                int empty = Array.IndexOf(slots, 0);
+                if (empty < 0) break;
+                slots[empty] = id;
+            }
         }
     }
 
@@ -1322,6 +1359,21 @@ public sealed class FieldBattle
             if (!limbs && InSphere(Ashley!, c)) parts.Add(-1);
             if (parts.Count > 0) _targets.Add((c, parts));
         }
+        // The crates the sphere reaches are targets too, each taken whole and named by its fighter record (Episode 4,
+        // 6:01: "Cube", the stack's bottom crate lit). The stand-in's place is 150 under the crate's middle, where an
+        // actor without bones is aimed at and struck.
+        if (_view.Field != null)
+            foreach (var crate in _view.Crates)
+            {
+                var middle = new Vector3(crate.X * 128 + 64, crate.Bottom - 64, crate.Z * 128 + 64);
+                if (!_view.Field.Actors.TryGetValue(crate.Id, out var node) || !Reaches(Ashley!, middle)) continue;
+                var cube = new Combatant
+                {
+                    Actor = new EventActor(crate.Id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
+                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true,
+                };
+                _targets.Add((cube, new List<int> { -1 }));
+            }
         // With nothing in range the sphere still shows, for as long as the message under CAUTION (retail footage).
         if (_targets.Count == 0) { _view.Message(_view.RetailMessage(0), header: 1, lines: 4); ShowRange(true); _emptySphere = 30; return; }
         player.Halt();
@@ -1459,6 +1511,33 @@ public sealed class FieldBattle
             _flash = 0;
             return;
         }
+        if (who.Cube)
+        {
+            // A crate: its name alone, then the blow (footage: "Cube", "TARGET: Single EGD/LIT"); every crate in reach
+            // is a TARGET on its side of the screen, and the chosen one is lit at once, with no red flash.
+            _view.SystemBox.Open(4, 0);
+            _view.SystemBox.Text = SystemBox.Fill(text["target"].AsGodotDictionary(), new[]
+            {
+                who.Name, "", Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", 0), "",
+            }).Trim(' ');
+            string label = text.GetValueOrDefault("whole_target", "#TARGET").AsString().TrimStart('#');
+            bool chosenSide = LeftOf(who);
+            var same = new List<string>();
+            var others = new List<string>();
+            int index = 0;
+            foreach (var (c, _) in _targets)
+            {
+                if (!c.Cube) continue;
+                if (LeftOf(c) != chosenSide) { others.Add(label); continue; }
+                if (c == who) index = same.Count;
+                same.Add(label);
+            }
+            _hud?.Targets(chosenSide ? (others.Count > 0 ? others : null) : same, chosenSide ? -1 : index, chosenSide ? same : (others.Count > 0 ? others : null), chosenSide ? index : -1);
+            _hud?.AimedAt(Aim(who, -1), Project);
+            Highlight(who, -2);
+            _flash = 0;
+            return;
+        }
         // The chosen part's own hit points, and the chance to hit it.
         string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, HitChance(Ashley!, who, limb) });
         // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), physical, the target's class,
@@ -1470,20 +1549,23 @@ public sealed class FieldBattle
         }).Trim(' ');
         // Each side of the screen lists the parts of an enemy standing on that side of Ashley: the chosen one's, and on
         // the other side the first other enemy there (retail footage); the chosen list has its part lit.
-        bool Left(Combatant c)
-        {
-            var camera = _view.Field?.Camera;
-            if (camera == null || !camera.IsInsideTree()) return false;
-            return camera.UnprojectPosition(c.Actor.Node.GlobalPosition).X < camera.UnprojectPosition(Ashley!.Actor.Node.GlobalPosition).X;
-        }
-        bool chosenLeft = Left(who);
+        bool chosenLeft = LeftOf(who);
         List<string>? other = null;
         foreach (var (c, otherParts) in _targets)
-            if (c != who && Left(c) != chosenLeft) { other = otherParts.ConvertAll(part => PartName(c, part)); break; }
+            if (c != who && LeftOf(c) != chosenLeft) { other = otherParts.ConvertAll(part => PartName(c, part)); break; }
         var mine = parts.ConvertAll(part => PartName(who, part));
         _hud?.Targets(chosenLeft ? other : mine, chosenLeft ? -1 : _part, chosenLeft ? mine : other, chosenLeft ? _part : -1);
         _hud?.AimedAt(Aim(who, limb), Project);
         Highlight(who, limb);
+    }
+
+    /// <summary>Whether a target stands left of Ashley on the screen (the side its parts are listed on); a crate by its middle.</summary>
+    private bool LeftOf(Combatant c)
+    {
+        var camera = _view.Field?.Camera;
+        if (camera == null || !camera.IsInsideTree()) return false;
+        var at = c.Cube ? EventActor.RetailSpace * Aim(c, -1) : c.Actor.Node.GlobalPosition;
+        return camera.UnprojectPosition(at).X < camera.UnprojectPosition(Ashley!.Actor.Node.GlobalPosition).X;
     }
 
     // Target mode lights the chosen part: an added pass over the target's model, cyan where a vertex's bone belongs
@@ -1496,6 +1578,15 @@ public sealed class FieldBattle
     /// <summary>Lights <paramref name="limb"/> of <paramref name="who"/>'s model (none with a null target).</summary>
     private void Highlight(Combatant? who, int limb)
     {
+        // A crate is drawn in grey and teal rather than with the added pass (see FieldView.LightCrate).
+        if (who is { Cube: true })
+        {
+            if (_highlighted != null) SetHighlight(_highlighted, null);
+            _highlighted = null;
+            _view.LightCrate(who.Actor.Id, 1);
+            return;
+        }
+        _view.LightCrate(null, 0);
         if (_highlighted != null && _highlighted != who?.Actor) SetHighlight(_highlighted, null);
         if (who != null && _highlighted == null) _flash = 24;
         _highlighted = who?.Actor;
@@ -1544,8 +1635,9 @@ public sealed class FieldBattle
     /// <summary>The lit part pulses on the 30 Hz clock.</summary>
     private void PulseHighlight()
     {
-        if (_highlighted == null) return;
         float pulse = 0.6f + 0.4f * Mathf.Sin(_tick * Mathf.Tau / 16);
+        if (_phase == Phase.Sphere && _target < _targets.Count && _targets[_target].Who is { Cube: true } crate) _view.LightCrate(crate.Actor.Id, pulse);
+        if (_highlighted == null) return;
         if (_flash > 0) _flash--;
         float flash = _flash / 24f;
         // Ashley glows cyan with the target's red flash (retail footage).
@@ -1760,13 +1852,16 @@ public sealed class FieldBattle
         int limb = _victimLimb;
         target.Engaged = true;
         attacker.Risk = Math.Min(100, attacker.Risk + attacker.Cost);
+        // A crate takes the blow's flash and nothing else: no number, and it stays where it stands (footage, 6:02).
+        // BATTLE.PRG treats a crate whose record has +0x954 bit 16 (every kind but 2 and 4) apart (0x80085F04); what
+        // that changes is not followed.
+        if (target.Cube) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
         int chance = Math.Min(100, HitChance(attacker, target, limb, vary: true) + (attacker == Ashley ? 10 : 0));
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
         int bone = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Bone : -1;
         if (_random.RandiRange(0, 99) >= chance) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
         _view.PlayResident(1, attacker.Actor, target.Actor, bone);
         int damage = Damage(attacker, target, limb);
-        target.Hp = Math.Max(0, target.Hp - damage);
         _lastDamage = damage;
         _lastStruck = target;
 
@@ -1779,22 +1874,11 @@ public sealed class FieldBattle
                 target.Limbs[i].Armour.Wear(damage * share / 100);
             }
         Wear(attacker, target, damage);
-        Number(target, Math.Min(999, damage).ToString());
         var toward = (attacker.Actor.Position - target.Actor.Position) with { Y = 0 };
         float facing = target.Actor.Facing * Mathf.Tau / 4096f;
         bool front = new Vector3(-Mathf.Sin(facing), 0, -Mathf.Cos(facing)).Dot(toward) >= 0;
-        if (target.Hp == 0)
-        {
-            target.Dead = true;
-            Play(target, Death, 4, once: true);
-            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
-            if (attacker == Ashley) Felled?.Invoke(target, 1);
-            Defeated?.Invoke(target);
-            return;
-        }
+        if (Strike(target, damage, attacker == Ashley ? 1 : -1, front: front)) return;
         if (target == Ashley) { _player?.Halt(); _stagger = 15; }
-        int flinch = target == Ashley ? (front ? AshleyFlinchFront : AshleyFlinchBack) : front ? FlinchFront : FlinchBack;
-        if (Play(target, flinch, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
         target.Timer = Math.Max(target.Timer, 30);
     }
 
@@ -1967,15 +2051,15 @@ public sealed class FieldBattle
             foreach (int status in new List<int>(c.Statuses.Keys))
                 if (c.Statuses[status] > 0 && --c.Statuses[status] == 0) c.Statuses.Remove(status);
             if (c.Has(Poison) && _tick % 60 == 0) { int harm = Math.Max(1, c.Hp / 20 + _random.RandiRange(0, 5)); c.Hp = Math.Max(1, c.Hp - harm); Number(c, harm.ToString()); }
-            if (c.Has(Regen) && _tick % 150 == 0) c.Hp = Math.Min(c.MaxHp, c.Hp + Math.Max(1, c.MaxHp / 20 - 2 + _random.RandiRange(0, 4)));
+            if (c.Has(Regen) && _tick % 150 == 0) c.Heal(Math.Max(1, c.MaxHp / 20 - 2 + _random.RandiRange(0, 4)));
         }
         // A crippled body slows RISK's fall with the weapon sheathed.
         int risk = Drawn || Crippled(Ashley, 3) ? 60 : 15, magic = Drawn ? 90 : 30, health = Drawn ? 120 : 60;
         if (_tick % risk == 0) Ashley.Risk = Math.Max(0, Ashley.Risk - 1);
-        if (_tick % magic == 0) Ashley.Mp = Math.Min(Ashley.MaxMp, Ashley.Mp + 1);
+        if (_tick % magic == 0) Ashley.Restore(1);
         if (_tick % health == 0)
         {
-            Ashley.Hp = Math.Min(Ashley.MaxHp, Ashley.Hp + 1);
+            Ashley.Heal(1);
             if (Ashley.Limbs.Count > 0)
             {
                 var limb = Ashley.Limbs[(int)(_tick / health % Ashley.Limbs.Count)];
@@ -1988,6 +2072,7 @@ public sealed class FieldBattle
     {
         if (Ashley == null) return;
         _hud?.Set(Ashley.Hp, Ashley.MaxHp, Ashley.Mp, Ashley.MaxMp, Ashley.Risk, Drawn, Ashley.Limbs.ConvertAll(limb => (limb.Hp, limb.MaxHp)));
+        _hud?.ShowStatuses(Ashley.Statuses.Keys);
         _status.Text = _hud == null ? $"HP {Ashley.Hp}/{Ashley.MaxHp}   MP {Ashley.Mp}/{Ashley.MaxMp}   RISK {Ashley.Risk}" + (Drawn ? "   BATTLE" : "") : "";
         if (GameOver) _status.Text += "   GAME OVER";
     }

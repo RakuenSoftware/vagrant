@@ -49,7 +49,7 @@ public sealed partial class MapCanvas : Control
     private Texture2D? _backdrop, _buttons, _icons, _ashleyIcon, _labels;
     private Texture2D? _compassRim, _compassNorth, _compassMark, _compassMarkLit, _compassRing, _compassNeedle;
     private Font? _system;
-    private int[] _widths = Array.Empty<int>(), _columns = Array.Empty<int>(), _kerning = Array.Empty<int>();
+    private Runtime.HudLettering? _lettering;
     private string[] _legend = Array.Empty<string>();
     private GArray _connecting = new();
     private List<int> _areasVisited = new();
@@ -77,7 +77,7 @@ public sealed partial class MapCanvas : Control
         if (content.Has("map_menu"))
         {
             var menu = content.Data("map_menu");
-            _legend = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(menu["legend"].AsGodotArray(), v => v.AsString()));
+            _legend = menu["legend"].AsStringArray();
             _connecting = menu["connecting"].AsGodotArray();
             _backdrop = Page("map_backdrop");
         }
@@ -95,12 +95,7 @@ public sealed partial class MapCanvas : Control
         _compassNeedle = Page("hud_second_992_222");
         _compassRing = _compassRim;
         _system = content.Has("system_font") ? content.BitmapFont("system_font") : null;
-        if (content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font)
-        {
-            _widths = font["widths"].AsInt32Array();
-            _columns = font["columns"].AsInt32Array();
-            _kerning = font["kerning"].AsInt32Array();
-        }
+        _lettering = _labels != null && content.Has("hud") && content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font ? new Runtime.HudLettering(_labels, font) : null;
         MouseFilter = MouseFilterEnum.Ignore;
         AnchorRight = 1;
         AnchorBottom = 1;
@@ -467,8 +462,7 @@ public sealed partial class MapCanvas : Control
             {
                 DrawLine(from * unit, new Vector2(pivot, row + 8) * unit, Colors.White, unit.Y);
                 DrawLine(new Vector2(pivot, row + 8) * unit, new Vector2(194, row + 8) * unit, Colors.White, unit.Y);
-                DrawPolygon(new[] { new Vector2(178, row) * unit, new Vector2(322, row) * unit, new Vector2(322, row + 12) * unit, new Vector2(178, row + 12) * unit },
-                    new[] { MenuList.BarDark, MenuList.BarLight, MenuList.BarLight, MenuList.BarDark });
+                FieldView.Band(this, new Vector2(178, row), new Vector2(322, row + 12), MenuList.BarDark, MenuList.BarLight, unit);
                 if (_system != null)
                 {
                     DrawSetTransform(FieldView.Pin(Size, 1).Offset, 0, unit);
@@ -492,7 +486,7 @@ public sealed partial class MapCanvas : Control
         void Row(float x, float y, float width, Color from, Color to, string text)
         {
             DrawSetTransform(pin);
-            DrawPolygon(new[] { new Vector2(x, y) * unit, new Vector2(x + width, y) * unit, new Vector2(x + width, y + 12) * unit, new Vector2(x, y + 12) * unit }, new[] { from, to, to, from });
+            FieldView.Band(this, new Vector2(x, y), new Vector2(x + width, y + 12), from, to, unit);
             if (_system != null)
             {
                 DrawSetTransform(pin, 0, unit);
@@ -560,14 +554,14 @@ public sealed partial class MapCanvas : Control
             3 => new[] { false, false, true, false, true },
             _ => new[] { false, false, false, false, false },
         };
-        if (_labels != null && _widths.Length > 0 && _legend.Length >= 5)
+        if (_labels != null && _lettering != null && _legend.Length >= 5)
         {
             var dim = new Color(0.25f, 0.25f, 0.25f);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _legend[0], new Vector2(x + 28, 18), unit, lit[0] ? null : dim);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _legend[1], new Vector2(x + 84, 18), unit, lit[1] ? null : dim);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _legend[2], new Vector2(x + 28, 36), unit, lit[2] ? null : dim);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _legend[3], new Vector2(x + 28, 54), unit, lit[3] ? null : dim);
-            BattleHud.Letter(this, _labels, _widths, _columns, _kerning, _legend[4], new Vector2(x + 28, 72), unit, lit[4] ? null : dim);
+            _lettering!.Draw(this, _legend[0], new Vector2(x + 28, 18), unit, lit[0] ? null : dim);
+            _lettering!.Draw(this, _legend[1], new Vector2(x + 84, 18), unit, lit[1] ? null : dim);
+            _lettering!.Draw(this, _legend[2], new Vector2(x + 28, 36), unit, lit[2] ? null : dim);
+            _lettering!.Draw(this, _legend[3], new Vector2(x + 28, 54), unit, lit[3] ? null : dim);
+            _lettering!.Draw(this, _legend[4], new Vector2(x + 28, 72), unit, lit[4] ? null : dim);
         }
         DrawCompass(new Vector2(x + 62, 184), unit);
         // The chosen room's name in its box, rising with the legend from y 224 to 160 at x 60.

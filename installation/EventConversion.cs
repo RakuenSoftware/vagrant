@@ -24,13 +24,7 @@ public sealed class EventConversion
     /// <summary>Opcodes understood but not presented yet; the scene plays without their effect.</summary>
     private static readonly HashSet<int> Unpresented = new()
     {
-        0x24,                                   // animation sound panning
-        0xa8,                                   // reverb
-        0xbb, 0xbc, 0xbe,                       // screen post-processing
-        0xe3,                                   // feedback overlay rotation
-        0xaa, 0xed, 0xba, 0xf3, 0x7d,           // weapon trails, lens warp, echo source, scanlines, group field
-        0x98,                                   // music snapshot
-        0x9c, 0xb9,                             // sound pan slides, the echo's draw depth
+        0x7d,                                   // a room group header's halfword +2 (what reads it was not found)
     };
 
     /// <summary>Opcodes that wait only for loading, which installed content never needs.</summary>
@@ -450,7 +444,8 @@ public sealed class EventConversion
         int section = -1;
         for (int k = 0; k < _skips.Count; k++)
             if (pc > _skips[k].Open && pc < _skips[k].Close) { section = k; _flowSkips.Add(k); break; }
-        if (section >= 0) args["skip"] = section;
+        // A wait presents nothing; its batch names its section (below).
+        if (section >= 0 && type != "wait") args["skip"] = section;
         if (type == "wait" && _skips.Count > 0)
             _batch.Add(new JsonObject { ["type"] = "event.section", ["args"] = new JsonObject { ["skip"] = section }, ["await"] = false });
         _batch.Add(new JsonObject { ["type"] = type, ["args"] = args, ["await"] = true });
@@ -488,6 +483,49 @@ public sealed class EventConversion
     }
 
     private static JsonArray Point(int x, int y, int z) => new() { x, y, z };
+
+    /// <summary>
+    /// A retail map point (x right, y down, z forward; 128 units a metre) in the engine's field: a half turn about x.
+    /// The motion commands are the engine's own (see its FieldSceneCommands), timed in the event clock's 30 frames a
+    /// second.
+    /// </summary>
+    private static JsonArray Place(float x, float y, float z) => new() { x / MapConversion.UnitsPerMetre, -y / MapConversion.UnitsPerMetre, -z / MapConversion.UnitsPerMetre };
+    /// <summary>A retail facing (4096 a turn about the downward y) as the engine's heading, which turns the other way.</summary>
+    public static float Heading(double facing) => (float)Math.IEEERemainder(-facing * Math.Tau / 4096, Math.Tau);
+    private const int EventRate = 30;
+
+    /// <summary>
+    /// An order-table depth as a distance from the eye in engine units: each entry is about 4 units of view depth (the
+    /// GTE's ZSF3 of 341, set at 0x80011c74); 0 is none.
+    /// </summary>
+    private static float EchoDepth(int entries) => Math.Max(0, entries) * 4 / MapConversion.UnitsPerMetre;
+    /// <summary>The default walk (frames per 128 units, so per metre) and turn (frames a turn) rates for 0xff.</summary>
+    private const int DefaultWalk = 16, DefaultTurn = 32;
+
+    /// <summary>A motion command for the engine; 0x8000 for a height puts the actor on the floor there.</summary>
+    private void Motion(string type, int pc, int x, int y, int z, bool relative, int speed, int heading = -2, int turn = 0)
+    {
+        bool ground = !relative && y == -32768;
+        var args = new JsonObject
+        {
+            ["actor"] = Actor(pc + 1), ["destination"] = Place(x, ground ? 0 : y, z), ["relative"] = relative, ["ground"] = ground,
+            ["frames_per_unit"] = speed == 0xff ? DefaultWalk : speed, ["frame_rate"] = EventRate,
+        };
+        if (type == "actor.walk")
+        {
+            args["frames_per_turn"] = turn == 0xff ? DefaultTurn : turn;
+            if (heading != 0xff) args["heading"] = Heading(heading * 16);
+        }
+        Command(type, args);
+    }
+
+    /// <summary>A rig clip for the engine: its set's name and number, the blend in 30ths of a second, a start some animation frames in.</summary>
+    private JsonObject Clip(int pc, int bank, int number, int blend, int skip = 0)
+    {
+        var args = new JsonObject { ["actor"] = Actor(pc + 1), ["clip"] = $"{AnimationSet(pc, bank)}_{number}", ["blend_seconds"] = blend >= 2 ? blend / (float)EventRate : 0 };
+        if (skip > 0) args["start_seconds"] = skip / CharacterConversion.FramesPerSecond;
+        return args;
+    }
 
     /// <summary>Translates one opcode. Returns the next opcode's address when control does not simply fall through.</summary>
     private int? Translate(int pc, int op)
@@ -558,27 +596,34 @@ public sealed class EventConversion
                 return null;
             }
             case 0x17:
-                Command("overlay.set", new JsonObject
                 {
-                    // The scale byte's low seven bits are the scale (32 is 1; the drawer, 0x800CBBCC, masks the stored
-                    // halfword to 14 bits); its top bit draws the layer at the back of the room's ordering table
-                    // (0x800CCB48), behind the room, as the town seen through MAP062's window.
-                    ["layer"] = Byte(pc + 1) >> 6, ["mode"] = Byte(pc + 1) & 3, ["x"] = Signed(pc + 2) * 2, ["y"] = Signed(pc + 3) * 2,
-                    ["scale"] = (Byte(pc + 4) & 0x7F) / 32f, ["behind"] = (Byte(pc + 4) & 0x80) != 0, ["brightness"] = Byte(pc + 5),
-                });
+                    // The engine's screen pictures. The scale byte's low seven bits are the scale (32 is 1; the drawer,
+                    // 0x800CBBCC, masks the stored halfword to 14 bits); its top bit draws the layer at the back of the
+                    // room's ordering table (0x800CCB48), behind the room, as the town seen through MAP062's window. A
+                    // layer's mode (BATTLE.PRG's table at 0x800EC25C): 0 over the frame, 1 added while it fades, 3 added
+                    // at a quarter, 2 the staff credits' wipe (0x800CC204), whose brightness is only its side and whose
+                    // ragged edge the field draws. 128 is full brightness.
+                    int mode = Byte(pc + 1) & 3;
+                    Command("picture.set", new JsonObject
+                    {
+                        ["layer"] = Byte(pc + 1) >> 6, ["blend"] = mode switch { 1 => "add_until_full", 2 => "wipe", 3 => "quarter_add", _ => "over" },
+                        ["position"] = new JsonArray { Signed(pc + 2) * 2, Signed(pc + 3) * 2 }, ["scale"] = (Byte(pc + 4) & 0x7F) / 32f, ["behind"] = (Byte(pc + 4) & 0x80) != 0,
+                        ["brightness"] = mode == 2 ? Byte(pc + 5) : Byte(pc + 5) / 128f,
+                    });
+                }
                 return null;
             case 0x18:
-                Command("overlay.move", new JsonObject
+                Command("picture.ease", new JsonObject
                 {
-                    ["layer"] = Byte(pc + 5) >> 6, ["ease"] = Byte(pc + 5) & 7, ["x"] = Signed(pc + 1) * 2, ["y"] = Signed(pc + 2) * 2,
-                    ["scale"] = (Byte(pc + 3) & 0x7F) / 32f, ["brightness"] = Byte(pc + 4), ["frames"] = Math.Max(1, Byte(pc + 6)),
+                    ["layer"] = Byte(pc + 5) >> 6, ["ease"] = Byte(pc + 5) & 7, ["position"] = new JsonArray { Signed(pc + 1) * 2, Signed(pc + 2) * 2 },
+                    ["scale"] = (Byte(pc + 3) & 0x7F) / 32f, ["brightness"] = Byte(pc + 4) / 128f, ["frames"] = Math.Max(1, Byte(pc + 6)), ["frame_rate"] = EventRate,
                 });
                 return null;
             case 0x1a:
-                Await(pc, "overlay.wait", new JsonObject());
+                Await(pc, "picture.wait", new JsonObject());
                 return null;
             case 0x19:
-                Command("overlay.free", new JsonObject());
+                Command("picture.clear", new JsonObject());
                 return null;
 
             // Actors.
@@ -698,9 +743,23 @@ public sealed class EventConversion
                         // The game's end: the ending (ENDING.PRG) follows.
                         Command("game.ending", new JsonObject());
                         return null;
-                    case 7:
-                        // Holds the puzzle timer (its state at 0x80050468 kept aside) or lets it run on again (0).
+                    case 0x0f:
+                        // The screen effects module's glowing frame (SCREFF2 0x800f9de8, drawn by 0x800f9fb8) on or off.
+                        Command("screen.frame", new JsonObject { ["on"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 8:
+                        // Holds the puzzle timer, hiding it (0x8007bd3c: its kind at 0x80050468 kept aside, the display
+                        // flag 0x800f4e90 cleared), or lets it run and show again (0).
                         Command("timer.hold", new JsonObject { ["held"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 7:
+                        // The event plays in the gameplay camera (0x800bbe04: flag 0x800f4ba0; 0x800bbf14 copies the
+                        // gameplay camera's look-at and eye into the event's each frame), with no hand-back at its end
+                        // and the next e9 passed over.
+                        Command("camera.gameplay", new JsonObject { ["on"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 6:
+                        // Frees the buffer f7 loaded its chained event into (0x800bb160); the chain itself stays set.
                         return null;
                     case 3: case 4:
                         // Unlocks (3) or asks after (4) an action; flag 0xb1 reports whether it was newly learned, or is known.
@@ -716,7 +775,7 @@ public sealed class EventConversion
             case 0x5f:
                 // Defines user easing curve 4 + slot: a base shape, after squaring the fraction (or its complement,
                 // mirrored, for a negative power) that many times.
-                Command("ease.define", new JsonObject { ["slot"] = Byte(pc + 1) >> 6, ["shape"] = (Byte(pc + 1) >> 4) & 3, ["power"] = (Byte(pc + 1) & 15) is var power && power > 7 ? power - 16 : power });
+                Command("camera.curve", new JsonObject { ["slot"] = Byte(pc + 1) >> 6, ["shape"] = (Byte(pc + 1) >> 4) & 3, ["power"] = (Byte(pc + 1) & 15) is var power && power > 7 ? power - 16 : power });
                 return null;
             case 0xe8:
                 // Anchors the camera to an actor, whose position then carries both camera points; 0x2000 releases it.
@@ -724,7 +783,7 @@ public sealed class EventConversion
                 return null;
             case 0xdf:
                 // Camera momentum (0x800BB35C): bit 0 the look-at's, bit 1 the eye's.
-                Command("camera.momentum", new JsonObject { ["look_at"] = (Byte(pc + 1) & 1) != 0, ["eye"] = (Byte(pc + 1) & 2) != 0 });
+                Command("camera.momentum", new JsonObject { ["target"] = (Byte(pc + 1) & 1) != 0, ["eye"] = (Byte(pc + 1) & 2) != 0 });
                 return null;
             case 0xde:
                 Command("camera.stop", new JsonObject());
@@ -740,8 +799,10 @@ public sealed class EventConversion
                 Await(pc, "screen.wait", new JsonObject());
                 return null;
             case 0xbf:
-                // An echo preset: 0 resets the echo; otherwise a soft, slightly bright after-image two pixels low.
-                Command("screen.echo", new JsonObject { ["preset"] = Word(pc + 1) });
+                // An echo preset (BATTLE.PRG 0x800bd9c0): 0 resets the echo; otherwise a soft, slightly bright double of
+                // this frame two pixels low, lying beyond the value's order-table depth (see EchoDepth).
+                Command("screen.echo", Word(pc + 1) == 0 ? new JsonObject { ["reset"] = true }
+                    : new JsonObject { ["reset"] = true, ["preset"] = true, ["tint"] = new JsonArray { 144 / 128f, 144 / 128f, 144 / 128f }, ["offset"] = new JsonArray { 0, 2 / 224f }, ["depth"] = EchoDepth(Short(pc + 1)) });
                 return null;
             case 0x58:
                 // The HUD: 0 hides it while the scene plays, 1 brings it back.
@@ -794,75 +855,102 @@ public sealed class EventConversion
                 return null;
             case 0x26: case 0x28:
             {
+                // A walk (turn, glide, turn to a heading) or a glide that keeps the facing; x's low bit makes it relative.
                 int x = Short(pc + 3);
-                var args = new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = Point(x >> 1, Short(pc + 5), Short(pc + 7)), ["relative"] = (x & 1) != 0 };
-                if (op == 0x26)
-                {
-                    args["heading"] = Byte(pc + 9) == 0xff ? -1 : Byte(pc + 9) * 16;
-                    args["speed"] = Byte(pc + 10) == 0xff ? -1 : Byte(pc + 10);
-                    args["turn_speed"] = Byte(pc + 11) == 0xff ? -1 : Byte(pc + 11);
-                    Command("actor.walk", args);
-                }
-                else
-                {
-                    args["speed"] = Byte(pc + 9) == 0xff ? -1 : Byte(pc + 9);
-                    Command("actor.glide", args);
-                }
+                if (op == 0x26) Motion("actor.walk", pc, x >> 1, Short(pc + 5), Short(pc + 7), (x & 1) != 0, Byte(pc + 10), Byte(pc + 9), Byte(pc + 11));
+                else Motion("actor.glide", pc, x >> 1, Short(pc + 5), Short(pc + 7), (x & 1) != 0, Byte(pc + 9));
                 return null;
             }
             case 0x2b:
-                Command("actor.turn", new JsonObject { ["actor"] = Actor(pc + 1), ["heading"] = Byte(pc + 3) * 16, ["direction"] = Signed(pc + 4), ["speed"] = Byte(pc + 5) == 0xff ? -1 : Byte(pc + 5) });
+                // Up the retail facings (direction above 0) is down the engine's headings.
+                Command("actor.turn", new JsonObject
+                {
+                    ["actor"] = Actor(pc + 1), ["heading"] = Heading(Byte(pc + 3) * 16), ["direction"] = -Math.Sign(Signed(pc + 4)),
+                    ["frames_per_turn"] = Byte(pc + 5) == 0xff ? DefaultTurn : Byte(pc + 5), ["frame_rate"] = EventRate,
+                });
                 return null;
             case 0x33:
-                Command("actor.rotate", new JsonObject { ["actor"] = Actor(pc + 1), ["relative"] = Byte(pc + 3) != 0, ["angles"] = Point(Short(pc + 4), Short(pc + 6), Short(pc + 8)), ["speed"] = Byte(pc + 10) == 0xff ? -1 : Byte(pc + 10) });
+                // The extra angles (4096 a turn about retail's x, y and z; the engine's y and z turn the other way), eased at
+                // a speed in frames a turn (0 and 0xff at once).
+                Command("actor.shape", new JsonObject
+                {
+                    ["actor"] = Actor(pc + 1), ["relative"] = Byte(pc + 3) != 0,
+                    ["angles"] = new JsonArray { Short(pc + 4) * Math.Tau / 4096, -Short(pc + 6) * Math.Tau / 4096, -Short(pc + 8) * Math.Tau / 4096 },
+                    ["frames_per_turn"] = Byte(pc + 10) == 0xff ? 0 : Byte(pc + 10), ["frame_rate"] = EventRate,
+                });
                 return null;
             case 0x22:
-                Command("actor.animate", new JsonObject { ["actor"] = Actor(pc + 1), ["set"] = AnimationSet(pc, Byte(pc + 5) >> 6), ["number"] = Byte(pc + 3), ["blend"] = Byte(pc + 5) & 0x3f });
+                Command("actor.play", Clip(pc, Byte(pc + 5) >> 6, Byte(pc + 3), Byte(pc + 5) & 0x3f));
                 return null;
             case 0x32:  // Queue an animation to follow the current one: actor, number, unused, bank << 6 | blend.
-                Command("actor.queue", new JsonObject { ["actor"] = Actor(pc + 1), ["set"] = AnimationSet(pc, Byte(pc + 5) >> 6), ["number"] = Byte(pc + 3), ["blend"] = Byte(pc + 5) & 0x3f });
+                Command("actor.queue", Clip(pc, Byte(pc + 5) >> 6, Byte(pc + 3), Byte(pc + 5) & 0x3f));
                 return null;
             case 0x35:  // Play an animation from part-way in: actor, number, start frame, unused, bank << 6 | blend.
-                Command("actor.animate", new JsonObject
-                {
-                    ["actor"] = Actor(pc + 1), ["set"] = AnimationSet(pc, Byte(pc + 6) >> 6), ["number"] = Byte(pc + 3), ["blend"] = Byte(pc + 6) & 0x3f,
-                    ["skip"] = Math.Max(0, Byte(pc + 4) - 1),
-                });
+                Command("actor.play", Clip(pc, Byte(pc + 6) >> 6, Byte(pc + 3), Byte(pc + 6) & 0x3f, Math.Max(0, Byte(pc + 4) - 1)));
                 return null;
             case 0x25: case 0x27:
             {
                 // The tile forms of 26 and 28: the target is the tile centre on its floor (a height of 0x8000).
-                var args = new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = Point(Byte(pc + 3) * 128 + 64, -32768, Byte(pc + 5) * 128 + 64), ["relative"] = false };
-                if (op == 0x25)
-                {
-                    args["heading"] = Byte(pc + 6) == 0xff ? -1 : Byte(pc + 6) * 16;
-                    args["speed"] = Byte(pc + 7) == 0xff ? -1 : Byte(pc + 7);
-                    args["turn_speed"] = Byte(pc + 8) == 0xff ? -1 : Byte(pc + 8);
-                    Command("actor.walk", args);
-                }
-                else
-                {
-                    args["speed"] = Byte(pc + 6) == 0xff ? -1 : Byte(pc + 6);
-                    Command("actor.glide", args);
-                }
+                int x = Byte(pc + 3) * 128 + 64, z = Byte(pc + 5) * 128 + 64;
+                if (op == 0x25) Motion("actor.walk", pc, x, -32768, z, false, Byte(pc + 7), Byte(pc + 6), Byte(pc + 8));
+                else Motion("actor.glide", pc, x, -32768, z, false, Byte(pc + 6));
                 return null;
             }
             // The frame-buffer echo: e1 on/off, e4 scale (0x20 = 1), e5 tint (0x80 neutral), e6 offset in pixels,
             // e7 blend mode. Each of e4-e6 sets at once with 0 frames, otherwise eases over the frames.
             case 0xe1:
-                Command("screen.echo", new JsonObject { ["enabled"] = Byte(pc + 1) != 0 });
+                // Turned off, it stops two frames on.
+                Command("screen.echo", new JsonObject { ["enabled"] = Byte(pc + 1) != 0, ["stop_frames"] = 2, ["frame_rate"] = EventRate });
                 return null;
             case 0xe4:
-                Command("screen.echo", new JsonObject { ["scale"] = new JsonArray { Byte(pc + 1) / 32f, Byte(pc + 2) / 32f }, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });
+                Command("screen.echo", new JsonObject { ["scale"] = new JsonArray { Byte(pc + 1) / 32f, Byte(pc + 2) / 32f }, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate });
                 return null;
             case 0xe5:
-                Command("screen.echo", new JsonObject { ["tint"] = Point(Byte(pc + 1), Byte(pc + 2), Byte(pc + 3)), ["ease"] = Byte(pc + 4), ["frames"] = Byte(pc + 5) });
+                Command("screen.echo", new JsonObject { ["tint"] = new JsonArray { Byte(pc + 1) / 128f, Byte(pc + 2) / 128f, Byte(pc + 3) / 128f }, ["ease"] = Byte(pc + 4), ["frames"] = Byte(pc + 5), ["frame_rate"] = EventRate });
                 return null;
             case 0xe6:
-                Command("screen.echo", new JsonObject { ["offset"] = new JsonArray { Signed(pc + 1), Signed(pc + 2) }, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });
+                Command("screen.echo", new JsonObject { ["offset"] = new JsonArray { Signed(pc + 1) / 320f, Signed(pc + 2) / 224f }, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate });
+                return null;
+            // The screen effects module (GIM/SCREFF2.PRG at 0x800f9800): bc loads it (0x800cb79c), be lets it go and with it
+            // its glow, warp and frame (0x800cb7dc).
+            case 0xbc:
+                return null;
+            case 0xbe:
+                Command("screen.filters_off", new JsonObject());
+                Command("screen.frame", new JsonObject { ["on"] = false });
+                return null;
+            case 0xbb:
+                // The glow on near things (0x800f9800, drawn by 0x800f986c): everything nearer than the value less 3
+                // order-table entries is drawn apart and laid back soft and glowing; 0 ends it.
+                Command("screen.glow", new JsonObject { ["depth"] = Short(pc + 1) <= 3 ? 0 : EchoDepth(Short(pc + 1) - 3) });
+                return null;
+            case 0xed:
+                // The lens warp (0x800bd918; SCREFF2 0x800f9bd8 moves each corner at r pixels from the centre to
+                // r × P·64/4096 × (1 + Q/4096)^r), eased over the frames; one asked for while one eases is passed over.
+                Command("screen.warp", new JsonObject
+                {
+                    ["scale"] = Byte(pc + 1) * 64 / 4096f, ["falloff"] = 1 + Signed(pc + 2) / 4096f, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4),
+                    ["frame_rate"] = EventRate, ["unless_busy"] = true,
+                });
+                return null;
+            case 0xf3:
+                // Scanlines (0x800bb874): every other line darkened by 32 (subtracted), the lines swapping every two frames.
+                Command("screen.scanlines", new JsonObject { ["amount"] = Byte(pc + 1) != 0 ? 32 / 255f : 0, ["period_frames"] = 2, ["frame_rate"] = EventRate });
+                return null;
+            case 0xba:
+                // The echo's source (0x8007de5c): 0 the previous frame (a trail), else this frame as drawn so far.
+                Command("screen.echo", new JsonObject { ["trail"] = Byte(pc + 1) == 0 });
+                return null;
+            case 0xb9:
+                // The echo's order-table depth (0x8007de44, below 2048; 0 over everything).
+                if (Short(pc + 1) is >= 0 and < 2048) Command("screen.echo", new JsonObject { ["depth"] = EchoDepth(Short(pc + 1)) });
+                return null;
+            case 0xe3:
+                // The echo's turn about the screen's centre, eased as e2's roll is (0x800bd444; applied at 0x8007d7b0).
+                Command("screen.echo", new JsonObject { ["turn"] = Short(pc + 1) * Math.Tau / 4096, ["ease"] = Byte(pc + 3) & 15, ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate });
                 return null;
             case 0xe7:
-                Command("screen.echo", new JsonObject { ["mode"] = Byte(pc + 1) & 3 });
+                Command("screen.echo", new JsonObject { ["blend"] = (Byte(pc + 1) & 3) switch { 1 => "add", 2 => "subtract", 3 => "quarter_add", _ => "half" } });
                 return null;
             case 0x2f:
                 Command("actor.delete", new JsonObject { ["actor"] = Actor(pc + 1) });
@@ -895,22 +983,35 @@ public sealed class EventConversion
             case 0x84:
             {
                 // SLUS 0x80045D64: id 0 stops the group's voices; otherwise the one sound, a group 3 or 4 id by its
-                // program in the selected bank, a group 1 or 2 id by itself.
+                // program in the selected bank, a group 1 or 2 id by itself, and a group 0 id as a resident sound's id
+                // (0x80045b28 finds no bank for its mask, so StopSfx takes the id itself).
                 int group = Byte(pc + 1), id = Byte(pc + 2);
                 if (id == 0) { Command("sound.stop", new JsonObject { ["group"] = group }); return null; }
+                if (group == 0) { Command("sound.stop", new JsonObject { ["id"] = id }); return null; }
                 string sound = group is 3 or 4 ? $"se{_soundBank.GetValueOrDefault(pc)}_{id}" : group == 2 ? $"resident_{id}" : group == 1 ? $"effect_{id}" : "-";
                 if (sound == "-") { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
                 Command("sound.stop", new JsonObject { ["sound"] = sound });
                 return null;
             }
             case 0x30:
-                Await(pc, "actor.wait", new JsonObject { ["actor"] = Actor(pc + 1), ["mask"] = Word(pc + 3) });
+                // Retail's waiting bits as the engine's activities: 01 a route, 08 moving, 10 turning (a walk is both),
+                // 20 scaling, 80 animating.
+                {
+                    int mask = Word(pc + 3), activity = ((mask & 0x01) != 0 ? 32 : 0) | ((mask & 0x08) != 0 ? 1 | 8 : 0) | ((mask & 0x10) != 0 ? 2 | 8 | 16 : 0)
+                        | ((mask & 0x20) != 0 ? 64 : 0) | ((mask & 0x80) != 0 ? 4 : 0);
+                    Await(pc, "actor.wait", new JsonObject { ["actor"] = Actor(pc + 1), ["activity"] = activity });
+                }
                 return null;
             case 0x29:
                 Command("actor.attach", new JsonObject { ["actor"] = Actor(pc + 1), ["target"] = Actor(pc + 3), ["bone"] = Byte(pc + 5) });
                 return null;
             case 0x2e:
-                Command("actor.scale", new JsonObject { ["actor"] = Actor(pc + 1), ["scale"] = Point(Short(pc + 3), Short(pc + 5), Short(pc + 7)), ["frames"] = Byte(pc + 9) });
+                // The scale (4096 its own size) eased over the frames.
+                Command("actor.shape", new JsonObject
+                {
+                    ["actor"] = Actor(pc + 1), ["scale"] = new JsonArray { Short(pc + 3) / 4096f, Short(pc + 5) / 4096f, Short(pc + 7) / 4096f },
+                    ["frames"] = Byte(pc + 9), ["frame_rate"] = EventRate,
+                });
                 return null;
             // Room geometry groups: 7c switches the camera-direction cut-away (0 draws every group, 1 restores it),
             // 62 hides the groups marked for first-person view, 65 and 64 hide and show one group.
@@ -945,13 +1046,15 @@ public sealed class EventConversion
 
             // Screen.
             case 0x69:
-                Await(pc, "screen.fade", new JsonObject { ["direction"] = "out", ["effect"] = Byte(pc + 1), ["speed"] = Math.Max(1, Byte(pc + 2)) });
+                // Fades subtract a grey (add a white for effect 1) in display values, by the speed in 255ths a frame.
+                Await(pc, "screen.fade", new JsonObject { ["mode"] = Byte(pc + 1) == 1 ? "add" : "subtract", ["out"] = true, ["rate"] = Math.Max(1, Byte(pc + 2)) / 255f, ["frame_rate"] = EventRate });
                 return null;
             case 0x6a:
-                Command("screen.fade", new JsonObject { ["direction"] = "in", ["effect"] = Byte(pc + 1), ["speed"] = Math.Max(1, Byte(pc + 2)) });
+                Command("screen.fade", new JsonObject { ["mode"] = Byte(pc + 1) == 1 ? "add" : "subtract", ["out"] = false, ["rate"] = Math.Max(1, Byte(pc + 2)) / 255f, ["frame_rate"] = EventRate });
                 return null;
             case 0x6d:
-                Command("screen.display", new JsonObject { ["switches"] = Byte(pc + 1) });
+                // The display's switch (its low two bits: 1 on, 0 blank; higher values leave it).
+                if ((Byte(pc + 1) & 3) < 2) Command("screen.blank", new JsonObject { ["blank"] = (Byte(pc + 1) & 3) != 1 });
                 return null;
 
             // Camera: c0-cb move the look-at point, d0-db the eye.
@@ -970,13 +1073,31 @@ public sealed class EventConversion
                 return null;
             }
             case 0xe2:
-                Command("camera.roll", new JsonObject { ["angle"] = Short(pc + 1), ["direction"] = Byte(pc + 3) >> 4, ["ease"] = Byte(pc + 3) & 15, ["frames"] = Byte(pc + 4) });
+                // Direction 0 turns down the angles, 2 up them; anything else takes the shorter way.
+                Command("camera.roll", new JsonObject
+                {
+                    ["angle"] = Short(pc + 1) * Math.Tau / 4096, ["direction"] = (Byte(pc + 3) >> 4) switch { 0 => -1, 2 => 1, _ => 0 }, ["ease"] = Byte(pc + 3) & 15,
+                    ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate,
+                });
                 return null;
             case 0xea: case 0xeb: case 0xec:
-                Command("camera.lens", new JsonObject { ["property"] = op == 0xea ? "projection" : op == 0xeb ? "near" : "far", ["value"] = Byte(pc + 1), ["ease"] = Byte(pc + 2), ["frames"] = Byte(pc + 3) });
+                // The projection distance (GTE H, 4 a step; 0 the default 512) as the engine's 1 over the tangent of half the
+                // view's height, the 224 lines retail shows.
+                if (op == 0xea) Command("camera.projection", new JsonObject { ["value"] = (Byte(pc + 1) == 0 ? 512 : Byte(pc + 1) * 4) / 112f, ["ease"] = Byte(pc + 2), ["frames"] = Byte(pc + 3), ["frame_rate"] = EventRate });
+                else Command("camera.lens", new JsonObject { ["property"] = op == 0xeb ? "near" : "far", ["value"] = Byte(pc + 1) });
                 return null;
             case 0xef:
-                Command("camera.shake", new JsonObject { ["cycles"] = Byte(pc + 1), ["amplitude"] = Byte(pc + 2), ["axes"] = Byte(pc + 3), ["envelope"] = Byte(pc + 4), ["frames"] = Byte(pc + 5) });
+                {
+                    // Axes as -1, 0 or 1 for x, y and z (bits 2, 4 and 6), for the look-at (bit 0) and eye (bit 1); the engine's y and z flip.
+                    int axes = Byte(pc + 3);
+                    int Factor(int shift) => ((axes >> shift) & 3) - 1;
+                    var factors = new JsonArray { Factor(2), -Factor(4), -Factor(6) };
+                    Command("camera.shake", new JsonObject
+                    {
+                        ["cycles"] = Byte(pc + 1), ["amplitude"] = Byte(pc + 2) / MapConversion.UnitsPerMetre, ["eye_axes"] = (axes & 2) != 0 ? factors.DeepClone() : new JsonArray { 0, 0, 0 },
+                        ["target_axes"] = (axes & 1) != 0 ? factors.DeepClone() : new JsonArray { 0, 0, 0 }, ["envelope"] = Byte(pc + 4) & 3, ["frames"] = Byte(pc + 5), ["frame_rate"] = EventRate,
+                    });
+                }
                 return null;
             case 0x77:  // Weather: type and intensity, wind direction, fall strength, frames to reach them.
                 Command("weather.set", new JsonObject
@@ -989,7 +1110,7 @@ public sealed class EventConversion
             // the selected slot (an SE file). The group is the driver's voice set (BATTLE.PRG's masks at 0x800E9B34).
             case 0x85: case 0x88:
                 return null;
-            case 0x80: case 0x82:
+            case 0x80: case 0x82: case 0x9c:
             {
                 int group = Byte(pc + 1);
                 // A bank sound with no bank loaded has nothing to play.
@@ -1006,21 +1127,23 @@ public sealed class EventConversion
                     if (!listed) _sounds.Add(sound);
                     Command("sound.play", new JsonObject { ["sound"] = sound, ["group"] = group, ["pan"] = Byte(pc + 3), ["volume"] = Byte(pc + 4) });
                 }
-                else Command("sound.volume", new JsonObject { ["sound"] = sound, ["volume"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });  // by sound, whatever its pan
+                // 82 slides a sound's volume and 9c its pan (BATTLE.PRG 0x800ba848), by sound whatever its pan.
+                else Command(op == 0x82 ? "sound.volume" : "sound.pan", new JsonObject { ["sound"] = sound, [op == 0x82 ? "volume" : "pan"] = Byte(pc + 3), ["frames"] = Byte(pc + 4) });
                 return null;
             }
             case 0x70:
             {
-                // Palette transforms: the high nibble of byte 1 picks actors' palettes (0, with the actor at 2) or the
-                // room's (1); 2, a single colour set elsewhere, is not presented. The low nibble is the operation, byte
-                // 4 gives the fade (BATTLE.PRG 0x800B9B5C passes 1 << n, kept to five bits, so from 5 it is at once)
-                // and bytes 5 to 7 a signed change in 5-bit units.
+                // Palette transforms (BATTLE.PRG 0x800b9c58): the high nibble of byte 1 picks actors' palettes (0, with
+                // the actor at 2), the room's (1) or the room's sky dome colours (2: SLUS 0x800478e0 on the five colours
+                // at 0x8005dbf4, the room's sub-section 10 words). The low nibble is the operation, byte 4 gives the fade
+                // (1 << n, kept to five bits, so from 5 it is at once) and bytes 5 to 7 a signed change, in 5-bit units
+                // for palettes and 8-bit units for the sky.
                 int mode = Byte(pc + 1) >> 4;
-                if (mode > 1) { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
+                if (mode > 2) { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
                 var args = new JsonObject
                 {
-                    ["scope"] = mode == 0 ? "actor" : "room", ["op"] = Byte(pc + 1) & 0xF, ["fade"] = (1 << Byte(pc + 4)) & 0x1F,
-                    ["delta"] = Point(Signed(pc + 5), Signed(pc + 6), Signed(pc + 7)),
+                    ["scope"] = mode switch { 0 => "actor", 1 => "room", _ => "sky" }, ["op"] = Byte(pc + 1) & 0xF, ["fade"] = (1 << Byte(pc + 4)) & 0x1F,
+                    ["delta"] = Point(Signed(pc + 5), Signed(pc + 6), Signed(pc + 7)), ["unit"] = mode == 2 ? 255 : 31,
                 };
                 if (mode == 0) args["actor"] = Actor(pc + 2);
                 Command("palette.transform", args);
@@ -1070,13 +1193,41 @@ public sealed class EventConversion
                 Command("actor.sound", new JsonObject { ["actor"] = Actor(pc + 1), ["sounds"] = sounds });
                 return null;
             }
-            case 0x3e:
-                // BATTLE.PRG 0x8009f940: a mode (+0x17fd), a draw offset (+0x6f4 to 0x6f6, signed, added to the actor's
-                // position while it is drawn, and 0x6f7 a depth bias) and a colour (+0x6f8). The colour is used only by
-                // the actor renderer's second pass (0x800b36f8); the actor's own draw keeps the room's light (or 31's
-                // colour), so the opcode does not tint it. Neither the pass nor the offset is presented.
-                _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");
+            case 0xaa:
+                // A weapon trail on (byte 1) the actor's bone (byte 4), or every trail off (BATTLE.PRG 0x800babcc).
+                Command("actor.trail", new JsonObject { ["actor"] = Actor(pc + 2), ["part"] = Byte(pc + 4), ["on"] = Byte(pc + 1) != 0 });
                 return null;
+            case 0xa8:
+                // The driver's reverb (BATTLE.PRG 0x800baaf0: driver command 0x92 with the byte).
+                Command("sound.reverb", new JsonObject { ["value"] = Byte(pc + 1) });
+                return null;
+            case 0x98:
+                // The driver's music snapshot (BATTLE.PRG 0x800ba72c: driver command 0x40).
+                Command("music.snapshot", new JsonObject());
+                return null;
+            case 0x24:
+                // The mix of an actor's own sounds (all actors' for 0x2001; BATTLE.PRG 0x800b77dc): a mode, a pan, a
+                // volume and frames to slide over (see EventActor.MixSounds).
+                Command("actor.mix", new JsonObject { ["actor"] = Actor(pc + 1), ["mode"] = Byte(pc + 3), ["pan"] = Byte(pc + 4), ["volume"] = Byte(pc + 5), ["frames"] = Byte(pc + 6) });
+                return null;
+            case 0x3e:
+            {
+                // The actor's rim (BATTLE.PRG 0x800b8790 and 0x8009f940): a colour (bytes 7 to 9) other than black turns
+                // on a second draw of the actor (0x800af3b8): moved by the signed offset (bytes 3 to 5, map units),
+                // sorted the depth byte's (6) order-table entries further back, each about 4 units of depth (the GTE's
+                // ZSF3 of 341, set at 0x80011c74), its polygons textured and flat-tinted by the colour (0x80 a full
+                // channel), opaque (0x800b3cf0). The actor itself draws over it, so it shows as a coloured rim. Black
+                // turns it off.
+                var rim = new JsonObject { ["actor"] = Actor(pc + 1) };
+                if ((_map[pc + 7] | _map[pc + 8] | _map[pc + 9]) != 0)
+                {
+                    rim["offset"] = Place(Signed(pc + 3), Signed(pc + 4), Signed(pc + 5));
+                    rim["push"] = Byte(pc + 6) * 4 / MapConversion.UnitsPerMetre;
+                    rim["tint"] = new JsonArray { Byte(pc + 7) / 128f, Byte(pc + 8) / 128f, Byte(pc + 9) / 128f };
+                }
+                Command("actor.rim", rim);
+                return null;
+            }
             case 0x34: case 0x39:
                 // Head tracking towards a point (34: x and z; 39: x, y and z), at a speed (0 at once).
                 Command("actor.look", new JsonObject
@@ -1115,7 +1266,7 @@ public sealed class EventConversion
                 return null;
             case 0x5d:
                 // The body's idle sway, over a period of twice the byte (0 stops it).
-                Command("actor.sway", new JsonObject { ["actor"] = Actor(pc + 1), ["period"] = Byte(pc + 3) * 2 });
+                Command("actor.sway", new JsonObject { ["actor"] = Actor(pc + 1), ["period"] = Byte(pc + 3) * 2, ["frame_rate"] = EventRate });
                 return null;
             case 0x87:
                 // Releases an event sound bank slot; releasing the selected one stops the event sounds (SLUS
@@ -1195,42 +1346,45 @@ public sealed class EventConversion
 
     private int? Camera(int pc, int op)
     {
+        // The engine's camera commands (its FieldSceneCommands): retail's look-at is the engine's target. Retail
+        // headings turn the other way about the engine's up, so an orbit's way round and a turn's angle flip.
         string channel = (op & 0x10) == 0 ? "look_at" : "eye";
         var args = new JsonObject { ["channel"] = channel };
+        var engine = new JsonObject { ["part"] = channel == "eye" ? "eye" : "target", ["frame_rate"] = EventRate };
         switch (op & 0x0f)
         {
             case 0x0:
-                args["position"] = Point(Short(pc + 1), Short(pc + 3), Short(pc + 5));
-                Command("camera.stage", args);
+                engine["position"] = Place(Short(pc + 1), Short(pc + 3), Short(pc + 5));
+                Command("camera.stage", engine);
                 break;
             case 0x1:
-                Command("camera.snap", args);
+                Command("camera.snap", engine);
                 break;
             case 0x2: case 0x3:
-                args["mode"] = (op & 0x0f) == 2 ? "line" : "radius";
-                args["ease"] = Byte(pc + 1);
-                args["frames"] = Math.Max(1, Byte(pc + 2));
-                Command("camera.move", args);
+                engine["path"] = (op & 0x0f) == 2 ? "line" : "radius";
+                engine["ease"] = Byte(pc + 1);
+                engine["frames"] = Math.Max(1, Byte(pc + 2));
+                Command("camera.guide", engine);
                 break;
             case 0x4:
-                args["mode"] = "orbit";
-                args["direction"] = Byte(pc + 1) & 15;
-                args["yaw_ease"] = Byte(pc + 1) >> 4;
-                args["radius_ease"] = Byte(pc + 2) & 15;
-                args["height_ease"] = Byte(pc + 2) >> 4;
-                args["frames"] = Math.Max(1, Byte(pc + 3));
-                Command("camera.move", args);
+                engine["path"] = "orbit";
+                engine["direction"] = (Byte(pc + 1) & 15) switch { 1 => -1, 0xf => 1, _ => 0 };
+                engine["heading_ease"] = Byte(pc + 1) >> 4;
+                engine["distance_ease"] = Byte(pc + 2) & 15;
+                engine["height_ease"] = Byte(pc + 2) >> 4;
+                engine["frames"] = Math.Max(1, Byte(pc + 3));
+                Command("camera.guide", engine);
                 break;
             case 0x5:
-                args["mode"] = "turn";
-                args["yaw"] = Short(pc + 1);
-                args["height"] = Short(pc + 3);
-                args["radius_scale"] = Byte(pc + 5);
-                args["yaw_ease"] = Byte(pc + 6) & 15;
-                args["radius_ease"] = Byte(pc + 6) >> 4;
-                args["height_ease"] = Byte(pc + 7) & 15;
-                args["frames"] = Math.Max(1, Byte(pc + 8));
-                Command("camera.move", args);
+                engine["path"] = "turn";
+                engine["turn"] = -Short(pc + 1) * Math.Tau / 4096;
+                engine["end_height"] = -Short(pc + 3) / MapConversion.UnitsPerMetre;
+                engine["distance_scale"] = Byte(pc + 5) / 64f;
+                engine["heading_ease"] = Byte(pc + 6) & 15;
+                engine["distance_ease"] = Byte(pc + 6) >> 4;
+                engine["height_ease"] = Byte(pc + 7) & 15;
+                engine["frames"] = Math.Max(1, Byte(pc + 8));
+                Command("camera.guide", engine);
                 break;
             case 0x7: case 0xa:
                 args["actor"] = Actor(pc + 1);
@@ -1240,23 +1394,24 @@ public sealed class EventConversion
                 Command("camera.stage_bone", args);
                 break;
             case 0x8:
-                args["mode"] = "track";
-                args["actor"] = Actor(pc + 1);
-                args["bone"] = Byte(pc + 3);
-                args["offset"] = Point(Short(pc + 4), Short(pc + 6), Short(pc + 8));
-                args["frames"] = Math.Max(1, Byte(pc + 10));
-                Command("camera.move", args);
+                // With an actor's bone: the field gives the bone's node as the path's anchor.
+                engine["path"] = "actor";
+                engine["actor"] = Actor(pc + 1);
+                engine["bone"] = Byte(pc + 3);
+                engine["offset"] = Place(Short(pc + 4), Short(pc + 6), Short(pc + 8));
+                engine["frames"] = Math.Max(1, Byte(pc + 10));
+                Command("camera.guide", engine);
                 break;
             case 0x9:
-                args["mode"] = "follow";
-                args["frames"] = Math.Max(1, Byte(pc + 1));
-                Command("camera.move", args);
+                engine["path"] = "follow";
+                engine["frames"] = Math.Max(1, Byte(pc + 1));
+                Command("camera.guide", engine);
                 break;
             case 0xb:
-                args["mode"] = "line";
-                args["ease"] = 0;
-                args["frames"] = Math.Max(1, Byte(pc + 2));
-                Command("camera.move", args);
+                engine["path"] = "line";
+                engine["ease"] = 0;
+                engine["frames"] = Math.Max(1, Byte(pc + 2));
+                Command("camera.guide", engine);
                 break;
             default:
                 _untranslated.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");

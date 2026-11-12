@@ -10,7 +10,6 @@ namespace Wol.Games.Vagrant.Runtime;
 /// </summary>
 public partial class AudioSettings : Node
 {
-    public const string Preferences = "user://settings.cfg";
 
     private float _volume = 1f;
     private bool _mono;
@@ -37,8 +36,7 @@ public partial class AudioSettings : Node
 
     public override void _Ready()
     {
-        var config = new ConfigFile();
-        if (config.Load(Preferences) == Error.Ok) _volume = Math.Clamp(config.GetValue("audio", "volume", 1.0).AsSingle(), 0f, 1f);
+        _volume = Math.Clamp(Wol.Engine.Display.DisplaySettings.Preference("audio", "volume", 1.0).AsSingle(), 0f, 1f);
         Apply();
     }
 
@@ -61,10 +59,6 @@ public partial class AudioSettings : Node
 
     public void SavePreferences()
     {
-        var config = new ConfigFile();
-        config.Load(Preferences);
-        config.SetValue("audio", "volume", _volume);
-        var result = config.Save(Preferences);
-        if (result != Error.Ok) GD.PushWarning("Could not save audio settings: " + result);
+        Wol.Engine.Display.DisplaySettings.SetPreference("audio", "volume", _volume);
     }
 }

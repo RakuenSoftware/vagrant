@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Godot;
 
@@ -41,7 +42,7 @@ public sealed partial class BattleHud : Control
     private static readonly Color[] LimbColours = { Color.Color8(0x58, 0x00, 0x18), Color.Color8(0x70, 0x40, 0x00), Color.Color8(0x78, 0x70, 0x08), Color.Color8(0x20, 0x68, 0x18), Color.Color8(0x18, 0x70, 0x68) };
 
     private Texture2D? _digits, _labels, _banner;
-    private int[] _widths = Array.Empty<int>(), _columns = Array.Empty<int>(), _kerning = Array.Empty<int>();
+    private Runtime.HudLettering? _lettering;
     public int Hp, MaxHp, Mp, MaxMp, Risk;
     private bool _drawn;
     private readonly int[] _limbs = { 4, 4, 4, 4, 4 };
@@ -54,12 +55,7 @@ public sealed partial class BattleHud : Control
         _digits = digits;
         _labels = labels;
         _banner = banner;
-        if (font != null)
-        {
-            _widths = font["widths"].AsInt32Array();
-            _columns = font["columns"].AsInt32Array();
-            _kerning = font["kerning"].AsInt32Array();
-        }
+        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
         MouseFilter = MouseFilterEnum.Ignore;
         AnchorRight = 1;
         AnchorBottom = 1;
@@ -186,31 +182,18 @@ public sealed partial class BattleHud : Control
         if (_timing is { } t)
         {
             string text = t.Grade == 2 ? Praise[t.Word] : Grades[t.Grade];
-            float x = 44 - Slide(t.Age, 45, true) - Width(text) / 2;
-            Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(x, 48), Unit, GradeColours[t.Grade]);
+            float x = 44 - Slide(t.Age, 45, true) - _lettering!.Width(text) / 2;
+            _lettering!.Draw(this, text, new Vector2(x, 48), Unit, GradeColours[t.Grade]);
         }
         if (_chains is { } c)
         {
             string text = c.Count == 1 ? "1 CHAIN" : $"{c.Count} CHAINS";
-            float x = 44 - Slide(c.Age, 90, c.Count == 1) - Width(text) / 2;
-            Letter(this, _labels, _widths, _columns, _kerning, text, new Vector2(x, 64), Unit, new Color(1.25f, 0.5f, 0.125f));
+            float x = 44 - Slide(c.Age, 90, c.Count == 1) - _lettering!.Width(text) / 2;
+            _lettering!.Draw(this, text, new Vector2(x, 64), Unit, new Color(1.25f, 0.5f, 0.125f));
         }
         DrawSetTransform(Vector2.Zero);
     }
 
-    /// <summary>A line's width in the HUD's lettering, as Letter lays it out.</summary>
-    private float Width(string text)
-    {
-        float w = 0;
-        for (int k = 0; k < text.Length; k++)
-        {
-            int c = text[k] - 32;
-            if (c < 0 || c >= _widths.Length) continue;
-            w += _widths[c];
-            if (k + 1 < text.Length && text[k] is >= 'A' and <= 'Z' && text[k + 1] is >= 'A' and <= 'Z') w -= _kerning[(text[k] - 'A') * 26 + text[k + 1] - 'A'];
-        }
-        return w;
-    }
 
     /// <summary>
     /// The red "!" over Ashley (BATTLE.PRG 0x800970BC): its foot at her head's place on the screen, tinted (240, 64, 32);
@@ -385,9 +368,100 @@ public sealed partial class BattleHud : Control
                 if (_aimedAt is { } aim && _aimProject?.Invoke(aim) is { } point)
                     DrawLine(new Vector2(94, top + 4) * unit, point - FieldView.Pin(Size, 0).Offset, Pointer, Math.Max(1, unit.Y));
             }
-            float width = Letter(this, _labels, _widths, _columns, _kerning, _leftParts[i], new Vector2(-1000, 0), unit) + 1000;
-            Letter(this, _labels, _widths, _columns, _kerning, _leftParts[i], new Vector2(64 - width + dx, top - 1), unit);
+            float width = _lettering!.Width(_leftParts[i]);
+            _lettering!.Draw(this, _leftParts[i], new Vector2(64 - width + dx, top - 1), unit);
         }
+    }
+
+    /// <summary>
+    /// The shortcut menu L2 holds open (the game's manual, "Shortcut Commands"; Episode 4 at 4:36, measured from the
+    /// footage on the 320 by 240 screen): the direction pad (the label page's (184, 160), 31 by 30) at (72, 110) with
+    /// its four commands, and the four face buttons (16 by 16 from (0, 128): triangle, square, circle and cross, each
+    /// tinted its own colour) round (233, 125) with the classes of magic. A command up or right of its button is
+    /// lettered from five pixels past it, one left or below it ends three before it, with a dot between; one that
+    /// cannot be used now is grey, and a class Ashley has no spell of is not named. Each cluster slides in from its
+    /// side by the row steps, one a frame.
+    /// </summary>
+    private string[]? _shortcuts;
+    private bool[] _shortcutUsable = Array.Empty<bool>();
+    private int _shortcutFrames;
+    private static readonly Vector2[] ShortcutAt = { new(96, 109), new(70, 122), new(105, 122), new(80, 136), new(245, 109), new(213, 122), new(256, 122), new(222, 136) };
+    private static readonly Vector2[] ShortcutButtons = { new(225, 108), new(216, 117), new(235, 117), new(225, 127) };
+    private static readonly Color ShortcutGrey = Color.Color8(0x80, 0x80, 0x80);
+
+    /// <summary>
+    /// Shows the shortcut menu: its eight commands' names (up, left, right and down, then triangle, square, circle and
+    /// cross; empty for none), which of them can be used now, and the frames (30 Hz) it has been open. Null puts it away.
+    /// </summary>
+    public void Shortcuts(string[]? names, bool[] usable, int frames)
+    {
+        if (names == null && _shortcuts == null) return;
+        (_shortcuts, _shortcutUsable, _shortcutFrames) = (names, usable, frames);
+        QueueRedraw();
+    }
+
+    private void DrawShortcuts()
+    {
+        if (_shortcuts == null || _labels == null) return;
+        var unit = Unit;
+        float slide = RowSteps[Math.Clamp(11 - _shortcutFrames, 0, 15)];
+        DrawSetTransform(FieldView.Pin(Size, 1).Offset);
+        FieldView.Sprite(this, _labels, new Rect2(184, 160, 31, 30), new Vector2(72 - slide, 110), Unit);
+        for (int b = 0; b < 4; b++) FieldView.Sprite(this, _labels, new Rect2(16 * b, 128, 16, 16), ShortcutButtons[b] + new Vector2(slide, 0), Unit, MenuList.ButtonTints[b]);
+        for (int i = 0; i < 8 && i < _shortcuts.Length; i++)
+        {
+            string name = _shortcuts[i];
+            if (name.Length == 0) continue;
+            float dx = i < 4 ? -slide : slide;
+            var tint = i < _shortcutUsable.Length && _shortcutUsable[i] ? Colors.White : ShortcutGrey;
+            var at = ShortcutAt[i] + new Vector2(dx, 0);
+            // Up and right start at their place; left and down end at theirs.
+            if (i % 4 is 0 or 2)
+            {
+                DrawRect(new Rect2(new Vector2(at.X - 4, at.Y + 4) * unit, unit * 1.5f), tint);
+                _lettering!.Draw(this, name, at, unit, tint);
+            }
+            else
+            {
+                float width = _lettering!.Width(name);
+                _lettering!.Draw(this, name, new Vector2(at.X - width, at.Y), unit, tint);
+                DrawRect(new Rect2(new Vector2(at.X + 2, at.Y + 4) * unit, unit * 1.5f), tint);
+            }
+        }
+    }
+
+    /// <summary>The orange HUD page (hud_cursor), whose row at y 16 holds the status icons.</summary>
+    public Texture2D? StatusPage;
+    private int[] _statuses = Array.Empty<int>();
+
+    // A lowered or raised stat's icon on the orange page's row at y 16, 16 by 16: STR, INT and AGL, each lowered then
+    // raised. Episode 4 at 9:46 shows Degenerate's (16, 16); the others are taken in the page's order.
+    private static readonly Dictionary<int, int> StatusColumns = new()
+    {
+        [FieldBattle.Degenerate] = 16, [FieldBattle.Herakles] = 32, [FieldBattle.Psychodrain] = 48,
+        [FieldBattle.Enlighten] = 64, [FieldBattle.Leadbones] = 80, [FieldBattle.Invigorate] = 96,
+    };
+
+    /// <summary>Ashley's statuses, by effect id, shown as icons right of the MP block.</summary>
+    public void ShowStatuses(IEnumerable<int> statuses)
+    {
+        var shown = new List<int>();
+        foreach (int status in statuses) if (StatusColumns.ContainsKey(status)) shown.Add(status);
+        shown.Sort();
+        if (shown.SequenceEqual(_statuses)) return;
+        _statuses = shown.ToArray();
+        QueueRedraw();
+    }
+
+    /// <summary>
+    /// The status icons: the first at (169, 8), measured from Episode 4 at 9:46; any further ones 16 to the right of
+    /// it (not seen in the footage).
+    /// </summary>
+    private void DrawStatuses()
+    {
+        if (StatusPage == null) return;
+        for (int i = 0; i < _statuses.Length; i++)
+            FieldView.Sprite(this, StatusPage, new Rect2(StatusColumns[_statuses[i]], 16, 16, 16), new Vector2(169 + 16 * i, 8), Unit);
     }
 
     private static int LimbState(int hp, int most) => hp < 2 ? 0 : 4 * hp < most ? 1 : 4 * hp < 3 * most ? 2 : hp < most ? 3 : 4;
@@ -406,8 +480,6 @@ public sealed partial class BattleHud : Control
 
     private Vector2 Unit => FieldView.Pin(Size, 0).Unit;
 
-    private void Sprite(Texture2D texture, Rect2 source, Vector2 at, Color? modulate = null) =>
-        DrawTextureRectRegion(texture, new Rect2(at * Unit, source.Size * Unit), source, modulate ?? Colors.White);
 
     // Retail adds the banner, the figure, then HP, MP and RISK, each block's bar before its numbers and label. A
     // primitive added to an ordering-table slot goes before those already there, so they are drawn in reverse.
@@ -441,15 +513,17 @@ public sealed partial class BattleHud : Control
         else Letter("RISK  ZERO", new Vector2(12, 22));
         Block(1, Mp, MaxMp);
         Block(0, Hp, MaxHp);
+        DrawStatuses();
         DrawSetTransform(FieldView.Pin(Size, 2).Offset);
         if (_parts != null || _leftParts != null) Parts();
+        DrawShortcuts();
         DrawSetTransform(FieldView.Pin(Size, 0).Offset);
         // The figure, tinted (the colour doubled: 0x80 leaves a texel as it is); not while targeting.
         for (int i = 4; i >= 0 && _parts == null && _leftParts == null && !FigureHidden; i--)
         {
             int piece = i + (_drawn ? 5 : 0);
             var tint = LimbColours[_limbs[i]];
-            Sprite(_digits, new Rect2(PieceSource[piece], PieceSize[piece]), new Vector2(8, 184) + PieceAt[piece], new Color(tint.R * 2, tint.G * 2, tint.B * 2));
+            FieldView.Sprite(this, _digits, new Rect2(PieceSource[piece], PieceSize[piece]), new Vector2(8, 184) + PieceAt[piece], Unit, new Color(tint.R * 2, tint.G * 2, tint.B * 2));
         }
         if (_slide > 0 && _banner != null && !Covered && !BannerHidden)
         {
@@ -457,7 +531,7 @@ public sealed partial class BattleHud : Control
             int word = 0x404040 + (int)(Mathf.Sin((_pulse & 2047) * Mathf.Tau / 4096) * 4096) / 32;
             float r = (word & 255) / 128f, g = ((word >> 8) & 255) / 128f, b = ((word >> 16) & 255) / 128f;
             DrawSetTransform(FieldView.Pin(Size, 2).Offset);
-            Sprite(_banner, new Rect2(0, 0, 73, 10), new Vector2(236, _slide * 3 - 4), new Color(r, g, b));
+            FieldView.Sprite(this, _banner, new Rect2(0, 0, 73, 10), new Vector2(236, _slide * 3 - 4), Unit, new Color(r, g, b));
         }
         DrawSetTransform(Vector2.Zero);
     }
@@ -512,14 +586,13 @@ public sealed partial class BattleHud : Control
     /// </summary>
     public static void Reading(CanvasItem canvas, Texture2D digits, Vector2I at, int value, int most, Color colour, Vector2 unit)
     {
-        void Sprite(Rect2 source, Vector2 to) => canvas.DrawTextureRectRegion(digits, new Rect2(to * unit, source.Size * unit), source);
         void Number(int kind, Vector2 to, int number)
         {
             number = Math.Max(0, number);
             do
             {
                 int digit = number % 10;
-                Sprite(kind == 0 ? new Rect2(6 * digit, 0, 6, 10) : new Rect2(64 + 8 * digit, 0, 7, 12), to);
+                FieldView.Sprite(canvas, digits, kind == 0 ? new Rect2(6 * digit, 0, 6, 10) : new Rect2(64 + 8 * digit, 0, 7, 12), to, unit);
                 to.X -= 5 + kind;
                 number /= 10;
             }
@@ -528,7 +601,7 @@ public sealed partial class BattleHud : Control
         // The most is placed first, but drawn last of the three.
         float x = at.X + 56 - 5 * Math.Max(1, Math.Max(0, most).ToString().Length);
         Number(1, new Vector2(x - 7, at.Y - 10), value);
-        Sprite(new Rect2(32, 11, 5, 10), new Vector2(x, at.Y - 8 + 2));
+        FieldView.Sprite(canvas, digits, new Rect2(32, 11, 5, 10), new Vector2(x, at.Y - 8 + 2), unit);
         Number(0, new Vector2(at.X + 56, at.Y - 8), most);
         Bar(canvas, at, value, most, colour, unit);
     }
@@ -550,28 +623,11 @@ public sealed partial class BattleHud : Control
     public static Color MpColour => BarColours[1];
 
     /// <summary>A line of the HUD's lettering (0x800C6540), from its left edge.</summary>
-    private void Letter(string text, Vector2 at) => Letter(this, _labels!, _widths, _columns, _kerning, text, at, Unit);
+    private void Letter(string text, Vector2 at) => _lettering!.Draw(this, text, at, Unit);
 
     /// <summary>
     /// A line of the HUD's lettering on <paramref name="canvas"/>, from its left edge at <paramref name="at"/> on the
     /// 320 by 240 screen (<paramref name="unit"/> window pixels to a screen pixel): each character's cell from the label
     /// page by its width and column, capitals closed up by their kerning pairs. Returns where the next would go.
     /// </summary>
-    public static float Letter(CanvasItem canvas, Texture2D labels, int[] widths, int[] columns, int[] kerning, string text, Vector2 at, Vector2 unit, Color? tint = null)
-    {
-        for (int k = 0; k < text.Length; k++)
-        {
-            int c = text[k] - 32;
-            if (c < 0 || c >= widths.Length) continue;
-            int width = widths[c];
-            if (width == 0) continue;
-            int column = columns[c];
-            var source = new Rect2(column & 0xFE, 76 + (column & 1) * 10, width, 10);
-            canvas.DrawTextureRectRegion(labels, new Rect2(at * unit, source.Size * unit), source, tint ?? Colors.White);
-            at.X += width;
-            if (k + 1 < text.Length && text[k] is >= 'A' and <= 'Z' && text[k + 1] is >= 'A' and <= 'Z')
-                at.X -= kerning[(text[k] - 'A') * 26 + text[k + 1] - 'A'];
-        }
-        return at.X;
-    }
 }

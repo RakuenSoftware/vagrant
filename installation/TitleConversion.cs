@@ -59,8 +59,6 @@ public sealed class TitleConversion
         for (int y = 0; y < 64; y++) Array.Copy(block, (512 + y) * 544, _vram, (448 + y) * 1024, 544);
     }
 
-    private ushort Word(int offset) => BitConverter.ToUInt16(_overlay, offset);
-    private uint Long(int offset) => BitConverter.ToUInt32(_overlay, offset);
 
     /// <summary>Converts a 15-bit PlayStation colour. Colour 0x0000 is the hardware's transparent texel.</summary>
     public static Color ToColor(ushort value, bool transparentBlack)
@@ -87,7 +85,7 @@ public sealed class TitleConversion
             {
                 int packed = _overlay[offset + (row * width + column) / 2];
                 int index = (column & 1) == 0 ? packed & 15 : packed >> 4;
-                image.SetPixel(column, row, ToColor(Word(paletteOffset + index * 2), true));
+                image.SetPixel(column, row, ToColor(BitConverter.ToUInt16(_overlay, paletteOffset + index * 2), true));
             }
         return image;
     }
@@ -187,10 +185,10 @@ public sealed class TitleConversion
     private const int LoadingOffset = 0x39950;
 
     /// <summary>
-    /// Writes the picture retail shows while it loads, "NOW LOADING..." in glowing blue on black, from the verified
+    /// The picture retail shows while it loads, "NOW LOADING..." in glowing blue on black, from the verified
     /// executable (SLUS_010.40 at 0x39950: 126 by 20); it stands in the middle of the 320 by 240 screen.
     /// </summary>
-    public static void ExportLoading(byte[] executable, string directory, IDictionary<string, string> files)
+    public static Image Loading(byte[] executable)
     {
         int width = BitConverter.ToUInt16(executable, LoadingOffset), height = BitConverter.ToUInt16(executable, LoadingOffset + 2);
         if (width == 0 || height == 0 || LoadingOffset + 4 + width * height * 2 > executable.Length) throw new InvalidDataException("The loading picture is missing from the executable.");
@@ -198,21 +196,13 @@ public sealed class TitleConversion
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
                 image.SetPixel(x, y, ToColor(BitConverter.ToUInt16(executable, LoadingOffset + 4 + (y * width + x) * 2), true));
-        Error error = image.SavePng(Path.Combine(directory, "loading.png"));
-        if (error != Error.Ok) throw new IOException($"Could not write loading.png: {error}");
-        files["loading"] = "loading.png";
+        return image;
     }
 
-    /// <summary>Writes every title image into <paramref name="directory"/> and returns the layout document.</summary>
-    public JsonObject Export(string directory, IDictionary<string, string> files)
+    /// <summary>Makes every title image, among <paramref name="images"/>, and returns the layout document.</summary>
+    public JsonObject Export(IDictionary<string, Image> images)
     {
-        void Save(Image image, string name)
-        {
-            string path = Path.Combine(directory, name);
-            Error error = image.SavePng(path);
-            if (error != Error.Ok) throw new IOException($"Could not write {name}: {error}");
-            files[name.Replace(".png", "")] = name;
-        }
+        void Save(Image image, string name) => images[name.Replace(".png", "")] = image;
 
         Save(IndexedImage(PublisherOffset + 32, 256, 48, PublisherOffset), "publisher.png");
         Save(IndexedImage(DeveloperOffset, 128, 13, DeveloperOffset + 128 * 13 / 2), "developer.png");
@@ -224,14 +214,14 @@ public sealed class TitleConversion
         panel.BlitRect(DirectImage(352, 448, 160, 64), new Rect2I(0, 0, 160, 64), new Vector2I(0, 64));
         Save(panel, "title_panel.png");
         var copyright = Image.CreateEmpty(180, 24, false, Image.Format.Rgba8);
-        for (int i = 0; i < 180 * 24; i++) copyright.SetPixel(i % 180, i / 180, ToColor(Word(CopyrightOffset + i * 2), false));
+        for (int i = 0; i < 180 * 24; i++) copyright.SetPixel(i % 180, i / 180, ToColor(BitConverter.ToUInt16(_overlay, CopyrightOffset + i * 2), false));
         Save(copyright, "title_copyright.png");
 
         var palettes = new JsonArray();
         for (int palette = 0; palette < 4; palette++)
         {
             var colours = new JsonArray();
-            for (int entry = 0; entry < 16; entry++) colours.Add(Word(PaletteTableOffset + (palette * 16 + entry) * 2));
+            for (int entry = 0; entry < 16; entry++) colours.Add((int)BitConverter.ToUInt16(_overlay, PaletteTableOffset + (palette * 16 + entry) * 2));
             palettes.Add(colours);
         }
 
@@ -240,8 +230,8 @@ public sealed class TitleConversion
         var wordImages = new List<Image>();
         for (int entry = 0; entry < MenuEntries; entry++)
         {
-            var (pageX, pageY) = Page(Long(TextPageOffset + entry * 4));
-            var (u, v, clutX, clutY) = Uv(Long(TextUvOffset + entry * 4));
+            var (pageX, pageY) = Page(BitConverter.ToUInt32(_overlay, TextPageOffset + entry * 4));
+            var (u, v, clutX, clutY) = Uv(BitConverter.ToUInt32(_overlay, TextUvOffset + entry * 4));
             if (clutX != 480 || clutY != 384 + entry) throw new InvalidDataException("A menu word does not use its own CLUT row.");
             // Menu words keep their 4-bit indices; the presentation recolours them as the retail CLUT blends do.
             var indices = Image.CreateEmpty(MenuWordWidth, MenuWordHeight, false, Image.Format.L8);
@@ -252,15 +242,15 @@ public sealed class TitleConversion
             wordImages.Add(indices);
             words.Add(new JsonObject { ["file"] = $"title_word_{entry}.png" });
 
-            (pageX, pageY) = Page(Long(GlowPageOffset + entry * 4));
-            (u, v, clutX, clutY) = Uv(Long(GlowUvOffset + entry * 4));
+            (pageX, pageY) = Page(BitConverter.ToUInt32(_overlay, GlowPageOffset + entry * 4));
+            (u, v, clutX, clutY) = Uv(BitConverter.ToUInt32(_overlay, GlowUvOffset + entry * 4));
             if (clutX != 480 || clutY != 394) throw new InvalidDataException("A menu glow does not use the glow CLUT row.");
-            uint size = Long(GlowSizeOffset + entry * 4), origin = Long(GlowOriginOffset + entry * 4);
+            uint size = BitConverter.ToUInt32(_overlay, GlowSizeOffset + entry * 4), origin = BitConverter.ToUInt32(_overlay, GlowOriginOffset + entry * 4);
             int width = (int)(size & 0xFFFF), height = (int)(size >> 16);
             var glow = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
             for (int row = 0; row < height; row++)
                 for (int column = 0; column < width; column++)
-                    glow.SetPixel(column, row, ToColor(Word(PaletteTableOffset + 32 * 2 + Texel(pageX, pageY, u + column, v + row) * 2), true));
+                    glow.SetPixel(column, row, ToColor(BitConverter.ToUInt16(_overlay, PaletteTableOffset + 32 * 2 + Texel(pageX, pageY, u + column, v + row) * 2), true));
             Save(glow, $"title_glow_{entry}.png");
             if (entry == NewGameEntry) Save(glow, $"title_glow_{SettingsEntry}.png");
             glows.Add(new JsonObject

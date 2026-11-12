@@ -2,17 +2,17 @@
 
 Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), consumed at `addons/wol_engine`.
 
-**You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file it reads against the retail US disc, and converts the title content on your computer. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
+**You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files as the disc holds them; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
 
 ## Current state
 
-The title runs as on the retail disc: the publisher and developer logos, the opening movie (its music continues under the title), and the title screen. The menu wheel has the retail New Game, Continue, Vibration (On/Off) and Sound (Stereo/Mono), plus an added Settings item between Sound and New Game. Settings opens the shared engine's display and graphics panel and a master volume slider. Its word is composed at install time from the disc's own menu lettering. The title loops back through the intro after leaving or idling. New Game and Continue go no further yet; they show a notice and return to the title. Menu sound effects are not converted yet.
+The title runs as on the retail disc: the publisher and developer logos, the opening movie (its music continues under the title), and the title screen. The menu wheel has the retail New Game, Continue, Vibration (On/Off) and Sound (Stereo/Mono), plus an added Settings item between Sound and New Game. Settings opens the shared engine's display and graphics panel and a master volume slider. Its word is composed from the disc's own menu lettering. The title loops back through the intro after leaving or idling. New Game and Continue go no further yet; they show a notice and return to the title. Menu sound effects are not converted yet.
 
 `TitleSequence` owns the title's screens and settings and presents each screen with the retail frame timing. See [docs/TITLE.md](docs/TITLE.md).
 
 ## Build
 
-Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the installer converts the opening movie with them).
+Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the game decodes the opening movie with them, once, into its cache).
 
 ```sh
 git submodule update --init --recursive

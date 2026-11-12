@@ -97,10 +97,8 @@ public static class ResultsConversion
                     int texel = rank[image + 12 + (y * width + x) / 2] >> (x % 2 * 4) & 0xF;
                     if (texel == 0) continue;
                     int colour = colours[texel], at = (y * 768 + t * 256 + x) * 4;
-                    rgba[at] = (byte)((colour & 31) * 255 / 31);
-                    rgba[at + 1] = (byte)((colour >> 5 & 31) * 255 / 31);
-                    rgba[at + 2] = (byte)((colour >> 10 & 31) * 255 / 31);
-                    rgba[at + 3] = 255;
+                    var shown = TitleConversion.ToColor((ushort)colour, false);
+                    (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, 255);
                 }
         }
         return Godot.Image.CreateFromData(768, 256, false, Godot.Image.Format.Rgba8, rgba);

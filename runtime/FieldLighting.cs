@@ -20,8 +20,7 @@ public partial class FieldLighting : Node
 
     public override void _Ready()
     {
-        var config = new ConfigFile();
-        if (config.Load(AudioSettings.Preferences) == Error.Ok) Enhanced = config.GetValue("lighting", "enhanced", false).AsBool();
+        Enhanced = Wol.Engine.Display.DisplaySettings.Preference("lighting", "enhanced", false).AsBool();
     }
 
     /// <summary>Sets the choice and saves it (unless <paramref name="save"/> is false, as the checks have it).</summary>
@@ -29,11 +28,7 @@ public partial class FieldLighting : Node
     {
         Enhanced = enhanced;
         if (!save) return;
-        var config = new ConfigFile();
-        config.Load(AudioSettings.Preferences);
-        config.SetValue("lighting", "enhanced", enhanced);
-        var result = config.Save(AudioSettings.Preferences);
-        if (result != Error.Ok) GD.PushWarning("Could not save lighting settings: " + result);
+        Wol.Engine.Display.DisplaySettings.SetPreference("lighting", "enhanced", enhanced);
     }
 
     /// <summary>

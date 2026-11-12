@@ -40,13 +40,29 @@ public partial class FieldContracts : Node
     private (int Zone, int Map)? _room;
     /// <summary>With <c>--at=X,Z</c>, Ashley is set down on that tile of the room instead of at a door, as if she had walked there: the room's tile conditions then start its scenes as play would.</summary>
     private (int X, int Z)? _at;
+    /// <summary>With <c>--yaw=</c>, the gameplay camera stands at that yaw (4096 a turn, 512 a step of L1 or R1), to match a view the footage shows.</summary>
+    private int? _yaw;
+    /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
+    private bool _fight;
+    /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
+    private bool _shortcuts;
+    /// <summary>With <c>--carry</c>, Ashley lifts the nearest block (kinds 4 to 6), turns about with it and sets it down.</summary>
+    private bool _carry;
+    private int _carryStep, _carryCrates;
+    private string _carryTiles = "";
+    /// <summary>With <c>--cube</c>, Ashley draws her weapon facing the nearest crate, opens the attack sphere on it ("Cube") and strikes it, which leaves it standing.</summary>
+    private bool _cube;
+    private int _cubeStep, _cubeRisk, _cubeRiskBefore;
+    /// <summary>With <c>--status=N</c>, Ashley takes status effect N once she is the player's, for the HUD to show it.</summary>
+    private int _status = -1;
+    private int _shortcutStep;
     private string _lastNode = "";
     private int _controlAt;
     private int _nodeFrame;
     /// <summary>The display frame of the room-event capture (<c>--event-frame=</c>).</summary>
     private int _eventFrame = 600;
     /// <summary>With <c>--event-every=</c>, a capture every that many frames while the room's event plays.</summary>
-    private int _eventEvery;
+    private int _eventEvery, _storyEvery = 120;
     /// <summary>With <c>--watch=</c>, a capture every that many frames whatever is happening, to follow a fight or a scene through control.</summary>
     private int _watchEvery;
     /// <summary>The SETUP page's own steps, while the room's steps wait at EQUIP's way out.</summary>
@@ -84,6 +100,8 @@ public partial class FieldContracts : Node
             if (argument == "--game-over-load") _gameOver = _loadAfter = true;
             if (argument.StartsWith("--event-frame=", StringComparison.Ordinal)) _eventFrame = int.Parse(argument["--event-frame=".Length..]);
             if (argument.StartsWith("--event-every=", StringComparison.Ordinal)) _eventEvery = int.Parse(argument["--event-every=".Length..]);
+            // --story-every=N captures the story's events every N frames (120 by default).
+            if (argument.StartsWith("--story-every=", StringComparison.Ordinal)) _storyEvery = Math.Max(1, int.Parse(argument["--story-every=".Length..]));
             if (argument.StartsWith("--watch=", StringComparison.Ordinal)) _watchEvery = int.Parse(argument["--watch=".Length..]);
             // Characters are drawn Original unless --enhanced asks otherwise, whatever the player's saved choice.
             if (argument.StartsWith("--", StringComparison.Ordinal)) CharacterQuality.Choose(System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--enhanced") >= 0, save: false);
@@ -92,6 +110,12 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--tap-every=", StringComparison.Ordinal)) _tapEvery = Math.Max(1, int.Parse(argument["--tap-every=".Length..]));
             if (argument.StartsWith("--room=", StringComparison.Ordinal) && argument["--room=".Length..].Split(',') is [var zone, var map]) _room = (int.Parse(zone), int.Parse(map));
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
+            if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
+            if (argument == "--fight") _fight = true;
+            if (argument == "--shortcuts") _shortcuts = true;
+            if (argument == "--carry") _carry = true;
+            if (argument == "--cube") _cube = true;
+            if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -118,30 +142,28 @@ public partial class FieldContracts : Node
             _view.KeepScene = true;
             _view.StartMap = room.Map;
             // She arrives as play brings her in: through the first door of another room that leads here, of the zone
-            // first, then of any zone (a zone's first room is often entered from the zone before). The doors are read
-            // from the installed rooms' documents: converting every room to look would take all the memory.
+            // first, then of any zone (a zone's first room is often entered from the zone before). Each room looked at
+            // is let go again, so that looking through them all does not hold them all.
             if (_at is { } tile) _view.StartAt = (tile.X, tile.Z, 0, false);
             else
             {
-                var rooms = new System.Collections.Generic.List<(int Zone, int Map, string Path)>();
-                foreach (string path in System.IO.Directory.GetFiles(only.GlobalRoot, "field_z*_m*.json", System.IO.SearchOption.AllDirectories))
-                {
-                    string name = System.IO.Path.GetFileNameWithoutExtension(path);
-                    if (name.Length != 14 || !int.TryParse(name[7..10], out int roomZone) || !int.TryParse(name[12..14], out int roomMap)) continue;
-                    if (roomZone != room.Zone || roomMap != room.Map) rooms.Add((roomZone, roomMap, path));
-                }
+                var rooms = new System.Collections.Generic.List<(int Zone, int Map, string Name)>();
+                foreach (string name in only.Field.RoomNames())
+                    if (int.Parse(name[1..4]) is var roomZone && int.Parse(name[6..8]) is var roomMap && (roomZone != room.Zone || roomMap != room.Map)) rooms.Add((roomZone, roomMap, name));
                 rooms.Sort((a, b) => a.Zone == b.Zone ? a.Map.CompareTo(b.Map) : a.Zone == room.Zone ? -1 : b.Zone == room.Zone ? 1 : a.Zone.CompareTo(b.Zone));
-                foreach (var (otherZone, other, path) in rooms)
+                foreach (var (otherZone, other, name) in rooms)
                 {
-                    using var document = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
-                    if (!document.RootElement.TryGetProperty("doors", out var doors)) continue;
-                    foreach (var door in doors.EnumerateArray())
+                    System.Text.Json.Nodes.JsonObject? document;
+                    try { document = only.Field.Data("field_" + name); }
+                    catch (System.IO.InvalidDataException) { continue; }
+                    only.Field.CacheRoom(name);
+                    foreach (var door in document?["doors"]?.AsArray() ?? new System.Text.Json.Nodes.JsonArray())
                     {
-                        int zone = (int)door.GetProperty("zone").GetDouble() is var named && named != 0 ? named : otherZone;
-                        if (zone != room.Zone || (int)door.GetProperty("map").GetDouble() != room.Map) continue;
-                        var to = door.GetProperty("destination");
-                        int x = (int)to[0].GetDouble(), z = (int)to[1].GetDouble();
-                        _view.StartAt = (x, z, (float)door.GetProperty("facing").GetDouble(), door.GetProperty("half").GetBoolean());
+                        int zone = (int)door!["zone"]! is var named && named != 0 ? named : otherZone;
+                        if (zone != room.Zone || (int)door["map"]! != room.Map) continue;
+                        var to = door["destination"]!;
+                        int x = (int)to[0]!, z = (int)to[1]!;
+                        _view.StartAt = (x, z, (int)door["facing"]!, (bool)door["half"]!);
                         GD.Print(otherZone == room.Zone ? $"FIELD: she arrives by the door from map {other} at tile {x}, {z}" : $"FIELD: she arrives by the door from zone {otherZone} map {other} at tile {x}, {z}");
                         break;
                     }
@@ -190,6 +212,7 @@ public partial class FieldContracts : Node
 
     public override void _PhysicsProcess(double delta)
     {
+        if (_yaw is { } yaw && _view != null) _view.Gameplay.Yaw = yaw;
         if (_ending != null)
         {
             _frame++;
@@ -208,7 +231,7 @@ public partial class FieldContracts : Node
         // finish and confirm each line of text.
         if (_frame % _tapEvery == 0) Input.ActionPress("ps_circle");
         if (_frame % _tapEvery == 4) Input.ActionRelease("ps_circle");
-        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && _frame % 120 == 30) Capture($"event_{_shot++:d3}_{_view.EventNode}");
+        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && _frame % _storyEvery == 30 % _storyEvery) Capture($"event_{_shot++:d4}_{(_view.Events.Count > 0 ? _view.Events[^1] : "none")}_{_view.EventNode}");
         _heardMusic |= _view.MusicPlaying;
         if (_view.Settled || _view.EndOfContent.Length != 0)
         {
@@ -388,6 +411,152 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the HUD shows during the event: {_view.HudShown}");
         }
         if (_watchEvery > 0 && _frame % _watchEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture($"watch_{_frame:d5}");
+        if (_status >= 0 && _view.Controlled && _view.Battle?.Ashley is { } afflicted && !afflicted.Statuses.ContainsKey(_status))
+        {
+            afflicted.Statuses[_status] = FieldBattle.Duration(_status);
+            GD.Print($"FIELD: Ashley takes status {_status}");
+        }
+        if (_shortcuts && (_view.Controlled || _shortcutStep > 0) && _view.Battle is { } shortcutBattle)
+        {
+            // Four chain abilities, the first three on the buttons in turn.
+            if (_view.Abilities.Count == 0) { _view.Abilities.AddRange(new[] { 22, 23, 24, 25 }); shortcutBattle.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
+            switch (++_shortcutStep)
+            {
+                case 30: Input.ActionPress("ps_l2"); break;
+                case 34: Capture("shortcut_sliding"); break;
+                case 70: Capture("shortcut"); Tap("ps_right"); break;
+                case 100:
+                    if (!_view.MenuOpen) { Finish("the CHAIN shortcut opened nothing"); return; }
+                    Capture("shortcut_chain");
+                    Input.ActionRelease("ps_l2");
+                    Tap("ps_circle");
+                    break;
+                case 120: Capture("abilities_chain"); Tap("ps_down"); break;
+                case 140: Tap("ps_down"); break;
+                case 160: Tap("ps_down"); break;
+                case 180:
+                    // The fourth, on no button, goes on Triangle; the second, which was there, comes off.
+                    if (_view.ChainButtons[1] != 23) { Finish($"Triangle held {_view.ChainButtons[1]} before the change, not 23"); return; }
+                    Tap("ps_triangle");
+                    break;
+                case 200:
+                    Capture("abilities_assigned");
+                    GD.Print($"FIELD: the chain buttons hold {string.Join(", ", _view.ChainButtons)}");
+                    if (_view.ChainButtons[1] != 25 || Array.IndexOf(_view.ChainButtons, 23) >= 0) { Finish($"Triangle did not take the fourth ability: {string.Join(", ", _view.ChainButtons)}"); return; }
+                    if (shortcutBattle.ChainSlots[1] != 25) { Finish("the battle does not hold the chosen buttons"); return; }
+                    Tap("ps_cross");
+                    break;
+                case 220: Tap("ps_cross"); break;
+                case 250:
+                    if (_view.MenuOpen) { Finish("leaving the CHAIN shortcut's page left the menu open"); return; }
+                    Input.ActionPress("ps_l2");
+                    break;
+                case 290: Tap("ps_up"); break;
+                case 320:
+                    if (!_view.MenuOpen) { Finish("the ITEMS shortcut opened nothing"); return; }
+                    Capture("shortcut_items");
+                    Input.ActionRelease("ps_l2");
+                    Tap("ps_cross");
+                    break;
+                case 350: if (_view.MenuOpen) Tap("ps_cross"); break;
+                case 380:
+                    Capture("shortcut_after");
+                    Finish(_view.MenuOpen ? "leaving the ITEMS shortcut's page left the menu open" : "");
+                    return;
+            }
+            return;
+        }
+        if (_carry && _view.Controlled && _view.Player is { } carrier)
+        {
+            if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+            switch (++_carryStep)
+            {
+                case 1:
+                {
+                    _carryCrates = new List<(string, int, int, int, float, int)>(_view.Crates).Count;
+                    _carryTiles = CrateTiles();
+                    (int X, int Z)? block = null;
+                    foreach (var crate in _view.Crates)
+                        if (crate.Kind >= 4 && (block == null || new Vector2(crate.X * 128 + 64 - carrier.Position.X, crate.Z * 128 + 64 - carrier.Position.Z).Length() < new Vector2(block.Value.X * 128 + 64 - carrier.Position.X, block.Value.Z * 128 + 64 - carrier.Position.Z).Length()))
+                            block = (crate.X, crate.Z);
+                    if (block == null) { Finish("the room has no block to carry"); return; }
+                    carrier.Facing = carrier.FacingToward(new Vector3(block.Value.X * 128 + 64, carrier.Position.Y, block.Value.Z * 128 + 64));
+                    break;
+                }
+                case 20: Capture("carry_before"); Tap("ps_cross"); break;
+                case 70:
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates - 1) { Finish("Cross at the block did not lift it"); return; }
+                    Capture("carry_lifted");
+                    // She turns about with it and sets it down behind where it stood.
+                    carrier.Facing = Mathf.PosMod(carrier.Facing + 2048, 4096);
+                    break;
+                case 110: Capture("carry_turned"); break;
+                case 130: Tap("ps_cross"); break;
+                case 180:
+                    Capture("carry_set");
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates) { Finish("Cross did not set the block down"); return; }
+                    GD.Print($"FIELD: blocks stood at {_carryTiles}, now at {CrateTiles()}");
+                    Finish(CrateTiles() == _carryTiles ? "the block was set down where it was lifted from, not behind her" : "");
+                    return;
+            }
+            return;
+        }
+        if (_cube && _view.Controlled && _view.Player is { } striker && _view.Battle is { Ashley: { } cubeStriker } cubeBattle)
+        {
+            if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+            switch (++_cubeStep)
+            {
+                case 1:
+                {
+                    _carryCrates = new List<(string, int, int, int, float, int)>(_view.Crates).Count;
+                    _carryTiles = CrateTiles();
+                    (int X, int Z)? nearest = null;
+                    foreach (var crate in _view.Crates)
+                        if (nearest == null || new Vector2(crate.X * 128 + 64 - striker.Position.X, crate.Z * 128 + 64 - striker.Position.Z).Length() < new Vector2(nearest.Value.X * 128 + 64 - striker.Position.X, nearest.Value.Z * 128 + 64 - striker.Position.Z).Length())
+                            nearest = (crate.X, crate.Z);
+                    if (nearest == null) { Finish("the room has no crate to strike"); return; }
+                    striker.Facing = striker.FacingToward(new Vector3(nearest.Value.X * 128 + 64, striker.Position.Y, nearest.Value.Z * 128 + 64));
+                    break;
+                }
+                case 10: Tap("ps_circle"); break;
+                case 60: Tap("ps_circle"); break;
+                case 75:
+                {
+                    Capture("cube_sphere");
+                    string readout = _view.SystemBox.Text;
+                    GD.Print($"FIELD: the sphere on the crate reads \"{readout.Replace('\n', '/')}\"");
+                    if (!cubeBattle.Paused) { Finish("Circle with the weapon drawn did not open the sphere on the crate"); return; }
+                    if (!readout.StartsWith("Cube", StringComparison.Ordinal)) { Finish($"the sphere did not name the crate Cube: \"{readout}\""); return; }
+                    _cubeRisk = cubeStriker.Risk;
+                    _cubeRiskBefore = cubeStriker.Risk;
+                    Tap("ps_circle");
+                    break;
+                }
+                case 85: Capture("cube_strike"); break;
+                case > 75 and < 160: _cubeRisk = Math.Max(_cubeRisk, cubeStriker.Risk); break;
+                case 160:
+                    Capture("cube_after");
+                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates || CrateTiles() != _carryTiles) { Finish("striking the crate moved or broke it"); return; }
+                    // RISK rises with the blow and falls back soon after (footage: RISK 1, then ZERO).
+                    Finish(_cubeRisk <= _cubeRiskBefore ? "striking the crate did not raise her RISK" : "");
+                    return;
+            }
+            return;
+        }
+        if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
+        {
+            if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
+            if (brawl.GameOver) { Finish("Ashley fell in the room's fight"); return; }
+            if (brawl.HostileCount() == 0) { Steer(Vector2.Zero); if (++_calm > 180) Finish(""); return; }
+            _calm = 0;
+            // The sphere is held open long enough to be seen whole, and captured once it is.
+            if (!brawl.Paused) _sphereFrames = 0;
+            else if (++_sphereFrames < 40) { if (_sphereFrames == 36) Capture($"fight_sphere_{_frame:d5}"); return; }
+            if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
+            if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
+            Fight(brawl, brawler, _frame);
+            return;
+        }
         if (_eventEvery > 0 && !_view.Controlled && _frame % _eventEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless")
         {
             Capture($"event_{_frame:d5}");
@@ -773,7 +942,7 @@ public partial class FieldContracts : Node
             // These menus open only where no enemy is about (Triangle does nothing while one fights).
             if (since == 2645) _menusCalm = _view.Battle?.HostileCount() == 0;
             // BATTLE ABILITIES, once she has one (a chain ability given here), is the row above ITEMS: its two kinds, NEXT and help.
-            if (_menusCalm && since == 2650 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); _view.Battle?.Assign(_view.Abilities); }
+            if (_menusCalm && since == 2650 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); _view.Battle?.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
             if (_menusCalm && since == 2660) Tap("ps_triangle");
             // Up until BATTLE ABILITIES (row 2) is chosen, wherever the list was left.
             if (_menusCalm && since is >= 2680 and < 2720 && since % 10 == 0 && _view.MenuRow != 2) Tap("ps_up");
@@ -1304,6 +1473,15 @@ public partial class FieldContracts : Node
     private bool _leftBattle;
     private string _pressed = "";
 
+    /// <summary>Where the room's crates stand, in order, for the carry check.</summary>
+    private string CrateTiles()
+    {
+        var tiles = new List<string>();
+        foreach (var crate in _view.Crates) tiles.Add($"{crate.X},{crate.Z}");
+        tiles.Sort(StringComparer.Ordinal);
+        return string.Join(" ", tiles);
+    }
+
     /// <summary>Taps a button for a few frames.</summary>
     private void Tap(string action)
     {
@@ -1342,7 +1520,7 @@ public partial class FieldContracts : Node
         // The sphere as it opens (its lists sliding in) and once they are in.
         if (battle.Paused && ++_sphereFrames is 4 or 30 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture(_sphereFrames == 4 ? "battle_sphere_open" : "battle_sphere");
         // A chain ability to grade: given as the first battle starts, so her presses are graded about each hit.
-        if (elapsed == 1 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); battle.Assign(_view.Abilities); }
+        if (elapsed == 1 && _view.Abilities.Count == 0) { _view.Abilities.Add(22); battle.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
         // Circle just before her hit lands, as a player times a chain: from two frames before it, so a press that
         // falls while another is still held goes in a frame later, still in time.
         if (battle.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
@@ -1451,7 +1629,7 @@ public partial class FieldContracts : Node
             else if (elapsed % 60 == 0) Tap("ps_circle");
             return;
         }
-        if (elapsed > 60 * 240) { Finish($"the first battle did not end (hostile {battle.HostileCount()}, events {string.Join(" > ", _view.Events)}, node {_view.EventNode}, controlled {_view.Controlled}, settled {_view.Settled}, camera {_view.EventCamera.IdleMask:x})"); return; }
+        if (elapsed > 60 * 240) { Finish($"the first battle did not end (hostile {battle.HostileCount()}, events {string.Join(" > ", _view.Events)}, node {_view.EventNode}, controlled {_view.Controlled}, settled {_view.Settled}, camera {_view.CameraIdle:x})"); return; }
         if (!_view.Controlled) { Steer(Vector2.Zero); if (elapsed % 60 == 0) Tap("ps_circle"); return; }
         if (elapsed == 2 && battle.HostileCount() != 2) { Finish($"MAP003 has {battle.HostileCount()} hostile soldiers, not 2"); return; }
         if (battle.Paused) { if (_sphereFrames >= 32 || _capture.Length == 0) Tap("ps_circle"); return; }
@@ -1577,17 +1755,20 @@ public partial class FieldContracts : Node
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
     }
 
-    private void Capture(string name)
+    private void Capture(string name) => Capture(this, _capture, name);
+
+    /// <summary>Saves the window as shown (sRGB, with HDR 2D's linear buffer encoded) to a folder, unless headless or none is given.</summary>
+    public static void Capture(Node node, string folder, string name)
     {
-        if (_capture.Length == 0 || DisplayServer.GetName() == "headless") return;
-        Directory.CreateDirectory(_capture);
-        var image = GetViewport().GetTexture().GetImage();
-        if (GetTree().Root.UseHdr2D)
+        if (folder.Length == 0 || DisplayServer.GetName() == "headless") return;
+        Directory.CreateDirectory(folder);
+        var image = node.GetViewport().GetTexture().GetImage();
+        if (node.GetTree().Root.UseHdr2D)
             for (int y = 0; y < image.GetHeight(); y++)
                 for (int x = 0; x < image.GetWidth(); x++)
                     image.SetPixel(x, y, image.GetPixel(x, y).LinearToSrgb());
         image.Convert(Image.Format.Rgba8);
-        image.SavePng(Path.Combine(_capture, name + ".png"));
+        image.SavePng(Path.Combine(folder, name + ".png"));
     }
 
     private void Finish(string error)

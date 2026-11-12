@@ -97,7 +97,10 @@ public sealed partial class FieldEffect : Node3D
     private readonly List<Entity> _targets;
     private readonly int[] _curveTable = new int[33];
     private readonly RandomNumberGenerator _random = new();
-    private readonly ImmediateMesh _mesh = new();
+    /// <summary>The engine's field it draws in, under its own name there.</summary>
+    public Wol.Engine.World.FieldScene? Scene;
+    private readonly string _key = "effect" + System.Threading.Interlocked.Increment(ref _effectCount);
+    private static int _effectCount;
 
     private readonly Texture2D? _atlas;
     private readonly List<Texture2D?> _pageTextures = new();
@@ -131,6 +134,9 @@ public sealed partial class FieldEffect : Node3D
     /// <see cref="EventActor.ProjectAsRetail"/>); 0 for none.
     /// </summary>
     public float NearLimit;
+
+    /// <summary>The projection distance the GTE projects with, for <see cref="NearLimit"/>.</summary>
+    public float Projection;
 
     /// <summary>The characters an effect's request lists besides its source and targets (timeline type 8 shifts them).</summary>
     public Func<IEnumerable<EventActor>>? Bystanders { get; init; }
@@ -248,7 +254,6 @@ public sealed partial class FieldEffect : Node3D
                 _pages[key.AsString()] = _pageTextures.Count + 1;
                 _pageTextures.Add(texture(asset.AsString()));
             }
-        AddChild(new MeshInstance3D { Mesh = _mesh, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, Layers = FieldView.EffectLayer });
         // Part 0 starts at once (the cast); its program begins at script address 0.
         if (!armed) _instances.Add(new Instance { Pc = entry, Root = true, Source = source, Secondary = source, Target = _targets[0], Tertiary = _targets[0] });
     }
@@ -275,7 +280,7 @@ public sealed partial class FieldEffect : Node3D
         _instances.Clear();
         _focusInstance = null;
         Shake = Vector4.Zero;
-        _mesh.ClearSurfaces();
+        Scene?.DrawTriangles(_key, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, FieldView.EffectLayer);
         if (!Armed) Finish();
     }
 
@@ -309,7 +314,7 @@ public sealed partial class FieldEffect : Node3D
         if (_instances.Count == 0)
         {
             // An armed effect waits for its next part with nothing drawn.
-            if (Armed) { _mesh.ClearSurfaces(); return; }
+            if (Armed) { Scene?.DrawTriangles(_key, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, FieldView.EffectLayer); return; }
             Finish();
             return;
         }
@@ -320,7 +325,7 @@ public sealed partial class FieldEffect : Node3D
     {
         Finished = true;
         Shake = Vector4.Zero;
-        _mesh.ClearSurfaces();
+        Scene?.DrawTriangles(_key, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, FieldView.EffectLayer);
         foreach (var actor in _shifted) ColourShift?.Invoke(actor, 8, Vector3.Zero, 0);
         _shifted.Clear();
     }
@@ -887,7 +892,7 @@ public sealed partial class FieldEffect : Node3D
     /// <summary>Builds the frame's triangles: each particle's frame parts as camera-facing quads, then what the renderers built.</summary>
     private void Draw()
     {
-        _mesh.ClearSurfaces();
+        Scene?.DrawTriangles(_key, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, FieldView.EffectLayer);
         _triangles.Clear();
         var camera = GetViewport()?.GetCamera3D();
         if (camera == null) return;
@@ -895,16 +900,14 @@ public sealed partial class FieldEffect : Node3D
         float unit = 1f / Installation.MapConversion.UnitsPerMetre;
         var eye = camera.GlobalTransform.AffineInverse();
         float front = Math.Max(camera.Near * 1.05f, unit);
-        // A corner nearer than the GTE's limit lands where retail's projection puts it: across and down shrunk by its
-        // depth over the limit (one behind the eye at the near plane).
+        // A corner nearer than the GTE's limit lands where retail's projection puts it (one behind the eye at the near
+        // plane).
         Vector3 Placed(Vector3 world)
         {
             if (NearLimit <= 0) return world;
-            var local = eye * world;
-            float depth = -local.Z, limit = NearLimit * unit;
-            if (depth >= limit) return world;
-            float shown = Math.Max(depth, front);
-            return camera.GlobalTransform * new Vector3(local.X * shown / limit, local.Y * shown / limit, -shown);
+            var local = eye * world / unit;
+            if (-local.Z >= NearLimit) return world;
+            return camera.GlobalTransform * (EventActor.GteProjection(local, Projection, NearLimit, front / unit).Drawn * unit);
         }
         int quads = 0;
         foreach (var instance in _instances)
@@ -954,29 +957,21 @@ public sealed partial class FieldEffect : Node3D
             foreach (var renderer in instance.Renderers) _triangles.AddRange(renderer.Triangles);
         CastLight();
         MostQuads = Math.Max(MostQuads, quads + _triangles.Count / 2 - quads);
-        // One surface per texture and blend.
-        var keys = new SortedSet<(int, int)>();
-        foreach (var t in _triangles) keys.Add((t.Texture, t.Mode));
-        foreach (var (texture, mode) in keys)
+        // The engine draws them: a PS1 blend's add (1, and a quarter add, 3, its colour already a quarter) adds, 2
+        // subtracts, half and half (0, at half alpha) and opaque (4) mix; enhanced lighting draws added sprites
+        // brighter than white, to bloom (FieldLighting).
+        var drawn = new Wol.Engine.World.FieldTriangle[_triangles.Count];
+        for (int i = 0; i < drawn.Length; i++)
         {
-            // A pulled sprite stops just short of the near plane.
-            var material = Material(texture, mode);
-            material.SetShaderParameter("near", camera.Near * 1.01f);
-            // Enhanced lighting draws added sprites brighter than white, to bloom (FieldLighting).
-            material.SetShaderParameter("boost", mode is 1 or 3 && Runtime.FieldLighting.Enhanced ? Runtime.FieldLighting.EffectBoost : 1f);
-            var mesh = _mesh;
-            mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles, material);
-            foreach (var t in _triangles)
-            {
-                if (t.Texture != texture || t.Mode != mode) continue;
-                var pull = new Vector2(t.Pull, t.Layer);
-                mesh.SurfaceSetColor(t.Ca); mesh.SurfaceSetUV(t.Ua); mesh.SurfaceSetUV2(pull); mesh.SurfaceAddVertex(t.A);
-                mesh.SurfaceSetColor(t.Cb); mesh.SurfaceSetUV(t.Ub); mesh.SurfaceSetUV2(pull); mesh.SurfaceAddVertex(t.B);
-                mesh.SurfaceSetColor(t.Cc); mesh.SurfaceSetUV(t.Uc); mesh.SurfaceSetUV2(pull); mesh.SurfaceAddVertex(t.C);
-            }
-            mesh.SurfaceEnd();
+            var t = _triangles[i];
+            var texture = t.Texture == 0 ? _atlas : t.Texture > 0 ? _pageTextures[t.Texture - 1] : null;
+            var blend = t.Mode is 1 or 3 ? Wol.Engine.World.FieldBlend.Add : t.Mode == 2 ? Wol.Engine.World.FieldBlend.Subtract : Wol.Engine.World.FieldBlend.Mix;
+            drawn[i] = new(texture, blend, t.A, t.B, t.C, t.Ua, t.Ub, t.Uc, t.Ca, t.Cb, t.Cc, t.Pull, t.Layer > 0);
         }
+        Scene?.DrawTriangles(_key, drawn, FieldView.EffectLayer, Runtime.FieldLighting.Enhanced ? Runtime.FieldLighting.EffectBoost : 1f);
     }
+
+    public override void _ExitTree() => Scene?.RemoveTriangles(_key);
 
     /// <summary>Texture coordinates in the atlas of a part of record <paramref name="index"/> (fractions of its width and height).</summary>
     private Vector2[] RecordUv(int index, float u0, float v0, float u1, float v1)
@@ -987,23 +982,6 @@ public sealed partial class FieldEffect : Node3D
         return new[] { At(u0, v0), At(u1, v0), At(u0, v1), At(u1, v1) };
     }
 
-    private readonly Dictionary<(int, int), ShaderMaterial> _materialCache = new();
-
-    /// <summary>The material for a texture (0 the atlas, n page n, -1 none) and a PS1 blend (4 opaque).</summary>
-    private ShaderMaterial Material(int texture, int mode)
-    {
-        if (_materialCache.TryGetValue((texture, mode), out var material)) return material;
-        string blend = mode switch { 1 or 3 => "blend_add", 2 => "blend_sub", _ => "blend_mix" };
-        if (!Shaders.TryGetValue(blend, out var shader))
-            Shaders[blend] = shader = new Shader { Code = "shader_type spatial; render_mode unshaded,cull_disabled,depth_draw_never," + blend + "; uniform sampler2D picture : source_color, filter_nearest, hint_default_white; uniform float near = 0.5; uniform float boost = 1.0; void vertex(){ vec4 view = MODELVIEW_MATRIX * vec4(VERTEX, 1.0); POSITION = PROJECTION_MATRIX * view; vec4 pulled = PROJECTION_MATRIX * vec4(view.xy, min(view.z + UV2.x, -near), 1.0); POSITION.z = pulled.z / pulled.w * POSITION.w; if (UV2.y > 0.5) { POSITION.z = (CLIP_SPACE_FAR > 0.5 ? CLIP_SPACE_FAR - 0.00001 : CLIP_SPACE_FAR + 0.00001) * POSITION.w; } } void fragment(){ vec4 c = texture(picture, UV) * COLOR; ALBEDO = c.rgb * boost; ALPHA = c.a; }" };
-        material = new ShaderMaterial { Shader = shader };
-        var picture = texture == 0 ? _atlas : texture > 0 ? _pageTextures[texture - 1] : null;
-        if (picture != null) material.SetShaderParameter("picture", picture);
-        _materialCache[(texture, mode)] = material;
-        return material;
-    }
-
-    private static readonly Dictionary<string, Shader> Shaders = new();
 
     /// <summary>
     /// A colour channel (BATTLE.PRG 0x800D74B0): its curve at the particle's colour phase plus one, the phase starting
