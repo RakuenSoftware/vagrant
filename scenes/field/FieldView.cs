@@ -173,6 +173,37 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private readonly HashSet<int> _hiddenGroups = new();
     // Set when an event has handed the camera back itself (e9), so its end does not do it again.
     private bool _returnSuppressed;
+
+    private ImageTexture? _frameOverlay;
+
+    /// <summary>
+    /// The screen effects module's glowing frame (GIM/SCREFF2.PRG 0x800f9fb8), added over the 320 by 224 screen: from
+    /// each corner (white) in to a ring at 128 pixels from the centre (grey, 0xa0), and from there to 96 pixels (black),
+    /// the ring 1.375 times as wide as it is high and swelling by up to an eighth four times round (0x800f9df8: the
+    /// radius times 64 + |8 - ((i + 8) & 15)| over 64 at each of 64 steps).
+    /// </summary>
+    private static ImageTexture FrameOverlay()
+    {
+        var image = Image.CreateEmpty(320, 224, false, Image.Format.Rgb8);
+        float Swell(float step) { float at = Mathf.PosMod(step, 64); int i = (int)at; float t = at - i; float S(int n) => (64 + Math.Abs(8 - ((n + 8) & 15))) / 64f; return Mathf.Lerp(S(i), S((i + 1) % 64), t); }
+        for (int y = 0; y < 224; y++)
+            for (int x = 0; x < 320; x++)
+            {
+                float across = (x + 0.5f - 160) / 1.375f, down = y + 0.5f - 112;
+                float swell = Swell(Mathf.Atan2(across, down) / Mathf.Tau * 64);
+                float reach = Mathf.Sqrt(across * across + down * down) / swell;
+                // Where the line from the centre through this pixel leaves the screen, in the same measure.
+                var direction = new Vector2(x + 0.5f - 160, y + 0.5f - 112);
+                float exit = direction == Vector2.Zero ? 0 : Math.Min(direction.X != 0 ? 160 / Math.Abs(direction.X) : float.MaxValue, direction.Y != 0 ? 112 / Math.Abs(direction.Y) : float.MaxValue);
+                float edge = exit * Mathf.Sqrt(across * across + down * down) / swell;
+                float level = reach < 96 ? 0 : reach < 128 ? (reach - 96) / 32 * 0xa0 / 255f : Mathf.Lerp(0xa0 / 255f, 1, Math.Clamp((reach - 128) / Math.Max(1, edge - 128), 0, 1));
+                image.SetPixel(x, y, new Color(level, level, level));
+            }
+        return ImageTexture.CreateFromImage(image);
+    }
+
+    /// <summary>Retail b7 07: the event plays in the gameplay camera, and the next e9 is passed over.</summary>
+    private bool _gameplayInEvent, _skipReturn;
     private bool _zoomPressed;
     private FieldPlayer? _control;
     /// <summary>The room's battle: Ashley and the characters the room placed.</summary>
@@ -581,6 +612,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             }
             EnteredMarker = -1;
             _effects.Clear();
+            _trails.Clear();
             _driver.StopSounds(-1);
             Actors.Clear();
             _fading.Clear();
@@ -815,6 +847,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Flags[176] = Gameplay.TargetDistance == GameplayCamera.Near ? 0 : 1;
         }
         _returnSuppressed = false;
+        _gameplayInEvent = _skipReturn = false;
         _skippable = _skipRequested = false;
         Controlled = false;
         Array.Clear(Field.CameraCurves);
@@ -840,6 +873,60 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private DirectionalLight3D? _characterLight;
 
     private readonly List<FieldEffect> _effects = new();
+
+    /// <summary>
+    /// A weapon trail (retail aa; BATTLE.PRG 0x800ce174): the last eight places, one an event frame, of a bone's base
+    /// and tip (its length along its own -x; 0x800a1c10), newest first.
+    /// </summary>
+    private sealed class Trail
+    {
+        public required EventActor Actor;
+        public int Part, Count;
+        public float Length;
+        public readonly Vector3[] Bases = new Vector3[8], Tips = new Vector3[8];
+    }
+
+    private readonly List<Trail> _trails = new();
+    private const string TrailKey = "trails";
+
+    /// <summary>
+    /// Steps the trails and draws them: from four places on, the ribbon between the base and tip curves through the
+    /// kept places (each gap cut into at most five steps; 0x800d1390), added to the screen in the trail's colour
+    /// (0x90, 0x70, 0x60 at 0x800ec2e8), each step dimmer toward the oldest (0x800cdcbc).
+    /// </summary>
+    private void StepTrails()
+    {
+        var triangles = new List<Wol.Engine.World.FieldTriangle>();
+        foreach (var trail in _trails)
+        {
+            Array.Copy(trail.Bases, 0, trail.Bases, 1, 7);
+            Array.Copy(trail.Tips, 0, trail.Tips, 1, 7);
+            trail.Bases[0] = trail.Actor.BonePosition(trail.Part);
+            trail.Tips[0] = trail.Actor.BonePoint(trail.Part, new Vector3(-trail.Length, 0, 0));
+            trail.Count = Math.Min(8, trail.Count + 1);
+            if (trail.Count < 4) continue;
+            int steps = Math.Min(5, trail.Count - 2), points = (trail.Count - 1) * steps + 1;
+            Vector3 Curve(Vector3[] kept, float at)
+            {
+                int i = Math.Min((int)at, trail.Count - 2);
+                float t = at - i;
+                Vector3 p0 = kept[Math.Max(0, i - 1)], p1 = kept[i], p2 = kept[i + 1], p3 = kept[Math.Min(trail.Count - 1, i + 2)];
+                return 0.5f * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (3 * p1 - p0 - 3 * p2 + p3) * t * t * t);
+            }
+            var colour = new Color(0x90 / 128f, 0x70 / 128f, 0x60 / 128f);
+            for (int k = 0; k + 1 < points; k++)
+            {
+                float a = (float)k / steps, b = (float)(k + 1) / steps;
+                Vector3 baseA = EventActor.RetailSpace * Curve(trail.Bases, a), tipA = EventActor.RetailSpace * Curve(trail.Tips, a);
+                Vector3 baseB = EventActor.RetailSpace * Curve(trail.Bases, b), tipB = EventActor.RetailSpace * Curve(trail.Tips, b);
+                Color near = colour * (1 - (float)k / points), far = colour * (1 - (float)(k + 1) / points);
+                near.A = far.A = 1;
+                triangles.Add(new(null, Wol.Engine.World.FieldBlend.Add, baseA, tipA, tipB, default, default, default, near, near, far));
+                triangles.Add(new(null, Wol.Engine.World.FieldBlend.Add, baseA, tipB, baseB, default, default, default, near, far, far));
+            }
+        }
+        Field?.DrawTriangles(TrailKey, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(triangles), EffectLayer);
+    }
     /// <summary>The effect an event started last, whose further parts it starts (a1).</summary>
     private FieldEffect? _eventEffect;
 
@@ -1017,8 +1104,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 // Retail 70: a colour transform of the room's palettes or of actors' palettes.
                 int op = args["op"].AsInt32(), fade = args["fade"].AsInt32();
-                var delta = Retail(args["delta"].AsGodotArray()) / 31f;
-                if (args["scope"].AsString() == "room") TransformPalette("room", op, delta, fade);
+                var delta = Retail(args["delta"].AsGodotArray()) / args.GetValueOrDefault("unit", 31).AsSingle();
+                if (args["scope"].AsString() is "room" or "sky") TransformPalette(args["scope"].AsString(), op, delta, fade);
                 else foreach (var actor in Targets(args)) TransformPalette(actor.Id, op, delta, fade);
                 return Error.Ok;
             }
@@ -1284,11 +1371,22 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                         if (_content.Sound(key).Group == group || group == 4 && _content.Sound(key).Group == 3) _sounds.Remove(name);
                     return Error.Ok;
                 }
+                if (args.ContainsKey("id")) { _driver.StopSound("", null, args["id"].AsInt32()); return Error.Ok; }
                 StopSound(args["sound"].AsString());
                 return Error.Ok;
             }
             case "sound.play":
                 PlaySound(args["sound"].AsString(), args["volume"].AsInt32(), group: args.GetValueOrDefault("group", -1).AsInt32());
+                return Error.Ok;
+            case "actor.trail":
+                // On adds a trail to the actor's bone; off ends every trail, as retail's 0x800cf830 does.
+                if (!args["on"].AsBool()) { _trails.Clear(); Field?.DrawTriangles(TrailKey, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, EffectLayer); return Error.Ok; }
+                if (Actor(args) is { } trailed)
+                {
+                    int part = args["part"].AsInt32();
+                    var lengths = _content.Character(trailed.Character).GetValueOrDefault("bone_lengths", new GArray()).AsGodotArray();
+                    _trails.Add(new Trail { Actor = trailed, Part = part, Length = part < lengths.Count ? lengths[part].AsSingle() : 0 });
+                }
                 return Error.Ok;
             case "actor.mix":
                 foreach (var mixed in Targets(args))
@@ -1673,7 +1771,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 foreach (var fallen in Targets(args))
                     if (Battle != null && Battle.Combatants.TryGetValue(fallen.Id, out var out_)) out_.Dead = args["defeated"].AsBool() || out_.Hp == 0;
                 return Error.Ok;
+            case "screen.frame":
+                Field.Filter().Overlay(args["on"].AsBool() ? _frameOverlay ??= FrameOverlay() : null);
+                return Error.Ok;
+            case "camera.gameplay":
+                _gameplayInEvent = args["on"].AsBool();
+                if (_gameplayInEvent) _returnSuppressed = _skipReturn = true;
+                return Error.Ok;
             case "camera.return":
+                if (!args.GetValueOrDefault("automatic", false).AsBool() && _skipReturn) { _skipReturn = false; return Error.Ok; }
                 if (args.GetValueOrDefault("automatic", false).AsBool())
                 {
                     if (_returnSuppressed || _pendingChain.Length != 0) return Error.Ok;
@@ -1703,6 +1809,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case "camera.stage": case "camera.snap": case "camera.guide": case "camera.wait": case "camera.roll": case "camera.projection": case "camera.shake":
             case "camera.anchor": case "camera.momentum": case "camera.stop": case "camera.curve":
             case "screen.fade": case "screen.blank": case "screen.wait": case "screen.echo":
+            case "screen.warp": case "screen.scanlines": case "screen.glow": case "screen.filters_off":
             case "picture.set": case "picture.ease": case "picture.wait": case "picture.clear":
                 return Engine(id, type, args, awaited);
             default:
@@ -1982,6 +2089,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private void ShowPalette(string target, Palette palette)
     {
         if (Field == null) return;
+        if (target == "sky") { Field.SetDomeTransform(new Wol.Engine.World.ColourTransform(palette.Scale, palette.Grey, palette.Offset, Vector3.Zero, false)); return; }
         var ids = new List<string>();
         foreach (var key in Field.Actors.Keys)
             if (target == "room" ? int.TryParse(key, out _) : key == target) ids.Add(key);
@@ -3339,7 +3447,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Field.Camera.HOffset = shake.X / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.VOffset = -shake.Y / Installation.MapConversion.UnitsPerMetre;
         }
-        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } }
+        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); }
         // The event camera's roll (opcode e2) is the engine's; play has none.
         if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();
@@ -3481,6 +3589,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
         // The game over's LOAD screens run with no one in control.
         if (!Controlled && _menu.Open) { _menu.Step(button => _presses.Contains(button)); _presses.Clear(); return; }
+        // An event in the gameplay camera keeps the camera following Ashley as play does.
+        if (_gameplayInEvent && !Controlled && Player is { } followed)
+        {
+            Gameplay.Step(followed.Position, 0, false);
+            Field.SnapCamera(Wol.Engine.World.CameraPart.Target, EventActor.RetailSpace * Gameplay.LookAt);
+            Field.SnapCamera(Wol.Engine.World.CameraPart.Eye, EventActor.RetailSpace * Gameplay.Eye);
+        }
         if (!Controlled || Player is not { } player || _control == null) { _presses.Clear(); StepMessage(); return; }
         StepMessage();
         // While a lid swings open she waits.

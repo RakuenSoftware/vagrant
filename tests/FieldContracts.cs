@@ -62,7 +62,7 @@ public partial class FieldContracts : Node
     /// <summary>The display frame of the room-event capture (<c>--event-frame=</c>).</summary>
     private int _eventFrame = 600;
     /// <summary>With <c>--event-every=</c>, a capture every that many frames while the room's event plays.</summary>
-    private int _eventEvery;
+    private int _eventEvery, _storyEvery = 120;
     /// <summary>With <c>--watch=</c>, a capture every that many frames whatever is happening, to follow a fight or a scene through control.</summary>
     private int _watchEvery;
     /// <summary>The SETUP page's own steps, while the room's steps wait at EQUIP's way out.</summary>
@@ -100,6 +100,8 @@ public partial class FieldContracts : Node
             if (argument == "--game-over-load") _gameOver = _loadAfter = true;
             if (argument.StartsWith("--event-frame=", StringComparison.Ordinal)) _eventFrame = int.Parse(argument["--event-frame=".Length..]);
             if (argument.StartsWith("--event-every=", StringComparison.Ordinal)) _eventEvery = int.Parse(argument["--event-every=".Length..]);
+            // --story-every=N captures the story's events every N frames (120 by default).
+            if (argument.StartsWith("--story-every=", StringComparison.Ordinal)) _storyEvery = Math.Max(1, int.Parse(argument["--story-every=".Length..]));
             if (argument.StartsWith("--watch=", StringComparison.Ordinal)) _watchEvery = int.Parse(argument["--watch=".Length..]);
             // Characters are drawn Original unless --enhanced asks otherwise, whatever the player's saved choice.
             if (argument.StartsWith("--", StringComparison.Ordinal)) CharacterQuality.Choose(System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--enhanced") >= 0, save: false);
@@ -229,7 +231,7 @@ public partial class FieldContracts : Node
         // finish and confirm each line of text.
         if (_frame % _tapEvery == 0) Input.ActionPress("ps_circle");
         if (_frame % _tapEvery == 4) Input.ActionRelease("ps_circle");
-        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && _frame % 120 == 30) Capture($"event_{_shot++:d3}_{_view.EventNode}");
+        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && _frame % _storyEvery == 30 % _storyEvery) Capture($"event_{_shot++:d4}_{(_view.Events.Count > 0 ? _view.Events[^1] : "none")}_{_view.EventNode}");
         _heardMusic |= _view.MusicPlaying;
         if (_view.Settled || _view.EndOfContent.Length != 0)
         {

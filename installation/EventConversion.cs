@@ -24,10 +24,7 @@ public sealed class EventConversion
     /// <summary>Opcodes understood but not presented yet; the scene plays without their effect.</summary>
     private static readonly HashSet<int> Unpresented = new()
     {
-        0xbb, 0xbc, 0xbe,                       // screen post-processing
-        0xe3,                                   // feedback overlay rotation
-        0xaa, 0xed, 0xba, 0xf3, 0x7d,           // weapon trails, lens warp, echo source, scanlines, group field
-        0xb9,                                   // the echo's draw depth
+        0x7d,                                   // a room group header's halfword +2 (what reads it was not found)
     };
 
     /// <summary>Opcodes that wait only for loading, which installed content never needs.</summary>
@@ -496,6 +493,12 @@ public sealed class EventConversion
     /// <summary>A retail facing (4096 a turn about the downward y) as the engine's heading, which turns the other way.</summary>
     public static float Heading(double facing) => (float)Math.IEEERemainder(-facing * Math.Tau / 4096, Math.Tau);
     private const int EventRate = 30;
+
+    /// <summary>
+    /// An order-table depth as a distance from the eye in engine units: each entry is about 4 units of view depth (the
+    /// GTE's ZSF3 of 341, set at 0x80011c74); 0 is none.
+    /// </summary>
+    private static float EchoDepth(int entries) => Math.Max(0, entries) * 4 / MapConversion.UnitsPerMetre;
     /// <summary>The default walk (frames per 128 units, so per metre) and turn (frames a turn) rates for 0xff.</summary>
     private const int DefaultWalk = 16, DefaultTurn = 32;
 
@@ -740,9 +743,23 @@ public sealed class EventConversion
                         // The game's end: the ending (ENDING.PRG) follows.
                         Command("game.ending", new JsonObject());
                         return null;
-                    case 7:
-                        // Holds the puzzle timer (its state at 0x80050468 kept aside) or lets it run on again (0).
+                    case 0x0f:
+                        // The screen effects module's glowing frame (SCREFF2 0x800f9de8, drawn by 0x800f9fb8) on or off.
+                        Command("screen.frame", new JsonObject { ["on"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 8:
+                        // Holds the puzzle timer, hiding it (0x8007bd3c: its kind at 0x80050468 kept aside, the display
+                        // flag 0x800f4e90 cleared), or lets it run and show again (0).
                         Command("timer.hold", new JsonObject { ["held"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 7:
+                        // The event plays in the gameplay camera (0x800bbe04: flag 0x800f4ba0; 0x800bbf14 copies the
+                        // gameplay camera's look-at and eye into the event's each frame), with no hand-back at its end
+                        // and the next e9 passed over.
+                        Command("camera.gameplay", new JsonObject { ["on"] = Byte(pc + 2) != 0 });
+                        return null;
+                    case 6:
+                        // Frees the buffer f7 loaded its chained event into (0x800bb160); the chain itself stays set.
                         return null;
                     case 3: case 4:
                         // Unlocks (3) or asks after (4) an action; flag 0xb1 reports whether it was newly learned, or is known.
@@ -782,9 +799,10 @@ public sealed class EventConversion
                 Await(pc, "screen.wait", new JsonObject());
                 return null;
             case 0xbf:
-                // An echo preset: 0 resets the echo; otherwise a soft, slightly bright after-image two pixels low.
+                // An echo preset (BATTLE.PRG 0x800bd9c0): 0 resets the echo; otherwise a soft, slightly bright double of
+                // this frame two pixels low, lying beyond the value's order-table depth (see EchoDepth).
                 Command("screen.echo", Word(pc + 1) == 0 ? new JsonObject { ["reset"] = true }
-                    : new JsonObject { ["reset"] = true, ["preset"] = true, ["tint"] = new JsonArray { 144 / 128f, 144 / 128f, 144 / 128f }, ["offset"] = new JsonArray { 0, 2 / 224f } });
+                    : new JsonObject { ["reset"] = true, ["preset"] = true, ["tint"] = new JsonArray { 144 / 128f, 144 / 128f, 144 / 128f }, ["offset"] = new JsonArray { 0, 2 / 224f }, ["depth"] = EchoDepth(Short(pc + 1)) });
                 return null;
             case 0x58:
                 // The HUD: 0 hides it while the scene plays, 1 brings it back.
@@ -893,6 +911,44 @@ public sealed class EventConversion
             case 0xe6:
                 Command("screen.echo", new JsonObject { ["offset"] = new JsonArray { Signed(pc + 1) / 320f, Signed(pc + 2) / 224f }, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate });
                 return null;
+            // The screen effects module (GIM/SCREFF2.PRG at 0x800f9800): bc loads it (0x800cb79c), be lets it go and with it
+            // its glow, warp and frame (0x800cb7dc).
+            case 0xbc:
+                return null;
+            case 0xbe:
+                Command("screen.filters_off", new JsonObject());
+                Command("screen.frame", new JsonObject { ["on"] = false });
+                return null;
+            case 0xbb:
+                // The glow on near things (0x800f9800, drawn by 0x800f986c): everything nearer than the value less 3
+                // order-table entries is drawn apart and laid back soft and glowing; 0 ends it.
+                Command("screen.glow", new JsonObject { ["depth"] = Short(pc + 1) <= 3 ? 0 : EchoDepth(Short(pc + 1) - 3) });
+                return null;
+            case 0xed:
+                // The lens warp (0x800bd918; SCREFF2 0x800f9bd8 moves each corner at r pixels from the centre to
+                // r × P·64/4096 × (1 + Q/4096)^r), eased over the frames; one asked for while one eases is passed over.
+                Command("screen.warp", new JsonObject
+                {
+                    ["scale"] = Byte(pc + 1) * 64 / 4096f, ["falloff"] = 1 + Signed(pc + 2) / 4096f, ["ease"] = Byte(pc + 3), ["frames"] = Byte(pc + 4),
+                    ["frame_rate"] = EventRate, ["unless_busy"] = true,
+                });
+                return null;
+            case 0xf3:
+                // Scanlines (0x800bb874): every other line darkened by 32 (subtracted), the lines swapping every two frames.
+                Command("screen.scanlines", new JsonObject { ["amount"] = Byte(pc + 1) != 0 ? 32 / 255f : 0, ["period_frames"] = 2, ["frame_rate"] = EventRate });
+                return null;
+            case 0xba:
+                // The echo's source (0x8007de5c): 0 the previous frame (a trail), else this frame as drawn so far.
+                Command("screen.echo", new JsonObject { ["trail"] = Byte(pc + 1) == 0 });
+                return null;
+            case 0xb9:
+                // The echo's order-table depth (0x8007de44, below 2048; 0 over everything).
+                if (Short(pc + 1) is >= 0 and < 2048) Command("screen.echo", new JsonObject { ["depth"] = EchoDepth(Short(pc + 1)) });
+                return null;
+            case 0xe3:
+                // The echo's turn about the screen's centre, eased as e2's roll is (0x800bd444; applied at 0x8007d7b0).
+                Command("screen.echo", new JsonObject { ["turn"] = Short(pc + 1) * Math.Tau / 4096, ["ease"] = Byte(pc + 3) & 15, ["frames"] = Byte(pc + 4), ["frame_rate"] = EventRate });
+                return null;
             case 0xe7:
                 Command("screen.echo", new JsonObject { ["blend"] = (Byte(pc + 1) & 3) switch { 1 => "add", 2 => "subtract", 3 => "quarter_add", _ => "half" } });
                 return null;
@@ -927,9 +983,11 @@ public sealed class EventConversion
             case 0x84:
             {
                 // SLUS 0x80045D64: id 0 stops the group's voices; otherwise the one sound, a group 3 or 4 id by its
-                // program in the selected bank, a group 1 or 2 id by itself.
+                // program in the selected bank, a group 1 or 2 id by itself, and a group 0 id as a resident sound's id
+                // (0x80045b28 finds no bank for its mask, so StopSfx takes the id itself).
                 int group = Byte(pc + 1), id = Byte(pc + 2);
                 if (id == 0) { Command("sound.stop", new JsonObject { ["group"] = group }); return null; }
+                if (group == 0) { Command("sound.stop", new JsonObject { ["id"] = id }); return null; }
                 string sound = group is 3 or 4 ? $"se{_soundBank.GetValueOrDefault(pc)}_{id}" : group == 2 ? $"resident_{id}" : group == 1 ? $"effect_{id}" : "-";
                 if (sound == "-") { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
                 Command("sound.stop", new JsonObject { ["sound"] = sound });
@@ -1075,16 +1133,17 @@ public sealed class EventConversion
             }
             case 0x70:
             {
-                // Palette transforms: the high nibble of byte 1 picks actors' palettes (0, with the actor at 2) or the
-                // room's (1); 2, a single colour set elsewhere, is not presented. The low nibble is the operation, byte
-                // 4 gives the fade (BATTLE.PRG 0x800B9B5C passes 1 << n, kept to five bits, so from 5 it is at once)
-                // and bytes 5 to 7 a signed change in 5-bit units.
+                // Palette transforms (BATTLE.PRG 0x800b9c58): the high nibble of byte 1 picks actors' palettes (0, with
+                // the actor at 2), the room's (1) or the room's sky dome colours (2: SLUS 0x800478e0 on the five colours
+                // at 0x8005dbf4, the room's sub-section 10 words). The low nibble is the operation, byte 4 gives the fade
+                // (1 << n, kept to five bits, so from 5 it is at once) and bytes 5 to 7 a signed change, in 5-bit units
+                // for palettes and 8-bit units for the sky.
                 int mode = Byte(pc + 1) >> 4;
-                if (mode > 1) { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
+                if (mode > 2) { _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}"); return null; }
                 var args = new JsonObject
                 {
-                    ["scope"] = mode == 0 ? "actor" : "room", ["op"] = Byte(pc + 1) & 0xF, ["fade"] = (1 << Byte(pc + 4)) & 0x1F,
-                    ["delta"] = Point(Signed(pc + 5), Signed(pc + 6), Signed(pc + 7)),
+                    ["scope"] = mode switch { 0 => "actor", 1 => "room", _ => "sky" }, ["op"] = Byte(pc + 1) & 0xF, ["fade"] = (1 << Byte(pc + 4)) & 0x1F,
+                    ["delta"] = Point(Signed(pc + 5), Signed(pc + 6), Signed(pc + 7)), ["unit"] = mode == 2 ? 255 : 31,
                 };
                 if (mode == 0) args["actor"] = Actor(pc + 2);
                 Command("palette.transform", args);
@@ -1134,6 +1193,10 @@ public sealed class EventConversion
                 Command("actor.sound", new JsonObject { ["actor"] = Actor(pc + 1), ["sounds"] = sounds });
                 return null;
             }
+            case 0xaa:
+                // A weapon trail on (byte 1) the actor's bone (byte 4), or every trail off (BATTLE.PRG 0x800babcc).
+                Command("actor.trail", new JsonObject { ["actor"] = Actor(pc + 2), ["part"] = Byte(pc + 4), ["on"] = Byte(pc + 1) != 0 });
+                return null;
             case 0xa8:
                 // The driver's reverb (BATTLE.PRG 0x800baaf0: driver command 0x92 with the byte).
                 Command("sound.reverb", new JsonObject { ["value"] = Byte(pc + 1) });
