@@ -128,6 +128,20 @@ public sealed class FieldBattle
         public string Name = "";
         public int Category, Hp, MaxHp, Mp, MaxMp, Strength, Intelligence, Agility, WeaponStrength, WeaponAgility, Class, Risk, DamageType = 1, Cost;
         public Gear Blade = new(), Shield = new(), Accessory = new();
+
+        /// <summary>
+        /// The affinity its blows strike with (BATTLE.PRG 0x80085d30): with its weapon drawn, the first of the weapon's
+        /// seven affinities with the highest value above 0, else physical (0).
+        /// </summary>
+        public int Affinity
+        {
+            get
+            {
+                int affinity = 0, most = 0;
+                if (Drawn) for (int i = 0; i < 7; i++) if (Blade.Affinities[i] > most) (affinity, most) = (i, Blade.Affinities[i]);
+                return affinity;
+            }
+        }
         public readonly List<Limb> Limbs = new();
         /// <summary>The actions its limbs list (0 is none), from which an enemy picks its moves.</summary>
         public readonly List<int> Actions = new();
@@ -623,15 +637,11 @@ public sealed class FieldBattle
     /// the difference, never below 0, plus 1 to 5; it doubles on a critical, a RISK/10 + 10 percent chance.
     /// </summary>
     /// <param name="type">A damage type to use instead of the weapon's (a monster's special attack names its own).</param>
-    /// <param name="affinity">Likewise an affinity (0 to 7) instead of the weapon's strongest.</param>
+    /// <param name="affinity">Likewise an affinity (0 to 7) instead of the attacker's own (<see cref="Combatant.Affinity"/>).</param>
     public int Damage(Combatant attacker, Combatant target, int limb, int type = 0, int affinity = -1)
     {
         if (type == 0) type = attacker.Drawn ? attacker.DamageType : 1;
-        if (affinity < 0)
-        {
-            affinity = 0;
-            for (int i = 1; i < 8; i++) if (attacker.Blade.Affinities[i] > attacker.Blade.Affinities[affinity]) affinity = i;
-        }
+        if (affinity < 0) affinity = attacker.Affinity;
         _blowAffinity = affinity;
         int strength = attacker.EffectiveStrength + attacker.Accessory.Strength + (attacker.Drawn ? attacker.WeaponStrength : 0);
         int term = attacker.Accessory.Types[type] + attacker.Accessory.Affinities[affinity] + attacker.Accessory.Classes[target.Class & 7];
@@ -1593,7 +1603,7 @@ public sealed class FieldBattle
             _view.SystemBox.Open(4, 0);
             _view.SystemBox.Text = SystemBox.Fill(text["target"].AsGodotDictionary(), new[]
             {
-                who.Name, "", Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", 0), "",
+                who.Name, "", Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", Ashley.Affinity), "",
             }).Trim(' ');
             string label = text.GetValueOrDefault("whole_target", "#TARGET").AsString().TrimStart('#');
             bool chosenSide = LeftOf(who);
@@ -1615,12 +1625,12 @@ public sealed class FieldBattle
         }
         // The chosen part's own hit points, and the chance to hit it.
         string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, HitChance(Ashley!, who, limb) });
-        // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), physical, the target's class,
-        // in the information box.
+        // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), its affinity, the target's
+        // class, in the information box.
         _view.SystemBox.Open(4, 0);
         _view.SystemBox.Text = SystemBox.Fill(text["target"].AsGodotDictionary(), new[]
         {
-            PartName(who, limb), hp, Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", 0), Entry("classes", who.Class & 7),
+            PartName(who, limb), hp, Entry("kinds", 1), Entry("damage", Ashley!.DamageType - 1), Entry("affinities", Ashley.Affinity), Entry("classes", who.Class & 7),
         }).Trim(' ');
         // Each side of the screen lists the parts of an enemy standing on that side of Ashley: the chosen one's, and on
         // the other side the first other enemy there (retail footage); the chosen list has its part lit.
