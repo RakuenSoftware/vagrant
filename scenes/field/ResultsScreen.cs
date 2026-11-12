@@ -42,7 +42,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// frame of its speeding up until it lands. Not yet done: the screen's music, the time and boss time-trial terms of the score, and the
 /// additive glows are drawn on a layer of their own over the plain parts rather than in drawing order.</para>
 /// </summary>
-public sealed partial class ResultsScreen : Control
+public sealed partial class ResultsScreen : RetailScreen
 {
     private const int Congratulations = 22, Score = 18, Map = 21, Colon = 26, Comma = 10, Points = 20, Percent = 19;
     private const int RankTitle = 12, Bonus = 11, Plus = 24;
@@ -76,17 +76,13 @@ public sealed partial class ResultsScreen : Control
     /// <summary>The bonus the reel stopped on, once the screen has ended: its stat sprite (13 STR, 14 AGL, 15 INT, 16 HP, 17 MP) and amount.</summary>
     public (int Stat, int Amount) Result { get; private set; }
 
-    public void Configure(Texture2D? sheet, Texture2D? reelSheet, GDictionary? tables, Texture2D? labels, GDictionary? font)
+    public void Configure(Texture2D? sheet, Texture2D? reelSheet, GDictionary? tables, Texture2D? labels, Runtime.HudLettering? lettering)
     {
         _sheet = sheet;
         _reelSheet = reelSheet;
         _tables = tables ?? new GDictionary();
         _labels = labels;
-        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = lettering;
         Visible = false;
         _glowLayer = new Control { Name = "Glow", MouseFilter = MouseFilterEnum.Ignore, Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add }, TextureFilter = TextureFilterEnum.Nearest };
         _glowLayer.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);

@@ -130,6 +130,11 @@ public partial class RetailContent : Node
     public Texture2D Texture(string name) => LoadTexture(name);
 
     /// <summary>A document decoded from the disc, such as a room's event.</summary>
+    /// <summary>The HUD's hand-lettered alphabet on its labels page, made once; null when the installation lacks it.</summary>
+    public HudLettering? HudLettering => _hudLettering ??= Has("hud_labels") && Has("hud") && Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() is { Count: > 0 } font
+        ? new HudLettering(ScreenTexture("hud_labels", true), font) : null;
+    private HudLettering? _hudLettering;
+
     public Godot.Collections.Dictionary Data(string name) =>
         Parse((Field.Data(name) ?? throw new InvalidDataException($"The disc has no {name}.")).ToJsonString());
 
@@ -179,6 +184,13 @@ public partial class RetailContent : Node
         font.SetGlyphAdvance(0, size, DialogueConversion.HairSpace, new Vector2(1, 0));
         font.SetGlyphSize(0, new Vector2I(size, 0), DialogueConversion.HairSpace, Vector2.Zero);
         return font;
+    }
+
+    /// <summary>A screen picture, or null where the installation lacks it or it cannot be read.</summary>
+    public Texture2D? ScreenTextureIfAny(string name)
+    {
+        try { return ScreenTexture(name); }
+        catch (Exception error) when (error is IOException or InvalidDataException) { return null; }
     }
 
     /// <summary>

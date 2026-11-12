@@ -1507,7 +1507,8 @@ public partial class FieldContracts : Node
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         var battle = _view.Battle;
         if (battle?.Ashley is not { } ashley) { if (_leftBattle) { Tap("ps_circle"); return; } Finish("the battle has no Ashley"); return; }
-        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && elapsed % 30 == 0) Capture($"battle_{elapsed:d4}");
+        if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && elapsed % Math.Min(30, _storyEvery) == 0)
+            Capture(_storyEvery < 30 ? $"battle_{elapsed:d5}_{(_view.Events.Count > 0 ? _view.Events[^1] : "none")}" : $"battle_{elapsed:d4}");
         if (battle.GameOver) { Finish("Ashley fell in the first battle"); return; }
         // The attack sphere reads out its target in the system box, as retail's does: the part, then TARGET.
         if (battle.Paused && !_sphereSeen)

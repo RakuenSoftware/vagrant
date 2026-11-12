@@ -16,7 +16,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// Laid out on retail's 320 by 240 screen: SAVE and the slots keep to the window's right edge, YES and NO and the
 /// message to its left, the files to its middle.
 /// </summary>
-public sealed partial class MemoryCardMenu : Control
+public sealed partial class MemoryCardMenu : RetailScreen
 {
     // What each element is doing: still, sliding along x to its target, sliding up to it, or sliding in from the left.
     private enum Motion { Off, Still, AlongX, Up, FromLeft }
@@ -86,10 +86,6 @@ public sealed partial class MemoryCardMenu : Control
         _cursor = Page("hud_cursor");
         if (view == null) _backdrop = Page("item_menu_backdrop");
         _font = content.Has("system_font") ? content.BitmapFont("system_font") : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
         _glow = new Control { Name = "Glow", MouseFilter = MouseFilterEnum.Ignore, AnchorRight = 1, AnchorBottom = 1, Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add } };
         _glow.Draw += DrawGlow;
         AddChild(_glow);
@@ -102,6 +98,17 @@ public sealed partial class MemoryCardMenu : Control
     public bool Open => Visible;
     /// <summary>The screens' stage (Opening, Slots, Checking, Files, Back, Overwrite, Saving, Saved, Leaving), and whether everything has come to rest.</summary>
     public string Showing => Visible ? _stage + (Settled() ? "" : "*") : "";
+
+    /// <summary>Back to the slots: the leaving sound, both slots slide out to come in again, the card's slot chosen, no message.</summary>
+    private void BackToSlots()
+    {
+        _view?.MenuSound(FieldView.MenuLeave);
+        Slide(1, 320);
+        Slide(2, 320);
+        _slot = _card - 1;
+        _message = "";
+        Enter(Stage.Back);
+    }
 
     private string Text(int index) => SystemBox.Entry(_strings, index);
 
@@ -245,12 +252,7 @@ public sealed partial class MemoryCardMenu : Control
                 break;
             case Stage.NoData:
                 if (!(pressed("ps_circle") || pressed("ps_cross") || pressed("ps_triangle") || pressed("ps_square"))) break;
-                _view?.MenuSound(FieldView.MenuLeave);
-                Slide(1, 320);
-                Slide(2, 320);
-                _slot = _card - 1;
-                _message = "";
-                Enter(Stage.Back);
+                BackToSlots();
                 break;
             case Stage.Files:
             {
@@ -258,13 +260,8 @@ public sealed partial class MemoryCardMenu : Control
                 if (pressed("ps_cross"))
                 {
                     // Back to the slots: the files go, the slot leaves, and both slots come in again.
-                    _view?.MenuSound(FieldView.MenuLeave);
                     for (int i = 5; i < 10; i++) _elements[i] = null!;
-                    Slide(1, 320);
-                    Slide(2, 320);
-                    _slot = _card - 1;
-                    _message = "";
-                    Enter(Stage.Back);
+                    BackToSlots();
                     break;
                 }
                 if (pressed("ps_circle") && !_saving)

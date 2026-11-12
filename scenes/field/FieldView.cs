@@ -1413,7 +1413,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             case "sound.volume": case "sound.pan":
             {
-                // The driver slides the one sound's volume or pan (the game's 0x80045BFC and 0x80045CEC), whatever pan it started at.
+                // The driver slides the one sound's volume or pan (the game's 0x80045BFC and 0x80045CEC), whatever pan it
+                // started at, or every voice of a group.
+                if (args.ContainsKey("group")) { _driver.SlideGroup(args["group"].AsInt32(), type == "sound.pan", args[type == "sound.pan" ? "pan" : "volume"].AsInt32(), args["frames"].AsInt32()); return Error.Ok; }
                 if (!_sounds.TryGetValue(args["sound"].AsString(), out var key)) return Error.Ok;
                 var (bankName, bank, number, _, _) = _content.Sound(key);
                 bool pan = type == "sound.pan";
@@ -4380,7 +4382,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             _results = new ResultsScreen { Name = "Results", Sound = MenuSound, StopSound = id => StopSound($"effect_{id}") };
             _results.Configure(_content.ScreenTexture("results_sheet"), _content.ScreenTexture("results_reel"), _content.Data("results"),
                 _content.Has("hud_labels") ? _content.ScreenTexture("hud_labels", true) : null,
-                _content.Has("hud") ? _content.Data("hud").GetValueOrDefault("font", default).AsGodotDictionary() : null);
+                _content.HudLettering);
             Screen.AddChild(_results);
         }
         OtherScore = Math.Min(999999999L, OtherScore + Math.Max(0, 100000 - 100 * HealCount));
@@ -5332,8 +5334,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (clip.Length == 0) return;
         var steps = ClipMovement(actor.Character).GetValueOrDefault(clip, new GArray()).AsGodotArray();
         if (steps.Count == 0) return;
-        double position = !actor.Player.CurrentAnimation.IsEmpty ? actor.Player.CurrentAnimationPosition : actor.Player.HasAnimation(clip) ? actor.Player.GetAnimation(clip).Length : 0;
-        int frame = Math.Min(steps.Count, (int)(position * Installation.CharacterConversion.FramesPerSecond));
+        int frame = Math.Min(steps.Count, actor.ClipFrame(clip));
         // A clip that starts over moves on from its start.
         if (frame < actor.MoveFrame) actor.MoveFrame = 0;
         Vector3 At(int f)
@@ -5353,9 +5354,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         string clip = actor.Player.AssignedAnimation;
         if (clip != actor.SoundClip) { actor.SoundClip = clip; actor.SoundFrame = -1; }
         if (clip.Length == 0 || actor.Position.Y >= 0xBB8) return;
-        // A clip played once and ended is no longer current: it stands at its end.
-        double position = !actor.Player.CurrentAnimation.IsEmpty ? actor.Player.CurrentAnimationPosition : actor.Player.HasAnimation(clip) ? actor.Player.GetAnimation(clip).Length : 0;
-        int frame = (int)(position * Installation.CharacterConversion.FramesPerSecond);
+        int frame = actor.ClipFrame(clip);
         if (frame < actor.SoundFrame) actor.SoundFrame = -1;
         var events = ClipEvents(actor.Character).GetValueOrDefault(clip, new GArray()).AsGodotArray();
         foreach (var value in events)
@@ -5380,9 +5379,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         string clip = actor.Player.AssignedAnimation;
         if (clip != actor.ScriptClip) { actor.ScriptClip = clip; actor.ScriptFrame = -1; }
         if (clip.Length == 0) return;
-        // A clip played once and ended is no longer current: it stands at its end.
-        double position = !actor.Player.CurrentAnimation.IsEmpty ? actor.Player.CurrentAnimationPosition : actor.Player.HasAnimation(clip) ? actor.Player.GetAnimation(clip).Length : 0;
-        int frame = (int)(position * Installation.CharacterConversion.FramesPerSecond);
+        int frame = actor.ClipFrame(clip);
         if (frame < actor.ScriptFrame) actor.ScriptFrame = -1;
         var events = ClipEvents(actor.Character).GetValueOrDefault(clip, new GArray()).AsGodotArray();
         foreach (var value in events)

@@ -243,6 +243,22 @@ public sealed partial class FieldEffect
     }
 
     /// <summary>
+    /// A grid, surface or tube record's motion: its extent (0x24), its growth a frame (0x4c), its row step (0x58), the
+    /// growth's acceleration (0x64) and the row step's (0x70).
+    /// </summary>
+    private (Vector3 Extent, Vector3 Growth, Vector3 Step, Vector3 Acceleration, Vector3 Jerk) Motion(Renderer r) =>
+        (Triple(r, 0x24, 9), Triple(r, 0x4C, 0xD), Triple(r, 0x58, 0xD), Triple(r, 0x64, 0xE), Triple(r, 0x70, 0xE));
+
+    /// <summary>A surface's or tube's frame of growth: its height and radius speeds take their acceleration, and the height and radius their growth and speed.</summary>
+    private static void Grow(Renderer r, Vector3 growth, Vector3 acceleration)
+    {
+        r.HeightSpeed += (int)acceleration.Y;
+        r.Height += (int)growth.Y + r.HeightSpeed;
+        r.RadiusSpeed += (int)acceleration.X;
+        r.Radius += (int)growth.X + r.RadiusSpeed;
+    }
+
+    /// <summary>
     /// Grids: 9 by 9 points about the centre, spaced by growing spacings, rippled by sines along each row and column,
     /// drawn flat-coloured with a scrolling window of a VRAM page (the record's page, palette row and depth; the window
     /// from 0xac and 0xb0, its size at 0x94 and 0x98, its scroll speed at 0x9c).
@@ -251,11 +267,7 @@ public sealed partial class FieldEffect
     {
         var e = r.E;
         var centre = Centre(instance, r);
-        var extent = Triple(r, 0x24, 9);
-        var growth = Triple(r, 0x4C, 0xD);
-        var step = Triple(r, 0x58, 0xD);
-        var acceleration = Triple(r, 0x64, 0xE);
-        var jerk = Triple(r, 0x70, 0xE);
+        var (extent, growth, step, acceleration, jerk) = Motion(r);
         var ripple = Triple(r, 0x34, 0xA);
         var phaseStep = Triple(r, 0x40, 0xB);
         var (rowPhaseX, rowPhaseZ) = Pair(r, 0xA4, 0xC);
@@ -311,15 +323,8 @@ public sealed partial class FieldEffect
         bool mirrored = r.Kind.StartsWith("mirrored", StringComparison.Ordinal);
         int rows = mirrored ? 9 : 5, textureColumns = r.Kind.EndsWith(":4") ? 4 : 16;
         var centre = Centre(instance, r);
-        var extent = Triple(r, 0x24, 9);
-        var growth = Triple(r, 0x4C, 0xD);
-        var step = Triple(r, 0x58, 0xD);
-        var acceleration = Triple(r, 0x64, 0xE);
-        var jerk = Triple(r, 0x70, 0xE);
-        r.HeightSpeed += (int)acceleration.Y;
-        r.Height += (int)growth.Y + r.HeightSpeed;
-        r.RadiusSpeed += (int)acceleration.X;
-        r.Radius += (int)growth.X + r.RadiusSpeed;
+        var (extent, growth, step, acceleration, jerk) = Motion(r);
+        Grow(r, growth, acceleration);
         float height = r.Height + extent.Y, radius = r.Radius + extent.X, radiusStep = 0, heightStep = 0;
         var points = new Vector3[rows, 16];
         var colours = new Color[rows];
@@ -347,17 +352,10 @@ public sealed partial class FieldEffect
     {
         int textureColumns = r.Kind.EndsWith(":4") ? 4 : 16;
         var centre = Centre(instance, r);
-        var extent = Triple(r, 0x24, 9);
-        var growth = Triple(r, 0x4C, 0xD);
-        var step = Triple(r, 0x58, 0xD);
-        var acceleration = Triple(r, 0x64, 0xE);
-        var jerk = Triple(r, 0x70, 0xE);
+        var (extent, growth, step, acceleration, jerk) = Motion(r);
         var twist = Triple(r, 0x40, 0xB);
         var (slow, fast) = Pair(r, 0xA4, 0xC);
-        r.HeightSpeed += (int)acceleration.Y;
-        r.Height += (int)growth.Y + r.HeightSpeed;
-        r.RadiusSpeed += (int)acceleration.X;
-        r.Radius += (int)growth.X + r.RadiusSpeed;
+        Grow(r, growth, acceleration);
         float height = r.Height + extent.Y, radius = r.Radius + extent.X;
         r.Angle += RandomBetween(slow, fast);
         float angle = r.Angle, angleSpeed = 0, angleAccel = 0, heightStep = 0, radiusStep = 0, heightAt = 0;

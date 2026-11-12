@@ -21,7 +21,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// <item>An equipment icon carries its material's letter at its top right (see <see cref="ItemMenu.MaterialLetters"/>).</item>
 /// </list>
 /// </summary>
-public sealed partial class GadgetBag : Control
+public sealed partial class GadgetBag : RetailScreen
 {
     /// <summary>One thing in the chest: its name, its count (0 for equipment), its bag category and its icon cell (-1 none).</summary>
     public readonly record struct Entry(string Name, int Count, int Category, int Icon, string Help, int Material = 0);
@@ -38,17 +38,13 @@ public sealed partial class GadgetBag : Control
     private int[] _carried = new int[7];
     private int _chosen;
 
-    public void Configure(Texture2D? labels, Texture2D? cursor, Godot.Collections.Dictionary? font, Font? system, Godot.Collections.Dictionary? words)
+    public void Configure(Texture2D? labels, Texture2D? cursor, Runtime.HudLettering? lettering, Font? system, Godot.Collections.Dictionary? words)
     {
         _labels = labels;
         _cursor = cursor;
         _system = system;
         _words = words;
-        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = lettering;
     }
 
     /// <summary>Shows the chest's <paramref name="entries"/> with <paramref name="chosen"/> pointed at, and what the bag carries in each category.</summary>

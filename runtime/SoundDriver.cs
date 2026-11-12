@@ -307,8 +307,17 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void SlideSound(string bankName, byte[]? bank, int id, bool pan, int value, int frames)
     {
-        if (!Ready || Target(bankName, bank, id) is not long target) return;
-        try { Call(pan ? PanSfx : FadeSfx, target, 0, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
+        if (Target(bankName, bank, id) is long target) Slide(target, 0, pan, value, frames);
+    }
+
+    /// <summary>Slides the volume or pan of every voice of a group, as an id of 0 asks the driver.</summary>
+    public void SlideGroup(int group, bool pan, int value, int frames) => Slide(0, Groups[Math.Clamp(group, 0, Groups.Length - 1)], pan, value, frames);
+
+    /// <summary>The driver's volume or pan slide (0x8001264C, 0x80012738) of a sound (by program or id) or of a group's voices.</summary>
+    private void Slide(long target, long voices, bool pan, int value, int frames)
+    {
+        if (!Ready) return;
+        try { Call(pan ? PanSfx : FadeSfx, target, voices, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
 

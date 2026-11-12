@@ -458,6 +458,14 @@ public sealed class EventActor
     private Wol.Engine.World.ActorClip Clip(string clip, int blendFrames, int skipFrames, bool once, bool queue) =>
         new(Id, clip, queue, once ? false : null, blendFrames >= 2 ? blendFrames / 30f : 0, skipFrames > 0 ? skipFrames / Installation.CharacterConversion.FramesPerSecond : 0);
 
+    /// <summary>The clip's frame now (in the rig's animation frames); a clip played once and ended is no longer current, and stands at its end.</summary>
+    public int ClipFrame(string clip)
+    {
+        if (Player == null) return 0;
+        double position = !Player.CurrentAnimation.IsEmpty ? Player.CurrentAnimationPosition : Player.HasAnimation(clip) ? Player.GetAnimation(clip).Length : 0;
+        return (int)(position * Installation.CharacterConversion.FramesPerSecond);
+    }
+
     /// <summary>Adds an animation set (an event's "esqnnn", Ashley's "btn" and "artna") to the actor's rig.</summary>
     public Action<EventActor, string>? LoadSet;
 

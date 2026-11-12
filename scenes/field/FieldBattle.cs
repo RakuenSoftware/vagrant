@@ -280,7 +280,7 @@ public sealed class FieldBattle
                 _hud.Configure(view.Content.ScreenTexture("hud_digits", true), view.Content.ScreenTexture("hud_labels", true),
                     hudData.ContainsKey("battle_mode") ? view.Content.ScreenTexture("hud_battle_mode") : null,
                     hudData.ContainsKey("emotes") ? view.Content.ScreenTexture("hud_emotes") : null,
-                    hudData.GetValueOrDefault("font", default).AsGodotDictionary(), view.Content.ScreenTexture("hud_page_976", true));
+                    view.Content.HudLettering, view.Content.ScreenTexture("hud_page_976", true));
                 if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.ScreenTexture("hud_chain_cue");
                 if (view.Content.Has("hud_cursor")) _hud.StatusPage = view.Content.ScreenTexture("hud_cursor", true);
                 hud.AddChild(_hud);

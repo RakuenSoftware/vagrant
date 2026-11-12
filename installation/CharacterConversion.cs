@@ -576,14 +576,9 @@ public sealed class CharacterConversion
                 animation.TrackSetPath(track, "Space/Skeleton:b0");
                 animation.PositionTrackInsertKey(track, 0, position);
                 // Its own stream is then only keys; a stream of its own opens with its first value.
-                int cursor = baseStream == stream ? stream + 6 : stream, frame = 0;
-                var velocity = Vector3.Zero;
-                while (frame < frames - 1)
+                int frame = 0;
+                foreach (var (velocity, span) in Keys(seq, baseStream == stream ? stream + 6 : stream, frames))
                 {
-                    var (x, y, z, span, next) = Key(seq, cursor);
-                    if (span == 0) break;
-                    cursor = next;
-                    velocity = new Vector3(x ?? velocity.X, y ?? velocity.Y, z ?? velocity.Z);
                     position += velocity * span / 2;
                     frame += span;
                     animation.PositionTrackInsertKey(track, frame / FramesPerSecond, position);
@@ -597,16 +592,11 @@ public sealed class CharacterConversion
             {
                 int at = table + moving;
                 var value = new Vector3(BigSigned(seq, at), BigSigned(seq, at + 2), BigSigned(seq, at + 4)) * 2;
-                int cursor = at + 6, frame = 0;
-                var velocity = Vector3.Zero;
+                int frame = 0;
                 var moved = Vector3.Zero;
                 var moves = new Godot.Collections.Array();
-                while (frame < frames - 1)
+                foreach (var (velocity, span) in Keys(seq, at + 6, frames))
                 {
-                    var (x, y, z, span, next) = Key(seq, cursor);
-                    if (span == 0) break;
-                    cursor = next;
-                    velocity = new Vector3(x ?? velocity.X, y ?? velocity.Y, z ?? velocity.Z);
                     for (int k = 0; k < span && frame < frames - 1; k++, frame++)
                     {
                         value += velocity;
@@ -624,14 +614,9 @@ public sealed class CharacterConversion
                 int track = animation.AddTrack(Animation.TrackType.Rotation3D);
                 animation.TrackSetPath(track, $"Space/Skeleton:b{bone}");
                 animation.RotationTrackInsertKey(track, 0, Rotation(rotation));
-                int cursor = baseStream == stream ? stream + 6 : stream, frame = 0;
-                var velocity = Vector3.Zero;
-                while (frame < frames - 1)
+                int frame = 0;
+                foreach (var (velocity, span) in Keys(seq, baseStream == stream ? stream + 6 : stream, frames))
                 {
-                    var (x, y, z, span, next) = Key(seq, cursor);
-                    if (span == 0) break;
-                    cursor = next;
-                    velocity = new Vector3(x ?? velocity.X, y ?? velocity.Y, z ?? velocity.Z);
                     rotation += velocity * span;
                     frame += span;
                     animation.RotationTrackInsertKey(track, frame / FramesPerSecond, Rotation(rotation));
@@ -660,20 +645,33 @@ public sealed class CharacterConversion
                 animation.ScaleTrackInsertKey(track, 0, (scale / 64).Max(Vector3.One / 4096));
                 if (!steps) continue;
                 int stream = table + BitConverter.ToUInt16(seq, header + 10 + (bones + bone) * 2);
-                int cursor = startHeader == header ? stream + offset : stream, frame = 0;
-                var velocity = Vector3.Zero;
-                while (frame < frames - 1)
+                int frame = 0;
+                foreach (var (velocity, span) in Keys(seq, startHeader == header ? stream + offset : stream, frames))
                 {
-                    var (x, y, z, span, next) = Key(seq, cursor);
-                    if (span == 0) break;
-                    cursor = next;
-                    velocity = new Vector3(x ?? velocity.X, y ?? velocity.Y, z ?? velocity.Z);
                     scale += velocity * span;
                     frame += span;
                     animation.ScaleTrackInsertKey(track, frame / FramesPerSecond, (scale / 64).Max(Vector3.One / 4096));
                 }
             }
             yield return animation;
+        }
+    }
+
+    /// <summary>
+    /// A key stream from <paramref name="cursor"/>: each key's velocity (an axis a key leaves out keeps its last value)
+    /// and the frames it spans, until the clip's last frame or an empty key.
+    /// </summary>
+    private static IEnumerable<(Vector3 Velocity, int Span)> Keys(byte[] seq, int cursor, int frames)
+    {
+        var velocity = Vector3.Zero;
+        for (int frame = 0; frame < frames - 1;)
+        {
+            var (x, y, z, span, next) = Key(seq, cursor);
+            if (span == 0) yield break;
+            cursor = next;
+            velocity = new Vector3(x ?? velocity.X, y ?? velocity.Y, z ?? velocity.Z);
+            yield return (velocity, span);
+            frame += span;
         }
     }
 

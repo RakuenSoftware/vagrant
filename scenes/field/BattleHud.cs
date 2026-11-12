@@ -27,7 +27,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// a sine over half a turn added to the half-grey colour (0x800CA388).</item>
 /// </list>
 /// </summary>
-public sealed partial class BattleHud : Control
+public sealed partial class BattleHud : RetailScreen
 {
     private static readonly Vector2I[] Blocks = { new(10, 18), new(80, 18), new(10, 22) };
     private static readonly Vector2I[] Labels = { new(10, 10), new(80, 10), new(10, 26) };
@@ -48,18 +48,14 @@ public sealed partial class BattleHud : Control
     private readonly int[] _limbs = { 4, 4, 4, 4, 4 };
     private int _slide, _pulse, _ticks;
 
-    public void Configure(Texture2D? digits, Texture2D? labels, Texture2D? banner, Texture2D? emotes, Godot.Collections.Dictionary? font, Texture2D? pointer = null)
+    public void Configure(Texture2D? digits, Texture2D? labels, Texture2D? banner, Texture2D? emotes, Runtime.HudLettering? lettering, Texture2D? pointer = null)
     {
         _emotes = emotes;
         _pointer = pointer;
         _digits = digits;
         _labels = labels;
         _banner = banner;
-        _lettering = font != null && labels != null ? new Runtime.HudLettering(labels, font) : null;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
+        _lettering = lettering;
     }
 
     /// <summary>The values shown; <paramref name="limbs"/> are Ashley's limbs' HP and most, in retail order.</summary>

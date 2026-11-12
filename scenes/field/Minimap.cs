@@ -27,7 +27,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// back two steps a frame. Menus, the target sphere and events hide it.</item>
 /// </list>
 /// </summary>
-public sealed partial class Minimap : Control
+public sealed partial class Minimap : RetailScreen
 {
     private const float Cos = 2633f / 4096, Sin = 3138f / 4096, Depth = 256, H = 512;
     private static readonly Rect2 Area = new(216, 156, 96, 64);
@@ -44,10 +44,6 @@ public sealed partial class Minimap : Control
     public void Configure(Texture2D? cursor)
     {
         _cursor = cursor;
-        MouseFilter = MouseFilterEnum.Ignore;
-        AnchorRight = 1;
-        AnchorBottom = 1;
-        TextureFilter = TextureFilterEnum.Nearest;
         _frame = new Control { Name = "Frame", MouseFilter = MouseFilterEnum.Ignore, AnchorRight = 1, AnchorBottom = 1, Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add } };
         _frame.Draw += DrawFrame;
         AddChild(_frame);
