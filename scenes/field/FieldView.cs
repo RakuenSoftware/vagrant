@@ -300,6 +300,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public int[] Flags => _world.Flags;
     private GDictionary? _pendingTransition;
+    private PresentationReceipt? _transitionReceipt;
 
     /// <summary>
     /// Where the memory cards are kept: a folder for each of the two slots, card1 and card2, each holding the five
@@ -598,10 +599,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Presents a room (zone, map index) and starts its event. Anything the previous room's events created is
-    /// released; the music, the screen fade and the event clock carry over, as they do on the retail transition.
+    /// Presents a room (zone, map index), starting its entry event unless opcode 68 continues the current one.
+    /// The previous room's presentation is released; music, screen fade and event clock carry over.
     /// </summary>
-    public void LoadRoom(int zone, int map, bool resume = false)
+    public void LoadRoom(int zone, int map, bool resume = false, bool continueEvent = false)
     {
         // A room's start puts the frame step back to 2 (BATTLE.PRG 0x800742c4).
         FrameStep = 2;
@@ -645,7 +646,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             _skyOffset = Vector2.Zero;
             _skyParallax = new Vector2(4096, 4096);
 
-            _pendingChain = "";
+            if (!continueEvent) _pendingChain = "";
             _cutaway = true;
             _hideFirstPerson = false;
             _lookAround = false;
@@ -779,7 +780,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Battle.Assign(Abilities, ChainButtons, DefenseButtons);
             if (SpawnRoomActors() != Error.Ok) return;
             PlaceCrates();
-            StartEvent("event_" + name);
+            if (!continueEvent) StartEvent("event_" + name);
         }
         finally
         {
@@ -1228,6 +1229,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var id = receipt;
         _waits.RemoveAll(wait => wait.Id == id);
         _completions.Remove(id);
+        if (_transitionReceipt == id) { _transitionReceipt = null; _pendingTransition = null; }
         Field.CancelDialogueWait(receipt);
         Field.CancelCommand(receipt);
     }
@@ -2021,6 +2023,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             case "field.transition":
                 _pendingTransition = args;
+                _transitionReceipt = awaited ? id : null;
                 return Error.Ok;
             case "event.chain":
                 _pendingChain = "event_" + args["event"].AsString();
@@ -4120,8 +4123,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         foreach (var actor in Actors.Values) PlaceShadow(actor);
         if (_pendingTransition is { } transition)
         {
-            // The room change cancels the running event and plays the new room's own script.
+            // Opcode 68 bit 2 keeps the event running across the load: 0x800b99f4 chooses state 1,
+            // 0x800bea7c acknowledges it as 2, and 0x800b9a14 resumes the waiting opcode. State 3
+            // replaces the event with the destination's script instead.
             _pendingTransition = null;
+            var receipt = _transitionReceipt;
+            _transitionReceipt = null;
             int zone = transition["zone"].AsInt32();
             var tile = transition["tile"].AsGodotArray();
             // 68 fills a door record (0x800B98C0) and arrives through it, Ashley facing its quadrant (with the walk-in
@@ -4132,7 +4139,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             float facing = transition["facing"].AsSingle();
             _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), facing);
             _arrivalHalf = (changeFlags & 1) != 0;
-            LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32());
+            bool continueEvent = (changeFlags & 4) != 0;
+            LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32(), continueEvent: continueEvent);
+            if (continueEvent && receipt is { } completed) _completions.Add(completed);
             return;
         }
         if (_pendingChain.Length != 0 && !Active(0))

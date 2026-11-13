@@ -10,7 +10,7 @@ verify each against the current owner before treating that historical list as a 
 |---|---|---|
 | 385 normal-mode individual room checks, repeated after the state-reset fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events. That earned state then solves the Catacombs south return puzzle, follows the gate cutaway and enters the Sanctum. It solves the entrance stack, defeats Golem and saves after the victory cutaway returns to its arena | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -100,13 +100,21 @@ verify each against the current owner before treating that historical list as a 
   throughout later rooms, preventing the Catacombs north encounter from starting. The disk-resume contract checks
   preserved room variables followed by their reset on the next room change. The opening field and title/attract
   contracts also pass after this change.
+- **Continuing room transitions, fixed in this audit.** Opcode 68 bit 2 preserves the running event across
+  a room load instead of starting the destination's entry script. BATTLE.PRG 0x800b99f4, 0x800bea7c and
+  0x800b9a14 implement the request/acknowledgement/resume states. Previously Golem's victory event stopped
+  during its cutaway, giving the player control in the wrong room before its return sequence. The focused
+  round-trip check passes headless and rendered; the earned Golem fight now completes its reward scene,
+  returns to the arena with flag 190 at 4 and writes its checkpoint. The Sanctum entrance stack also passes
+  headless and rendered checks. These route tests move, interact, attack and recover through pad input.
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
   establish the prerequisites, persistent state or routing of a complete playthrough.
 
 ## Next verification work
 
-Continue from a fresh New Game in a single world, keeping the inventory and story state actually earned. Disable
-the field contract's ability grants and mastery fixtures for that run. Record
-the route and checkpoints, exercise saves and reloads along it, and solve the intervening puzzles through their
-player controls. Compare the corresponding retail scenes and interfaces at those checkpoints. Keep direct room
-starts and injected combat fixtures as focused tests, with their narrower claims.
+Continue the normal New Game lineage from its earned post-Golem checkpoint, keeping only its actual inventory and
+story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
+fixtures. Its checkpoint files use the real disk serializer but bypass the save-point menu; they do not establish
+save-point eligibility or full save UI coverage. Record the continuing route and checkpoints, exercise saves and
+reloads along it, and solve the intervening puzzles through their player controls. Compare the corresponding
+retail scenes and interfaces at those checkpoints. Keep direct room starts and injected combat fixtures as focused tests, with their narrower claims.
