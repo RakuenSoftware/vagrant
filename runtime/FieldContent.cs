@@ -28,6 +28,10 @@ public sealed class FieldContent
     private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
     private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
     private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
+    private const int SineTable = 0x30A10;       // SLUS_010.40 0x80040210
+    private const int ArctangentTable = 0x31214; // SLUS_010.40 0x80040A14
+    private const int RootTable = 0x31418;       // SLUS_010.40 0x80040C18
+    private const int InverseRootTable = 0x31598; // SLUS_010.40 0x80040D98
     private const int Relations = 0x140C;        // BATTLE.PRG 0x80069C0C
     private const int SightRanges = 0x141C;      // BATTLE.PRG 0x80069C1C
     private const int ViewCones = 0x88FB8;       // BATTLE.PRG 0x800F17B8
@@ -550,6 +554,25 @@ public sealed class FieldContent
     public (int Weight, uint Clears, uint BlockedBy, int Period) Status(int bit) =>
         ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12),
             BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6));
+
+    /// <summary>
+    /// The executable's sine and cosine table (SLUS_010.40 0x80040210, read by its sine 0x80040f28): for each angle
+    /// 0 to 512 (4096 a turn) its sine and cosine, 4096 a whole.
+    /// </summary>
+    public int Sine(int angle, bool cosine) => BitConverter.ToUInt16(_executable, SineTable + angle * 4 + (cosine ? 2 : 0));
+
+    /// <summary>The executable's arctangent table (SLUS_010.40 0x80040A14, read by its ratan2 0x8004137c): for a ratio 0 to 512 (512 a whole), its angle, 512 an eighth of a turn.</summary>
+    public int Arctangent(int ratio) => _executable[ArctangentTable + ratio];
+
+    /// <summary>
+    /// The executable's square root table (SLUS_010.40 0x80040C18, read by its square root 0x80041b94): entry
+    /// <paramref name="index"/> is 4096 times the root of (index + 64) / 64. Read as the executable reads it, so an
+    /// index out of the table reads what lies beside it.
+    /// </summary>
+    public int SquareRoot(int index) => BitConverter.ToInt16(_executable, RootTable + index * 2);
+
+    /// <summary>The executable's inverse square root table (SLUS_010.40 0x80040D98, read by its normaliser 0x80041af4): entry <paramref name="index"/> is 4096 over the root of (index + 64) / 64, read as <see cref="SquareRoot"/> is.</summary>
+    public int InverseSquareRoot(int index) => BitConverter.ToInt16(_executable, InverseRootTable + index * 2);
 
     /// <summary>
     /// How one fighter stands to another as a battle begins (BATTLE.PRG 0x80069C0C, read by 0x800e7370): by its

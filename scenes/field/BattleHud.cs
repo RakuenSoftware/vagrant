@@ -241,7 +241,7 @@ public sealed partial class BattleHud : RetailScreen
         DrawSetTransform(Vector2.Zero);
     }
 
-    /// <summary>The enemies' balloons to draw: each head's point in the field, the kind (1 to 3 dots, 4 jagged) and the side.</summary>
+    /// <summary>The enemies' balloons to draw: each head's point in the field, the kind (1 to 3 dots, 4 jagged, 5 won over, 6 alarm, 7 searching) and the side.</summary>
     public void Balloons(List<(Vector3 Head, int Kind, int Side)> balloons, Func<Vector3, Vector2?> project)
     {
         _balloons = balloons;
@@ -250,10 +250,11 @@ public sealed partial class BattleHud : RetailScreen
     }
 
     // BATTLE.PRG's balloon tables (0x80068F04, 0x80068F64, 0x80068F94): the corners about the head's point and the
-    // page's texels for the rounded balloon (right, left) and the jagged one (right, left), and where the dots or mark
-    // stand. The page is SYSTEM.DAT's second, through the palette at (992, 220).
-    private static readonly Rect2[] BalloonCorners = { new(-6, -22, 24, 23), new(-17, -22, 24, 23), new(-10, -29, 30, 30), new(-19, -29, 28, 30) };
-    private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30) };
+    // page's texels for the rounded balloon (right, left), the jagged one (right, left) and the alarm (right, left),
+    // and where the dots or mark stand. The page is SYSTEM.DAT's second (texture page 0x17), through the palette at
+    // (992, 220); the left-hand texels run the other way over the same texels.
+    private static readonly Rect2[] BalloonCorners = { new(-6, -22, 24, 23), new(-17, -22, 24, 23), new(-10, -29, 30, 30), new(-19, -29, 28, 30), new(-9, -16, 20, 13), new(-10, -16, 20, 13) };
+    private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30), new(160, 17, 20, 13), new(160, 17, 20, 13) };
     private static readonly Vector2[] MarkOffsets = { new(-2, -16), new(-14, -16), new(0, -21), new(-7, -21) };
 
     private void DrawBalloons()
@@ -287,7 +288,13 @@ public sealed partial class BattleHud : RetailScreen
                     continue;
                 }
             }
-            int shape = kind == 4 ? 2 + side : side;
+            // The searching mark (7, 0x80095f2c) stands alone, 22 above the head; the alarm (6) is a balloon of its own.
+            if (kind == 7)
+            {
+                DrawTextureRectRegion(_emotes, new Rect2(point + new Vector2(0, -22), new Vector2(7, 12)), new Rect2(183, 17, 7, 12));
+                continue;
+            }
+            int shape = kind == 4 ? 2 + side : kind == 6 ? 4 + side : side;
             var corners = BalloonCorners[shape];
             var texels = BalloonTexels[shape];
             // The left-hand balloons are the right-hand ones mirrored.
@@ -296,7 +303,9 @@ public sealed partial class BattleHud : RetailScreen
             DrawTextureRectRegion(_emotes, target, texels);
             if (kind <= 3)
                 for (int k = 0; k < kind; k++) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[side] + new Vector2(k * 6, 0), new Vector2(5, 5)), new Rect2(90, 18, 5, 5));
-            else DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[shape], new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
+            else if (kind == 4) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[shape], new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
+            // Won over (0x80095ecc): its 16 by 16 mark in the rounded balloon, 2 right and 3 up of the dots' place.
+            else if (kind == 5) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[side] + new Vector2(2, -3), new Vector2(16, 16)), new Rect2(152, 32, 16, 16));
         }
         DrawSetTransform(Vector2.Zero);
     }

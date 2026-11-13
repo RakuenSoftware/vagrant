@@ -77,8 +77,13 @@ public sealed partial class FieldBattle
         public int Token, Refractory, AfterRelease;
         /// <summary>The icon shown over it (the byte at 0x800f2260), and an icon held for a time (+0x138, +0x12a).</summary>
         public int Shown, Icon, IconTimer;
-        /// <summary>Frames before it may voice another reaction (+0x155).</summary>
-        public int VoiceLockout;
+        /// <summary>Frames before it may voice another reaction (+0x155), and the reaction its body is to cry out (its node's byte +0x0b: 1 alert, 2 calm, 0 none).</summary>
+        public int VoiceLockout, Cue;
+        /// <summary>The code its body last carried out (its node's +9: 2 stand, 3 turn, 4 turn the rest, 6 look, 7 turn the head, 9 walk, 10 run, 16 and 17 fly, 23 hop) and the code it had at its last tick (+0x124).</summary>
+        public int Command, LastCommand;
+        /// <summary>The head's twist a look asks for this frame (+0x188 with command 16), null none; and whether its turn is the whole body's toward a point (command 3) rather than head first (command 4).</summary>
+        public int? Look;
+        public bool WholeTurn;
         /// <summary>Its movement profiles' flags (+0x15e), its reach extension in 32-unit steps (+0xb3), its turn speed in range (+0xba) and its usual turn speed (+0x13c).</summary>
         public int Moves, ReachBonus, TurnSpeed, DefaultTurn = 128;
         /// <summary>Its two movement profiles, flags and speed in units a frame (+0x224 to +0x227: data +0x30, +0x32, +0x31, +0x33), and its hop's reach (+0xb4).</summary>
@@ -166,10 +171,73 @@ public sealed partial class FieldBattle
     /// <summary>How many may hold a token at once less one (the battle AI block's +0x0d: the room's word at 0x450 of sub-section 5, bits 29 to 31).</summary>
     private int TokenLimit => Math.Max(0, _view.Document.GetValueOrDefault("telegraphs", 1).AsInt32() - 1);
 
-    private static int Sin(int angle) => (int)Math.Round(4096 * Math.Sin(angle * Math.Tau / 4096));
-    private static int Cos(int angle) => Sin(angle + 1024);
-    private static int Root(long value) => value <= 0 ? 0 : (int)Math.Sqrt(value);
-    private static int Angle(float dx, float dz) => (int)Math.Round(Math.Atan2(dx, dz) * 4096 / Math.Tau);
+    /// <summary>
+    /// The sine of an angle, 4096 a turn and 4096 a whole (SLUS_010.40 0x80040f28): from the executable's table of the
+    /// first eighth, the angle reflected into it by its bits (a quarter turn exactly is 4096; past it the angle is taken
+    /// from a half turn; its second eighth reads the cosine column), negative when the angle's bit 0x800 is set.
+    /// </summary>
+    private int Sin(int angle)
+    {
+        var table = _view.Content.Field;
+        if ((angle & 0x400) != 0)
+        {
+            if ((angle & 0x3FF) == 0) return (angle & 0x800) != 0 ? -4096 : 4096;
+            angle = 2048 - angle;
+        }
+        int t = angle & 0x1FF, v = (angle & 0x200) != 0 ? table.Sine(512 - t, cosine: true) : table.Sine(t, cosine: false);
+        return (angle & 0x800) != 0 ? -v : v;
+    }
+
+    /// <summary>The cosine of an angle (SLUS_010.40 0x80040f24): the sine a quarter turn on.</summary>
+    private int Cos(int angle) => Sin(angle + 1024);
+
+    /// <summary>
+    /// The integer square root (SLUS_010.40 0x80041b94): the value's leading zeros (the GTE's count) rounded down to
+    /// even pick a mantissa of 64 to 255 to look up in the executable's root table, shifted back by half the exponent
+    /// and down 12; 0 for 0.
+    /// </summary>
+    private int Root(long value)
+    {
+        int n = (int)value, zeros = n < 0 ? System.Numerics.BitOperations.LeadingZeroCount((uint)~n) : System.Numerics.BitOperations.LeadingZeroCount((uint)n);
+        if (zeros == 32) return 0;
+        int even = zeros & 0x1E, mantissa = even >= 24 ? n << (even - 24) : n >> (24 - even);
+        return (int)((uint)(_view.Content.Field.SquareRoot(mantissa - 64) << ((31 - even) >> 1)) >> 12);
+    }
+
+    /// <summary>
+    /// The angle of a ground offset (SLUS_010.40 ratan2 0x8004137c, called with x then z): 0 along +z, 1024 along +x,
+    /// -2048 to 2048; the executable's arctangent table by the smaller over the larger in 512ths, mirrored into its
+    /// octant. The direction from a point toward another is the angle of the first less the second, as a facing
+    /// (ground direction (-sin h, -cos h)).
+    /// </summary>
+    private int Angle(float dx, float dz)
+    {
+        int y = (int)dx, x = (int)dz;
+        if (x == 0 && y == 0) return 0;
+        int ax = Math.Abs(x), ay = Math.Abs(y), table = ax < ay ? 512 - _view.Content.Field.Arctangent((ax << 9) / ay) : _view.Content.Field.Arctangent((ay << 9) / ax);
+        if (x < 0) table = 1024 - table;
+        table <<= 1;
+        return y < 0 ? -table : table;
+    }
+
+    /// <summary>The facing from an actor toward a point (its place less the point's, by <see cref="Angle"/>), 0 to 4095.</summary>
+    private int Toward(Combatant c, Vector3 point) => Angle((int)c.Actor.Position.X - (int)point.X, (int)c.Actor.Position.Z - (int)point.Z) & 0xFFF;
+
+    /// <summary>
+    /// A ground offset scaled to 4096 long (SLUS_010.40 0x80041af4, with no height): its squared length (each part a
+    /// 16-bit value, as the GTE squares it) shifted to an even exponent picks a mantissa for the executable's inverse
+    /// root table; each part times that (the GTE's GPF, unshifted), down half the exponent.
+    /// </summary>
+    private (int X, int Z) Normalise(int dx, int dz)
+    {
+        dx = (short)dx;
+        dz = (short)dz;
+        int length = dx * dx + dz * dz;
+        int zeros = length < 0 ? System.Numerics.BitOperations.LeadingZeroCount((uint)~length) : System.Numerics.BitOperations.LeadingZeroCount((uint)length);
+        int even = zeros & ~1, mantissa = even >= 24 ? length << (even - 24) : length >> (24 - even);
+        int inverse = _view.Content.Field.InverseSquareRoot(mantissa - 64), shift = ((31 - even) >> 1) & 31;
+        return (dx * inverse >> shift, dz * inverse >> shift);
+    }
     private int Roll(int range) => (int)(_random.Randi() & (uint)(range - 1));
     private static (int X, int Z) TileOf(Combatant c) => ((int)Mathf.Floor(c.Actor.Position.X / 128), (int)Mathf.Floor(c.Actor.Position.Z / 128));
     private static Vector3 Centre((int X, int Z) tile, float y) => new(tile.X * 128 + 64, y, tile.Z * 128 + 64);
@@ -318,6 +386,7 @@ public sealed partial class FieldBattle
         foreach (var c in fighters) if (Acts(c)) Tick(c, actors);
         foreach (var c in fighters) if (Acts(c)) Decide(c, fighters);
         foreach (var c in fighters) if (Acts(c)) Drive(c);
+        foreach (var c in fighters) if (c != Ashley && c.Mind != null && !c.Dead) Gaze(c);
     }
 
     /// <summary>Whether an enemy fights by the AI: a hostile one with its weapon drawn.</summary>
@@ -325,9 +394,9 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// An enemy's AI tick (BATTLE.PRG 0x800d8ef4): its icon, cooldown and token timers; held, taken out, paralysed or
-    /// mid-hop, it does no more; its oscillation pause; its stuck count (2700 frames on one tile) and the ring of its
-    /// positions that catches it going back and forth (a 30-frame pause); its perception of Ashley and of the actor in
-    /// turn (<see cref="Perceive"/>); its plan's upkeep (<see cref="Recheck"/>); whether it retreats; and its memory.
+    /// mid-hop, it does no more; its oscillation pause; its stuck count (2700 frames on one tile); an alert voiced when
+    /// its body's code changed (<see cref="Voice"/>); the ring of its positions that catches it going back and forth (a
+    /// 30-frame pause); its perception of Ashley and of the actor in turn (<see cref="Perceive"/>); its plan's upkeep (<see cref="Recheck"/>); whether it retreats; and its memory.
     /// </summary>
     private void Tick(Combatant c, List<Combatant> fighters)
     {
@@ -379,6 +448,9 @@ public sealed partial class FieldBattle
             if (m.Stuck) m.Memory = null;
             m.Stuck = false;
         }
+        // A change in what its body does (but for a stop, code 8, which it never gives) is voiced as an alert.
+        if (m.LastCommand != m.Command) Voice(c, 1, 64);
+        m.LastCommand = m.Command;
         m.Tile = tile;
         // Walking, its last eight positions repeating every four frames is an oscillation: it pauses 30 frames.
         if (m.Order is Order.Path or Order.Away)
@@ -449,13 +521,7 @@ public sealed partial class FieldBattle
             else rel = Clear(them, om != null ? Math.Abs(om.Height) : 64, me, Math.Abs(m.Height)) ? rel | 4 : rel & ~4u;
             if ((rel & 4) != 0) rel |= 1u << 30;
         }
-        int cone = 4096;
-        if (d2 != 0)
-        {
-            float facing = self.Actor.Facing * Mathf.Tau / 4096, dx = them.X - me.X, dz = them.Z - me.Z, length = Mathf.Sqrt(dx * dx + dz * dz);
-            cone = length == 0 ? 4096 : Math.Clamp((int)((-Mathf.Sin(facing) * dx - Mathf.Cos(facing) * dz) / length * 4096), -4096, 4096);
-        }
-        rel = cone >= m.ConeCosine ? rel | 8 : rel & ~8u;
+        rel = Cone(self, them, d2) >= m.ConeCosine ? rel | 8 : rel & ~8u;
         if (other == self) rel = (rel | 0x21) & ~2u;
         else
         {
@@ -501,6 +567,25 @@ public sealed partial class FieldBattle
         }
         m.Relations[o] = rel;
     }
+
+    /// <summary>
+    /// How squarely an actor looks at a point (BATTLE.PRG 0x800e437c), 4096 dead ahead to -4096 behind: the cosine
+    /// between the way it looks and the ground offset to the point (normalised, 0x80041af4), 4096 at no distance. The
+    /// way it looks is its body's facing (body +0x26, the port's <see cref="EventActor.Facing"/>: both run 4096 a turn
+    /// with the ground direction (-sin h, -cos h)) turned by its head's twist (body +0x14, <see cref="Twist"/>); the
+    /// executable takes the cosine and sine of 3072 less it, which are that direction.
+    /// </summary>
+    private int Cone(Combatant self, Vector3 point, uint d2)
+    {
+        if (d2 == 0) return 4096;
+        int a = (3072 - (short)((int)self.Actor.Facing + Twist(self.Actor))) & 0xFFF, along = Cos(a), across = Sin(a);
+        var me = self.Actor.Position;
+        var (nx, nz) = Normalise((short)(int)point.X - (short)(int)me.X, (short)(int)point.Z - (short)(int)me.Z);
+        return Math.Clamp((nx * along + nz * across) >> 12, -4096, 4096);
+    }
+
+    /// <summary>An actor's head's twist from its body's facing (body +0x14), 0 for one without a head that turns.</summary>
+    private static int Twist(EventActor actor) => (int)Mathf.Round(actor.Head?.Yaw ?? 0);
 
     /// <summary>The squared distance between two points at heights raised by their offsets (BATTLE.PRG 0x800e4624), each difference as a 16-bit value.</summary>
     private static uint Distance(Vector3 a, int ha, Vector3 b, int hb)
@@ -730,7 +815,7 @@ public sealed partial class FieldBattle
     /// 32 units a point, by the cosine of its angle (byte 3 less its low three bits, 128ths of a turn's 4096ths), the
     /// sine for shapes other than 1 to 4.
     /// </summary>
-    private static int RangeReach(int[] range)
+    private int RangeReach(int[] range)
     {
         int shape = range[3] & 7, angle = (range[3] >> 3) * 128;
         if ((1 << shape & 0x16) != 0) return range[2] * 32 * Math.Abs(Cos(angle)) >> 12;
@@ -851,11 +936,18 @@ public sealed partial class FieldBattle
         c.Mind.IconTimer = frames;
     }
 
-    /// <summary>A reaction voiced (BATTLE.PRG 0x800e48a8): not while held or within 30 frames of the last. Its cue is not yet played.</summary>
-    private static void Voice(Combatant c)
+    /// <summary>
+    /// A reaction voiced (BATTLE.PRG 0x800e48a8): its odds drawn (a roll under <paramref name="odds"/> of
+    /// <paramref name="odds"/>, so always), then, unless held or within 30 frames of the last, the cue its body cries
+    /// out with its next order (<see cref="Gaze"/>): 1 alert, 2 calm.
+    /// </summary>
+    private void Voice(Combatant c, int cue, int odds)
     {
-        if (c.Mind is not { } m || m.Held || m.VoiceLockout != 0) return;
+        if (c.Mind is not { } m) return;
+        int roll = Roll(odds);
+        if (m.Held || m.VoiceLockout != 0 || roll >= odds) return;
         m.VoiceLockout = 30;
+        m.Cue = cue;
     }
 
     /// <summary>
@@ -1300,7 +1392,7 @@ public sealed partial class FieldBattle
             {
                 if (m.KeepsFacing) { m.Run = true; m.FacePoint = pos; }
                 else m.FaceTarget = t.Index;
-                m.Heading = c.Actor.FacingToward(pos) + 2048;
+                m.Heading = Toward(c, pos) + 2048;
                 m.Order = Order.Away;
                 if (_walking.Contains(c)) m.FaceLatch = true;
             }
@@ -1379,12 +1471,13 @@ public sealed partial class FieldBattle
         var m = c.Mind!;
         if (t == c) { m.Order = Order.Stand; return true; }
         if (m.TurnSpeed == 0) return false;
-        float a = c.Actor.FacingToward(t.Actor.Position);
+        float a = Toward(c, t.Actor.Position);
         uint rel = m.Relations[t.Index];
         if (m.Goal != m.TurnGoal && (rel & 0x20) != 0 && !m.TurnLatch) { m.TurnLatch = true; m.TurnAngle = a; m.TurnGoal = m.Goal; }
         if (!m.TurnLatch) return false;
         m.TurnRate = m.TurnSpeed;
-        if (((int)c.Actor.Facing & 0xFFF) != ((int)m.TurnAngle & 0xFFF)) { m.TurnTo = m.TurnAngle; m.Order = Order.Turn; return true; }
+        m.WholeTurn = false;
+        if ((((int)c.Actor.Facing + Twist(c.Actor)) & 0xFFF) != ((int)m.TurnAngle & 0xFFF)) { m.TurnTo = m.TurnAngle; m.Order = Order.Turn; return true; }
         if ((rel & 0x20) == 0)
         {
             if (LookAround(c, 128, 1, 6)) return true;
@@ -1399,15 +1492,17 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Faces (BATTLE.PRG 0x800e2ccc): whom it faces, at its usual turn speed; else the point it keeps facing; else the
-    /// lowest of the four neighbouring tiles about its facing; else it stands.
+    /// Faces (BATTLE.PRG 0x800e2ccc): whom it faces, at its usual turn speed, head first (command 4); else the point it
+    /// keeps facing, the body alone (command 3); else, head first, the lowest of the four neighbouring tiles about its
+    /// facing; else it stands.
     /// </summary>
     private void Face(Combatant c)
     {
         var m = c.Mind!;
         m.TurnRate = m.DefaultTurn;
-        if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = c.Actor.FacingToward(t.Actor.Position); m.Order = Order.Turn; return; }
-        if (m.FacePoint is { } point) { m.TurnTo = c.Actor.FacingToward(point); m.Order = Order.Turn; return; }
+        m.WholeTurn = false;
+        if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = Toward(c, t.Actor.Position); m.Order = Order.Turn; return; }
+        if (m.FacePoint is { } point) { m.TurnTo = Toward(c, point); m.WholeTurn = true; m.Order = Order.Turn; return; }
         int facing = (int)c.Actor.Facing & 0xFFF, q = 2 * (((facing >> 10) + ((facing & 0x3FF) > 512 ? 1 : 0)) & 3);
         float? best = null;
         int chosen = -1;
@@ -1428,8 +1523,9 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// Looks about (BATTLE.PRG 0x800e4180): a look of kind 1 (70 frames: one way, the other, then ahead) or 2 (24
-    /// frames) starts on a roll under its chance and runs its frames; returns whether it is still looking. Its head's
-    /// turn is not yet shown; it stands as it looks.
+    /// frames) starts on a roll under its chance and runs its frames; returns whether it is still looking. It stands
+    /// while its head turns (command 16, at 64 a frame, <see cref="Gaze"/>): kind 1 800 to its left for 17 frames, 800
+    /// to its right for 35, then ahead; kind 2 1280 for 13 frames (no more than 800 shows), then ahead.
     /// </summary>
     private bool LookAround(Combatant c, int chance, int kind, int slot)
     {
@@ -1443,6 +1539,7 @@ public sealed partial class FieldBattle
         }
         m.Looks[slot] = (ticks - 1, held);
         if (held is not (1 or 2)) return false;
+        m.Look = held == 2 ? ticks < 11 ? 0 : 1280 : ticks >= 53 ? 800 : ticks >= 18 ? -800 : 0;
         m.Order = Order.Stand;
         return ticks >= 2;
     }
@@ -1473,7 +1570,7 @@ public sealed partial class FieldBattle
         m.Goal = m.Threat;
         m.Run = run;
         m.FacePoint = point;
-        m.Heading = c.Actor.FacingToward(point) + 2048;
+        m.Heading = Toward(c, point) + 2048;
         m.Order = Order.Away;
         SetMode(c, 4);
         return true;
@@ -1753,14 +1850,14 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>Turns an actor on another (BATTLE.PRG 0x800dc784): from not yet a foe, with the alarm and a voiced reaction; its unseen count cleared.</summary>
-    private static void Antagonise(Combatant s, Combatant c)
+    private void Antagonise(Combatant s, Combatant c)
     {
         var m = s.Mind!;
         if ((m.Relations[c.Index] >> 6 & 3) < 3)
         {
             m.Lost = true;
             Flash(s, 6, 40);
-            Voice(s);
+            Voice(s, 2, 128);
         }
         m.Relations[c.Index] = m.Relations[c.Index] & 0xFFFF803Fu | 0xC0;
     }
@@ -1832,7 +1929,7 @@ public sealed partial class FieldBattle
         if (!m.Retaliates)
         {
             Flash(s, 6, 40);
-            Voice(s);
+            Voice(s, 2, 128);
         }
     }
 
@@ -1865,8 +1962,7 @@ public sealed partial class FieldBattle
             case Order.Turn:
             {
                 if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
-                float turn = Mathf.Wrap(m.TurnTo - actor.Facing, -2048, 2048);
-                actor.Facing = Mathf.PosMod(Math.Abs(turn) <= m.TurnRate ? m.TurnTo : actor.Facing + Math.Sign(turn) * m.TurnRate, 4096);
+                Swivel(enemy);
                 break;
             }
             case Order.Path:
@@ -1892,6 +1988,79 @@ public sealed partial class FieldBattle
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Turns an enemy for its order. Facing a point (command 3) its body turns alone at its turn rate, its head held.
+    /// Otherwise (BATTLE.PRG's turn command 0x800df720, command 4, carried out by the body's codes 3, 4 and 7 in
+    /// 0x80075554) its facing counts its head's twist: within a step of the facing its body turns the rest at that
+    /// rate while its head comes round onto the facing at its relaxed rate (code 4); farther off, one with a head
+    /// turns it first, a step a frame up to 800 either way (code 7), then its body a step a frame, the head held (code 3).
+    /// </summary>
+    private void Swivel(Combatant enemy)
+    {
+        var actor = enemy.Actor;
+        var m = enemy.Mind!;
+        int yaw = (int)actor.Facing, twist = Twist(actor), goal = (int)m.TurnTo & 0xFFF, speed = (int)m.TurnRate;
+        if (m.WholeTurn)
+        {
+            m.Command = 3;
+            (actor.LookTwist, actor.LookFacing) = (twist, null);
+            int turn = (int)Mathf.Wrap(goal - yaw, -2048, 2048);
+            actor.Facing = (Math.Abs(turn) <= speed ? goal : yaw + Math.Sign(turn) * speed) & 0xFFF;
+            return;
+        }
+        int diff = (goal - (yaw + twist)) & 0xFFF, dir = diff < 2048 ? 1 : -1;
+        if (diff < 1 || diff < speed || 4096 - diff < speed)
+        {
+            m.Command = 4;
+            (actor.LookTwist, actor.LookFacing, actor.LookSpeed) = (null, goal, Relaxed(m));
+            int turn = (int)Mathf.Wrap(goal - yaw, -2048, 2048);
+            actor.Facing = (Math.Abs(turn) <= speed ? goal : yaw + Math.Sign(turn) * speed) & 0xFFF;
+        }
+        else if (actor.Head != null && (dir > 0 ? twist < 800 : twist > -800))
+        {
+            m.Command = 7;
+            (actor.LookTwist, actor.LookFacing, actor.LookSpeed) = (twist + dir * speed, null, 4096);
+        }
+        else
+        {
+            m.Command = 3;
+            (actor.LookTwist, actor.LookFacing) = (twist, null);
+            actor.Facing = (yaw + dir * speed) & 0xFFF;
+        }
+    }
+
+    /// <summary>The rate its head comes round at a frame when let go (0x8009fd38): 30, or 20 for a body over 128 wide (whose usual turn is 32).</summary>
+    private static int Relaxed(Mind m) => m.DefaultTurn == 32 ? 20 : 30;
+
+    /// <summary>
+    /// What an enemy's body did with its order, as the code BATTLE.PRG's actor update 0x80075554 carries out, and its
+    /// head's part in it (0x8009fc60): a look (command 16, code 6) turns the head toward its twist at 64 a frame; a
+    /// stand (2) leaves the head as it was; a turn set its own (<see cref="Swivel"/>); walking, running, flying or
+    /// hopping (9, 10, 16, 17, 23) lets the head come back round. A cue it was given cries out then (0x800ae4fc): the
+    /// character's sound of that number, unless it is far below the room (y 3000 or more). One out of the fight lets its
+    /// head go.
+    /// </summary>
+    private void Gaze(Combatant c)
+    {
+        var m = c.Mind!;
+        var actor = c.Actor;
+        if (Acts(c))
+        {
+            if (m.Look is { } look) { m.Command = 6; (actor.LookTwist, actor.LookFacing, actor.LookSpeed) = (look, null, 64); }
+            else if (m.Order == Order.Stand) m.Command = 2;
+            else if (m.Order is Order.Path or Order.Away)
+            {
+                m.Command = c.Gait == Gait.Hop ? 23 : c.Gait == Gait.Fly ? m.Run ? 17 : 16 : m.Run ? 10 : 9;
+                (actor.LookTwist, actor.LookFacing, actor.LookSpeed) = (null, null, Relaxed(m));
+            }
+            m.Look = null;
+        }
+        else (actor.LookTwist, actor.LookFacing) = (null, null);
+        if (m.Cue == 0) return;
+        if (actor.Position.Y < 3000) _view.PlayActorSound(actor, $"c{actor.Character:X2}_{m.Cue}_p128");
+        m.Cue = 0;
     }
 
     /// <summary>
