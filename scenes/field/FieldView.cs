@@ -3574,7 +3574,44 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var words = Document.GetValueOrDefault("tile_attributes", new GArray()).AsGodotArray();
         _attributes = new long[words.Count];
         for (int i = 0; i < words.Count; i++) _attributes[i] = words[i].AsInt64();
+        _sightFloors = new int[32 * 32];
+        for (int z = 0; z < 32; z++)
+            for (int x = 0; x < 32; x++) _sightFloors[z * 32 + x] = TileFloor(x, z);
     }
+
+    /// <summary>The floor of each tile as the enemies' sight takes it, 32 tiles a row (<see cref="SightFloor"/>).</summary>
+    private int[] _sightFloors = new int[32 * 32];
+
+    /// <summary>
+    /// A tile's floor as BATTLE.PRG's battle start reckons it for sight (0x800e71dc, kept in 64-unit steps in the grid
+    /// at 0x800f58d0 by 0x800e6f9c): the lowest of its centre and its sixteen 32-unit sub-cells, or its centre alone when
+    /// some sub-cell has no floor and no two-by-two block of them is whole; 0 for a tile outside the room.
+    /// </summary>
+    private int TileFloor(int x, int z)
+    {
+        if (x * 4 >= _columns || z * 4 >= _rows) return 0;
+        float centre = _heights[(z * 4 + 2) * _columns + x * 4 + 2], lowest = centre;
+        int missing = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            var at = new Vector3(x * 128 + (i >> 2) * 32 + 16, 0, z * 128 + (i & 3) * 32 + 16);
+            if (Solid(at)) { missing |= 1 << i; continue; }
+            lowest = Math.Max(lowest, _heights[(z * 4 + (i >> 2)) * _columns + x * 4 + (i & 3)]);
+        }
+        bool whole = missing == 0;
+        foreach (int shift in new[] { 0, 1, 2, 4, 5, 6, 8, 9 }) whole |= (missing & 0x33 << shift) == 0;
+        float floor = whole ? lowest : centre;
+        return ((int)floor >> 6) * 64;
+    }
+
+    /// <summary>
+    /// The floor height the enemies' sight is tested against at a map position (BATTLE.PRG 0x800e4478): its tile's
+    /// <see cref="TileFloor"/>, 32 tiles a row as the grid has them.
+    /// </summary>
+    public int SightFloor(int x, int z) => _sightFloors[((z >> 7) & 31) * 32 + ((x >> 7) & 31)];
+
+    /// <summary>Whether whoever stands on a tile is perceived wherever it is (its attribute bit 29, the grid's 0x2000 at 0x800f58b8).</summary>
+    public bool Perceived(int x, int z) => (TileAttributes(x, z) >> 29 & 1) != 0;
 
     /// <summary>The floor height under a map position, or null outside the room's collision map.</summary>
     public float? FloorAt(Vector3 position)

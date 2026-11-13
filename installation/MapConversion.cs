@@ -1171,6 +1171,18 @@ public sealed class MapConversion
             if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
             stats["last_resorts"] = (planning >> 13 & 1) != 0;
             stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
+            // The record's word at 0x10 goes to the actor's +0x30: bits 4 to 8 choose its behaviour routine (BATTLE.PRG's
+            // table at 0x800F1790, 0x800e5e70), bits 0 to 3 are its group and bits 9 to 13 the group of the leader it
+            // keeps by (0x800e5998).
+            uint behaviour = BitConverter.ToUInt32(_map, record + 0x10);
+            stats["behaviour"] = (int)(behaviour >> 4 & 0x1F);
+            stats["group"] = (int)(behaviour & 0xF);
+            stats["leader"] = (int)(behaviour >> 9 & 0x1F);
+            // Bits 22 to 26 and 27 to 31 are the home tile it wanders about and bits 16 to 21 how far (0x800e5e14, 63 a
+            // free wander); byte 0x26 has it lie dormant until stirred (0x800e6538).
+            stats["home"] = new JsonArray { (int)(behaviour >> 22 & 0x1F), (int)(behaviour >> 27) };
+            stats["home_radius"] = (int)(behaviour >> 16 & 0x3F);
+            stats["dormant"] = _map[record + 0x26] != 0;
             actors.Add(new JsonObject
             {
                 ["unit_sector"] = (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),

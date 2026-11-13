@@ -29,6 +29,10 @@ public sealed class FieldContent
     private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
     private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
     private const int Relations = 0x140C;        // BATTLE.PRG 0x80069C0C
+    private const int SightRanges = 0x141C;      // BATTLE.PRG 0x80069C1C
+    private const int ViewCones = 0x88FB8;       // BATTLE.PRG 0x800F17B8
+    private const int TurnRates = 0x88FD8;       // BATTLE.PRG 0x800F17D8
+    private const int WanderTimes = 0x143C;      // BATTLE.PRG 0x80069C3C
     private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
@@ -554,6 +558,26 @@ public sealed class FieldContent
     public int Relation(int faction, bool toPlayer) => _battle[Relations + faction * 2 + (toPlayer ? 0 : 1)];
 
     /// <summary>
+    /// An enemy's senses by its AI word (BATTLE.PRG 0x800e5a9c): how far it sees, squared (bits 18 to 20 into the words
+    /// at 0x80069C1C), how wide its view is in degrees (bits 16 and 17 into the words at 0x800F17B8), and its turning
+    /// rate in sixteenths (bits 2 and 3 into the bytes at 0x800F17D8).
+    /// </summary>
+    public (uint SightSquared, int ConeDegrees, int TurnRate) Senses(uint ai) =>
+        (BitConverter.ToUInt32(_battle, SightRanges + (int)(ai >> 18 & 7) * 4), BitConverter.ToInt32(_battle, ViewCones + (int)(ai >> 16 & 3) * 4),
+            _battle[TurnRates + (int)(ai >> 2 & 3)]);
+
+    /// <summary>
+    /// An enemy's wandering pace by its AI word's bits 4 to 6 (BATTLE.PRG's 6-byte rows at 0x80069C3C, 0x800e5cfc): the
+    /// frames it moves, the frames it idles after, and the power of two its odds of a new heading are one in. Rows 6
+    /// and 7 run on into the data after the table, as BATTLE.PRG reads them.
+    /// </summary>
+    public (int Move, int Idle, int Chance) WanderPace(uint ai)
+    {
+        int row = WanderTimes + (int)(ai >> 4 & 7) * 6;
+        return (BitConverter.ToUInt16(_battle, row), BitConverter.ToUInt16(_battle, row + 2), _battle[row + 4]);
+    }
+
+    /// <summary>
     /// The enemy planner's three passes (BATTLE.PRG 0x80069BF0 and 0x80069BFC, read by 0x800de3e4): how far ahead
     /// each looks, in frames, and how many of its best moves it keeps.
     /// </summary>
@@ -584,6 +608,27 @@ public sealed class FieldContent
         return new ActionRecord(_executable[record + 2] >> 4, _executable[record + 2] >> 1 & 7, _executable[record + 3],
             new[] { (int)_executable[record + 4], _executable[record + 5], _executable[record + 6], _executable[record + 7] },
             _executable[record + 12], BitConverter.ToUInt16(_executable, record + 14));
+    }
+
+    /// <summary>
+    /// An action's near range (bytes 8 to 11 of its record, laid out as its range): with its planning flag 0x80, an enemy
+    /// keeps out of it before it makes the action (BATTLE.PRG 0x800e5600); with 0x2000 the second byte, 32 units a point,
+    /// is that margin by itself.
+    /// </summary>
+    public int[] NearRange(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return new[] { (int)_executable[record + 8], _executable[record + 9], _executable[record + 10], _executable[record + 11] };
+    }
+
+    /// <summary>
+    /// Whether an enemy pays an action on it no heed (BATTLE.PRG 0x800dd000): the effect class (bits 7 to 12) of its
+    /// record's word at 0x14 or at 0x18 is 3.
+    /// </summary>
+    public bool Unheeded(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return (BitConverter.ToUInt32(_executable, record + 0x14) >> 7 & 0x3F) == 3 || (BitConverter.ToUInt32(_executable, record + 0x18) >> 7 & 0x3F) == 3;
     }
 
     /// <summary>
