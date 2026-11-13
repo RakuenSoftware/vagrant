@@ -116,9 +116,7 @@ public sealed class FieldPlayer
                 if (--_frames <= 0) Launch(0, Vector3.Zero);
                 return;
             case State.Air:
-                // A leap keeps its course to its point; a jump is steered by the stick.
-                if (_leaping) { }
-                else if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
+                if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
                 else _velocity = Vector3.Zero;
                 StepAir();
                 return;
@@ -139,23 +137,6 @@ public sealed class FieldPlayer
         Settle();
         Animate(walk);
     }
-
-    /// <summary>
-    /// Leaps to a point (a hopping enemy's tile; BATTLE.PRG lands command 23 through the same air physics, 0x800ac980):
-    /// the jump's arc (up at 30, gravity 3 a frame), over as many frames as it takes to come down to the point's height,
-    /// and across at the pace that reaches it then (0x800a208c). Nothing while it is off the ground.
-    /// </summary>
-    public void Leap(Vector3 target)
-    {
-        if (_state != State.Ground) return;
-        int frames = 0;
-        float vertical = -30, y = _actor.Position.Y;
-        do { vertical += 3; y += vertical; frames++; } while (!(vertical > 0 && y >= target.Y) && frames < 120);
-        var across = (target - _actor.Position) with { Y = 0 };
-        Launch(1, across / frames);
-        _leaping = true;
-    }
-    private bool _leaping;
 
     private void Launch(int type, Vector3 velocity)
     {
@@ -180,7 +161,7 @@ public sealed class FieldPlayer
         _airVertical += 3;
         var position = _actor.Position;
         var next = position + _velocity;
-        if (_velocity != Vector3.Zero && !_leaping)
+        if (_velocity != Vector3.Zero)
         {
             float? ahead = _floor(next + _velocity.Normalized() * Radius);
             if (ahead is not { } floorAhead || position.Y - floorAhead > 32 && !_stairs(next))
@@ -195,7 +176,6 @@ public sealed class FieldPlayer
         if (phase != _airAnimation && phase > 0) { _airAnimation = phase; if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][phase]}", phase == 1 ? 16 : 8, once: true); }
         if (_airVertical > 0 && next.Y >= floor)
         {
-            _leaping = false;
             _actor.Position = next with { Y = floor };
             _state = State.Ground;
             if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][3]}", 8, once: true);

@@ -943,6 +943,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     private readonly List<TrapPanel> _trapPanels = new();
 
+    /// <summary>
+    /// Whether the room's traps are cleared (flag 32, which Trap Clear's effect 38 sets, or 64, effect 37; BATTLE.PRG
+    /// 0x80084340, 0x80084310): none springs, none is revealed and their panels fade away; save circles still serve.
+    /// </summary>
+    public bool TrapsCleared => Flags[32] != 0 || Flags[64] != 0;
+
     /// <summary>How many of the room's traps are revealed, for tests.</summary>
     public int RevealedTraps => _trapPanels.FindAll(trap => trap.Revealed).Count;
     private Texture2D? _trapPanelTexture;
@@ -986,7 +992,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public List<FieldEffect> SeeTraps(int visual, EventActor caster)
     {
         var started = new List<FieldEffect>();
-        if (Flags[32] != 0 || Flags[64] != 0) return started;
+        if (TrapsCleared) return started;
         foreach (var trap in _trapPanels)
         {
             if (trap.Type >= 16) continue;
@@ -1003,6 +1009,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public void RevealTrap(int x, int z)
     {
+        if (TrapsCleared) return;
         foreach (var trap in _trapPanels) if (trap.X == x && trap.Z == z) trap.Revealed = true;
     }
 
@@ -1019,7 +1026,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         bool shown = false;
         foreach (var trap in _trapPanels)
         {
-            trap.Fade = trap.Revealed ? Math.Min(128, trap.Fade + 4) : Math.Max(0, trap.Fade - 2);
+            trap.Fade = trap.Revealed && !TrapsCleared ? Math.Min(128, trap.Fade + 4) : Math.Max(0, trap.Fade - 2);
             if (trap.Fade == 0 || trap.Type >= 16) continue;
             if (!shown) { shown = true; _trapPanelClock++; }
             float floor = FloorAt(new Vector3(trap.X * 128, 0, trap.Z * 128)) ?? 0;
@@ -1889,13 +1896,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 _transitionFade = (args["effect"].AsInt32(), args["speed"].AsInt32());
                 return Error.Ok;
             case "actor.materialise":
-                if (Actor(args) is { } shown && args["state"].AsInt32() is 1 or 2)
-                {
-                    bool appear = args["state"].AsInt32() == 2;
-                    if (appear) shown.Visible = true;
-                    var was = _materialising.TryGetValue(shown, out var running) ? running : (Mode: 0, Frames: 0, Tinted: shown.Tinted, Light: shown.Light);
-                    _materialising[shown] = (appear ? 9 : 6, 0, was.Tinted, was.Light);
-                }
+                if (Actor(args) is { } shown && args["state"].AsInt32() is 1 or 2) Materialise(shown, args["state"].AsInt32() == 2);
                 return Error.Ok;
             case "actor.redraw":
             {
@@ -2753,6 +2754,20 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
     }
 
+    /// <summary>
+    /// Starts an actor reappearing (drawing mode 9) or vanishing (6), as retail 71 and a hopper's hop (0x800a29e8,
+    /// 0x800a2ab0) set its drawing mode (<see cref="StepMaterialising"/>).
+    /// </summary>
+    public void Materialise(EventActor actor, bool appear)
+    {
+        if (appear) actor.Visible = true;
+        var was = _materialising.TryGetValue(actor, out var running) ? running : (Mode: 0, Frames: 0, Tinted: actor.Tinted, Light: actor.Light);
+        _materialising[actor] = (appear ? 9 : 6, 0, was.Tinted, was.Light);
+    }
+
+    /// <summary>Whether an actor is still vanishing or reappearing.</summary>
+    public bool Materialising(EventActor actor) => _materialising.ContainsKey(actor);
+
     /// <summary>Actors materialising (71), by actor: the drawing mode, frames in it, and the light they had before.</summary>
     private readonly Dictionary<EventActor, (int Mode, int Frames, bool Tinted, Vector3 Light)> _materialising = new();
 
@@ -3350,6 +3365,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         get { foreach (var crate in _crates) if (!crate.Carried) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, crate.Orientation); }
     }
     private Crate? _carried;
+
+    /// <summary>The tile of the room's crate <paramref name="index"/> (in the room's order), or null while carried or past the last.</summary>
+    public (int X, int Z)? CrateTile(int index) => index >= 0 && index < _crates.Count && !_crates[index].Carried ? (_crates[index].X, _crates[index].Z) : null;
 
     /// <summary>The top of the highest crate on a position's tile, which is floor there; null without one.</summary>
     private float? CrateTop(Vector3 position)
@@ -5265,7 +5283,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (at[0].AsInt32() != tile.X || at[1].AsInt32() != tile.Z) continue;
             int type = trap["type"].AsInt32();
             if (type == 16) { SavePoint = trap["location"].AsInt32(); return; }
-            if (Battle?.Ashley == null) return;
+            if (Battle?.Ashley == null || TrapsCleared) return;
             // A sprung trap is revealed (BATTLE.PRG 0x80074314).
             RevealTrap(tile.X, tile.Z);
             // The trap is its action (type + 6), announced by name as retail's information setting does it.

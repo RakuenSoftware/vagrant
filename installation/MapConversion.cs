@@ -206,7 +206,7 @@ public sealed class MapConversion
             ["tile_attributes"] = TileAttributes(room),
             ["doors"] = Doors(room),
             ["chests"] = Chests(room),
-            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room),
+            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room), ["crate_steps"] = CrateSteps(room),
             ["locks"] = Locks(room),
             ["platforms"] = Platforms(room), ["swings"] = Swings(room), ["group_scripts"] = GroupScripts(room),
             ["room_actors"] = RoomActors(),
@@ -564,6 +564,24 @@ public sealed class MapConversion
         int at = SubSection(room, 5, out int length);
         if (length >= 1024) for (int i = 0; i < 256; i++) links.Add((long)BitConverter.ToUInt32(_map, at + i * 4));
         return links;
+    }
+
+    /// <summary>
+    /// The crate steps a zone link's connector (bit 10) needs (room sub-section 5 at 0x454; BATTLE.PRG 0x800dfaf8): 8
+    /// pairs of tiles (x bits 0 to 4, z 5 to 9), a connector and where crate k (pair 2k or 2k + 1) must stand by it for
+    /// an enemy to climb on from there. Empty for a room without the section.
+    /// </summary>
+    private JsonArray CrateSteps(int room)
+    {
+        var steps = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x454 + 32) return steps;
+        for (int i = 0; i < 8; i++)
+        {
+            int connector = BitConverter.ToUInt16(_map, at + 0x454 + i * 4), crate = BitConverter.ToUInt16(_map, at + 0x454 + i * 4 + 2);
+            steps.Add(new JsonArray { connector & 31, connector >> 5 & 31, crate & 31, crate >> 5 & 31 });
+        }
+        return steps;
     }
 
     /// <summary>
