@@ -45,6 +45,16 @@ public partial class FieldContracts : Node
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
     private bool _fight;
     /// <summary>
+    /// With <c>--swoop</c> in a fight (Guildenstern's final form, <c>--room=27,1</c>), Ashley keeps her full hit points
+    /// and each change of scenario variable 166, by which the boss and the room's scenes hand the swoop over, is
+    /// printed with where the boss is; the boss starts at three quarters of its hit points. While it is 1 (a swoop asked for), 5 (the dive made) or 6 (broken off) she
+    /// stands still, as the scenes that answer them wait for. It passes once 166 has gone 1, 4, 5 or 6 and back to 0,
+    /// and fails without that in 20000 frames.
+    /// </summary>
+    private bool _swoop;
+    private string _swoopTrail = "0";
+    private int _swoopAt = -1;
+    /// <summary>
     /// With <c>--reveal-traps</c>, once Ashley is the player's the Eye of Argon's effect plays at every trap in the room,
     /// which reveals them; she stands beside the first, and its panel is captured every 4 frames from 80 to 120.
     /// </summary>
@@ -124,6 +134,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--swoop") _swoop = true;
             if (argument == "--reveal-traps") _revealTraps = true;
             if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
@@ -624,6 +635,22 @@ public partial class FieldContracts : Node
         {
             if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
             if (brawl.GameOver) { Finish("Ashley fell in the room's fight"); return; }
+            if (_swoop)
+            {
+                brawler.Hp = brawler.MaxHp;
+                int swoop = _view.Flags[166];
+                var boss = brawl.Combatants.Values.FirstOrDefault(c => c != brawler && c.Hostile && !c.Dead);
+                // The boss starts at three quarters of its hit points, so that it asks for its first swoop once its
+                // 900-frame cooldown is over rather than after a long fight.
+                if (_swoopAt < 0 && boss != null) boss.Hp = boss.MaxHp * 3 / 4;
+                if (_swoopAt < 0) _swoopAt = _frame;
+                if (swoop.ToString() != _swoopTrail[^1..] || (_frame - _swoopAt) % 120 == 0)
+                    GD.Print($"FIELD: variable 166 is {swoop} at frame {_frame}, the boss at {boss?.Actor.Position} with {boss?.Hp} hit points, Ashley at {brawler.Actor.Position}");
+                if (swoop.ToString() != _swoopTrail[^1..]) _swoopTrail += swoop;
+                if (System.Text.RegularExpressions.Regex.IsMatch(_swoopTrail, "14[56]0")) { Finish(""); return; }
+                if (_frame - _swoopAt > 20000) { Finish($"the swoop did not run its course (166 went {_swoopTrail})"); return; }
+                if (swoop is 1 or 5 or 6) { Steer(Vector2.Zero); return; }
+            }
             if (brawl.HostileCount() == 0) { Steer(Vector2.Zero); if (++_calm > 180) Finish(""); return; }
             _calm = 0;
             // The sphere is held open long enough to be seen whole, and captured once it is.

@@ -1754,7 +1754,7 @@ public sealed partial class FieldBattle
     /// last resorts plans those at weight 128. The fighters are put back; then, of two or more, one of the first pass's
     /// may go first: in turn, any whose weight (at most 76) a roll of 0 to 127 falls under, the rest sorted after it.
     /// Each after the first waits at least 80 frames on it, and each a further 0 to 7. Then they are checked
-    /// (<see cref="Recheck"/>).
+    /// (<see cref="Recheck"/>), and Guildenstern's final form's swoop heeds the plan's end (<see cref="Planned"/>).
     /// </summary>
     private void PlanMoves(Combatant enemy, List<Combatant> fighters)
     {
@@ -1813,6 +1813,7 @@ public sealed partial class FieldBattle
             enemy.Plans[i].Horizon += (int)(_random.Randi() & 7);
         }
         Recheck(enemy);
+        Planned(enemy);
     }
 
     /// <summary>
