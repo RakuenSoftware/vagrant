@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using GDictionary = Godot.Collections.Dictionary;
+using Wol.Games.Vagrant.Installation;
 using Wol.Games.Vagrant.Runtime;
 
 namespace Wol.Games.Vagrant.Scenes.Field;
@@ -32,16 +33,10 @@ public sealed class FieldBattle
     /// <summary>
     /// Status effects by effect id: lowering strength, intelligence and agility (1 to 3), slowing (5), raising them
     /// (6 to 8), quickening (10), silence (11), regeneration (13), paralysis (15), poison (16), numbness (17) and curse
-    /// (18). Statuses last 15 seconds, slowing and quickening 20; regeneration, poison and curse last until cured.
+    /// (18). Each sets a status bit (<see cref="StatusBit"/>), which lasts by its group's timer (<see cref="Combatant.SetStatus"/>).
     /// </summary>
     public const int Degenerate = 1, Psychodrain = 2, Leadbones = 3, Slow = 5, Herakles = 6, Enlighten = 7, Invigorate = 8,
         Quicken = 10, Silence = 11, Regen = 13, Paralysis = 15, Poison = 16, Numbness = 17, Curse = 18;
-
-    /// <summary>How long a status lasts, in 30 Hz frames, or -1 until cured.</summary>
-    public static int Duration(int status) => status switch
-    {
-        Slow or Quicken => 20 * 30, Regen or Poison or Curse => -1, _ => 15 * 30,
-    };
 
     /// <summary>Names for the limbs of a character built like Ashley.</summary>
     public const float DetectRange = 1536;
@@ -76,10 +71,11 @@ public sealed class FieldBattle
             if (Record != null) Record["dp"] = Dp;
         }
 
-        /// <summary>Spends all its PP.</summary>
-        public void Drain()
+        /// <summary>Spends <paramref name="amount"/> of its PP, to no less than none.</summary>
+        public void Lose(int amount)
         {
-            Pp = 0;
+            if (amount <= 0) return;
+            Pp = Math.Max(0, Pp - amount);
             if (Record != null) Record["pp"] = Pp;
         }
 
@@ -112,6 +108,8 @@ public sealed class FieldBattle
     public sealed class Limb
     {
         public int Hp, MaxHp, Agility, Bone = -1;
+        /// <summary>How it evades chain abilities (its data's +0x39f, the limb record's byte 3; hit function 7, 0x8007f1a4).</summary>
+        public int ChainEvasion;
 
         /// <summary>The model part the limb is (its first bone's body part: 1 HEAD, 2 R.ARM, 3 L.ARM, 4 LEGS, 6 BODY...), or 0 when the rig does not say.</summary>
         public int Part;
@@ -129,11 +127,13 @@ public sealed class FieldBattle
 
         public EventActor Actor = null!;
         /// <summary>Whether Ashley can take it as a target: a living, present enemy that is not vanished (a hopper mid-hop).</summary>
-        public bool Targetable => Hostile && !Dead && !Suspended && Actor.Visible;
+        public bool Targetable => Hostile && !Dead && Hp > 0 && !Suspended && Actor.Visible;
         /// <summary>How high its middle stands above its feet (y down), where its attack sphere is centred.</summary>
         public float Centre;
         /// <summary>Its weapon's range angle (the range record's fourth byte, its low three bits cleared), which pitches the sphere.</summary>
         public int Tilt;
+        /// <summary>Its weapon's range record as it stands (its data's +0x38 to +0x3b: x, y and z radii and the angle and shape).</summary>
+        public readonly int[] WeaponRange = new int[4];
 
         /// <summary>
         /// Takes its attack sphere from its weapon's range record (x, y, z and angle): each radius the range and its
@@ -141,6 +141,7 @@ public sealed class FieldBattle
         /// </summary>
         public void Reaching(Godot.Collections.Array range)
         {
+            for (int i = 0; i < 4; i++) WeaponRange[i] = i < range.Count ? range[i].AsInt32() : 0;
             Range = new Vector3(range[0].AsInt32() + Reach, range[1].AsInt32() + Reach, range[2].AsInt32() + Reach) * 32;
             Tilt = range.Count > 3 ? range[3].AsInt32() & 0xF8 : 0;
         }
@@ -187,10 +188,28 @@ public sealed class FieldBattle
         public bool LastResorts, WeighsLightly;
         public (int A, int B)? SlowingLimbs;
 
-        /// <summary>Statuses by effect id, with the frames each has left (-1 lasts until cured).</summary>
-        public readonly Dictionary<int, int> Statuses = new();
-
-        public bool Has(int status) => Statuses.ContainsKey(status);
+        /// <summary>Its statuses, a bit each as BATTLE.PRG keeps them (its data's +0x948; their rules at SLUS_010.40 0x8004EECC).</summary>
+        public uint Status;
+        /// <summary>The statuses it cannot take (its data's +0x944, its character record's word at 0x28).</summary>
+        public uint Immunity;
+        /// <summary>
+        /// Its six status timers in status ticks (its data's +0x94c to +0x951): one for each group of statuses
+        /// (<see cref="FieldContent.StatusGroup"/>), then the turn of its poison or regeneration.
+        /// </summary>
+        public readonly int[] Timers = new int[6];
+        /// <summary>
+        /// What its Tarnish or Prostasia moved its gear's strength by, and its fusion's or guard's two affinities and
+        /// amount (0x80086fa8), put back as the status goes.
+        /// </summary>
+        public int GearShift;
+        public (int Raised, int Lowered, int By, bool Armour) AffinityShift;
+        /// <summary>
+        /// A thing rather than a fighter (its data's +0x957 = 0x80, as BATTLE.PRG 0x8007647C makes a crate): every
+        /// action hits it (0x8007f28c), every amount is 999 (0x800838ec) and it takes no status (0x80081060).
+        /// </summary>
+        public bool Object => Cube;
+        /// <summary>The action of Ashley's whose blow left it at no hit points, which its kill counts for (-1 none).</summary>
+        public int FelledBy = -1;
 
         /// <summary>Restores up to <paramref name="amount"/> hit points, never past its most; returns what it restored.</summary>
         public int Heal(int amount) { int healed = Math.Clamp(amount, 0, MaxHp - Hp); Hp += healed; return healed; }
@@ -198,51 +217,88 @@ public sealed class FieldBattle
         /// <summary>Restores up to <paramref name="amount"/> magic points, never past its most; returns what it restored.</summary>
         public int Restore(int amount) { int restored = Math.Clamp(amount, 0, MaxMp - Mp); Mp += restored; return restored; }
 
-        /// <summary>
-        /// Sets <paramref name="status"/> for its whole <see cref="Duration"/> by its rules (<see cref="FieldContent.Status"/>;
-        /// BATTLE.PRG 0x80081020): not while a status that keeps it off is set; the statuses it clears go (raising or
-        /// lowering one strength, intelligence or agility clears the other five; poison clears regeneration); and one
-        /// already set stays as it is unless it clears itself.
-        /// </summary>
-        public void Afflict(int status, FieldContent rules)
-        {
-            int bit = status > 0 && status < StatusBits.Length ? StatusBits[status] : -1;
-            if (bit < 0) { Statuses[status] = Duration(status); return; }
-            var (_, clears, blockedBy, _) = rules.Status(bit);
-            foreach (int other in Statuses.Keys)
-                if (other > 0 && other < StatusBits.Length && StatusBits[other] >= 0 && (blockedBy >> StatusBits[other] & 1) != 0) return;
-            if (Statuses.ContainsKey(status) && (clears >> bit & 1) == 0) return;
-            foreach (int other in new List<int>(Statuses.Keys))
-                if (other > 0 && other < StatusBits.Length && StatusBits[other] >= 0 && (clears >> StatusBits[other] & 1) != 0) Statuses.Remove(other);
-            Statuses[status] = Duration(status);
-        }
+        public bool Has(int status) => status > 0 && status < StatusBits.Length && StatusBits[status] >= 0 && (Status >> StatusBits[status] & 1) != 0;
 
         /// <summary>
-        /// A cure effect: 27 paralysis, 28 poison, 29 curse, 30 numbness, 31 the magic cancel (every raising and
-        /// lowering status), 32 paralysis, poison and numbness together. Returns whether it cured anything.
+        /// Sets a status bit (BATTLE.PRG 0x80086fa8): the timer of each group it is in is loaded (the five groups'
+        /// durations are those of rules 5, 11, 19, 13 and 13), poison and regeneration start their turns (rules 14 and
+        /// 17's periods), Tarnish and Prostasia move its gear's strength by 7% of its intelligence and its weapon's, and
+        /// a fusion or guard moves its weapon's, or its shield's and armour's, affinities by half of it.
         /// </summary>
-        public bool Cure(int effect)
+        public void SetStatus(int bit, FieldContent rules)
         {
-            int before = Statuses.Count;
-            switch (effect)
+            if ((Status >> bit & 1) != 0) return;
+            Status |= 1u << bit;
+            for (int group = 0; group < 5; group++)
+                if ((rules.StatusGroup(group) >> bit & 1) != 0) Timers[group] = rules.Status(GroupDurations[group]).Duration;
+            if (bit is 14 or 17) Timers[5] = rules.Status(bit).Period;
+            int mind = EffectiveIntelligence + Blade.Intelligence;
+            if (bit is 19 or 20)
             {
-                case 27: Statuses.Remove(Paralysis); break;
-                case 28: Statuses.Remove(Poison); break;
-                case 29: Statuses.Remove(Curse); break;
-                case 30: Statuses.Remove(Numbness); break;
-                case 31: foreach (int status in new List<int>(Statuses.Keys)) if (status is <= 12 or >= 19) Statuses.Remove(status); break;
-                case 32: foreach (int status in new[] { Paralysis, Poison, Numbness }) Statuses.Remove(status); break;
+                GearShift = Math.Max(0, mind * 7 / 100) * (bit == 19 ? -1 : 1);
+                Blade.Strength += GearShift;
+                Shield.Strength += GearShift;
+                foreach (var limb in Limbs) if (limb.Armour.Id != 0) limb.Armour.Strength += GearShift;
             }
-            return Statuses.Count < before;
+            if (bit is >= 21 and <= 28)
+            {
+                // Luft, Spark, Soil and Frost (and the guards in the same order) raise air, fire, earth and water and
+                // lower their opposites (0x80086ea4, 0x80086ef4).
+                var (raised, lowered) = ((bit - 21) % 4) switch { 0 => (1, 3), 1 => (2, 4), 2 => (3, 1), _ => (4, 2) };
+                AffinityShift = (raised, lowered, Math.Max(0, mind / 2), bit >= 25);
+                Shift(AffinityShift.By);
+            }
         }
 
-        /// <summary>A stat with its statuses: a tenth less for a lowering one (or curse), a tenth more for a raising one.</summary>
-        public int Scaled(int value, int lower, int raise) =>
-            value * (100 - (Has(lower) ? 10 : 0) - (Has(Curse) ? 10 : 0) + (Has(raise) ? 10 : 0)) / 100;
+        /// <summary>
+        /// Clears a status bit (BATTLE.PRG 0x80086754): a group's timer stops once none of its statuses is left, and what
+        /// the status moved is put back.
+        /// </summary>
+        public void ClearStatus(int bit, FieldContent rules)
+        {
+            if ((Status >> bit & 1) == 0) return;
+            Status &= ~(1u << bit);
+            for (int group = 0; group < 5; group++)
+                if ((Status & rules.StatusGroup(group)) == 0) Timers[group] = 0;
+            if ((Status & (1u << 14 | 1u << 17)) == 0) Timers[5] = 0;
+            if (bit is 19 or 20)
+            {
+                Blade.Strength -= GearShift;
+                Shield.Strength -= GearShift;
+                foreach (var limb in Limbs) if (limb.Armour.Id != 0) limb.Armour.Strength -= GearShift;
+                GearShift = 0;
+            }
+            if (bit is >= 21 and <= 28)
+            {
+                Shift(-AffinityShift.By);
+                AffinityShift = default;
+            }
+        }
 
-        public int EffectiveStrength => Scaled(Strength, Degenerate, Herakles);
-        public int EffectiveIntelligence => Scaled(Intelligence, Psychodrain, Enlighten);
-        public int EffectiveAgility => Scaled(Agility, Leadbones, Invigorate);
+        // A fusion's or guard's move of affinities: the weapon's, or the shield's and every armour's.
+        private void Shift(int by)
+        {
+            var (raised, lowered, _, armour) = AffinityShift;
+            var gears = new List<Gear>();
+            if (armour) { foreach (var limb in Limbs) gears.Add(limb.Armour); gears.Add(Shield); }
+            else gears.Add(Blade);
+            foreach (var gear in gears)
+            {
+                gear.Affinities[raised] += by;
+                gear.Affinities[lowered] -= by;
+            }
+        }
+
+        /// <summary>
+        /// A stat with its statuses (0x80086fa8): lowered (or cursed, which lowers all three) to its base less a tenth
+        /// of it, raised to its base and a tenth. Only one of the six raising and lowering statuses can stand at once.
+        /// </summary>
+        private int Changed(int value, int lower, int raise) =>
+            (Status & (1u << lower | 1u << 16)) != 0 ? value - value / 10 : (Status >> raise & 1) != 0 ? value + value / 10 : value;
+
+        public int EffectiveStrength => Changed(Strength, 5, 6);
+        public int EffectiveIntelligence => Changed(Intelligence, 7, 8);
+        public int EffectiveAgility => Changed(Agility, 9, 10);
         public Vector3 Range;
         public int Reach;
         public bool Hostile, Marked, Drawn, Dead;
@@ -309,9 +365,14 @@ public sealed class FieldBattle
     private long _tick;
     private bool _struck;
 
-    /// <summary>Whether the last blow landed, and the affinity it struck with, which defense abilities test.</summary>
+    /// <summary>
+    /// The exchange abilities answer (BATTLE.PRG's [0x800F19CC]): whether the last blow landed, the action it was and
+    /// the affinity it struck with.
+    /// </summary>
     private bool _landed;
-    private int _blowAffinity;
+    private int _blowAffinity, _blowAction = 1;
+    /// <summary>The blow under way, resolved as it started, which lands at its hit.</summary>
+    private Resolution? _blow;
     private int _landAt;
     private FieldPlayer? _player;
     private Func<string, bool> _pressed = _ => false;
@@ -437,6 +498,9 @@ public sealed class FieldBattle
         // Ashley fights by the set for her weapon's category; others by their one battle set.
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
         combatant.Set = drawn ? combatant.BattleSet : "base";
+        // Its immunities, and with them (a negative word) immunity to magic as status bit 31 (BATTLE.PRG 0x80076cec).
+        combatant.Immunity = (uint)stats.GetValueOrDefault("immunity", 0L).AsInt64();
+        if ((combatant.Immunity & 0x80000000) != 0) combatant.Status = 0x80000000;
         long ai = stats.GetValueOrDefault("ai", 0L).AsInt64();
         combatant.Faction = (int)(ai >> 21 & 3);
         combatant.LastResorts = stats.GetValueOrDefault("last_resorts", false).AsBool();
@@ -462,6 +526,7 @@ public sealed class FieldBattle
             var limb = new Limb
             {
                 Hp = hp, MaxHp = hp, Agility = record["agility"].AsInt32(), Armour = Gear.From(record["armour"].AsGodotDictionary()),
+                ChainEvasion = record.GetValueOrDefault("chain_evasion", 0).AsInt32(),
                 Bone = limbBones != null && i < limbBones.Count ? limbBones[i].AsInt32() : -1,
                 Part = limbParts != null && i < limbParts.Count ? limbParts[i].AsInt32() : 0,
             };
@@ -504,6 +569,7 @@ public sealed class FieldBattle
         c.Category = Int(blade, "category");
         c.WeaponStrength = Int(blade, "strength") + Int(grip, "strength");
         c.WeaponAgility = Int(blade, "agility") + Int(grip, "agility");
+        int intelligence = Int(blade, "intelligence") + Int(grip, "intelligence");
         c.DamageType = Math.Clamp(Int(blade, "damage_type"), 1, 3);
         c.Cost = Int(blade, "cost");
         c.Reaching(blade.GetValueOrDefault("range", new Godot.Collections.Array { 3, 2, 3 }).AsGodotArray());
@@ -511,6 +577,7 @@ public sealed class FieldBattle
         gear.Types = Gear.From(grip).Types;
         gear.Strength = c.WeaponStrength;
         gear.Agility = c.WeaponAgility;
+        gear.Intelligence = intelligence;
         foreach (var value in gems ?? new Godot.Collections.Array())
         {
             var record = value.AsGodotDictionary();
@@ -685,7 +752,7 @@ public sealed class FieldBattle
     /// </summary>
     private static bool Reaches(Combatant attacker, Vector3 point)
     {
-        var offset = point - (attacker.Actor.Position + new Vector3(0, attacker.Centre, 0));
+        var offset = point - Middle(attacker);
         float angle = attacker.Actor.Facing * Mathf.Tau / 4096f;
         var local = new Basis(Vector3.Right, attacker.Tilt * 16 * Mathf.Tau / 4096f) * (new Basis(Vector3.Up, -angle) * offset);
         var r = attacker.Range;
@@ -705,68 +772,975 @@ public sealed class FieldBattle
         return !limbs && Reaches(attacker, Aim(target, -1));
     }
 
+    /// <summary>
+    /// What an action does to one fighter, as BATTLE.PRG's resolver (0x80085b10) works it out before anything is shown:
+    /// its 68-byte result entry (cleared by 0x80085718). Each amount has a mode, as the applier (0x800875c8) takes it:
+    /// 1 or 3 (a critical) take it off, 2 adds it; for RISK only 2 acts, and lowers it.
+    /// </summary>
+    public sealed class Outcome
+    {
+        public Combatant Who = null!;
+        /// <summary>The limb it falls on (+1; -1 for none).</summary>
+        public int Limb;
+        /// <summary>The chance it was rolled at (+2), 255 while none was (made 0 as the resolve ends, 0x80085a34).</summary>
+        public int Chance = 255;
+        /// <summary>How it shows (+3): 6 not reached, 4 nothing came of it (a miss), 0 harm, 5 help, 1 a critical (0x80085a34).</summary>
+        public int Kind = 6;
+        /// <summary>A place rather than a fighter (+0x40): effects pass it by.</summary>
+        public bool Void;
+        public int Hp, Mp, Risk, Strength, Intelligence, Agility, MaxHp, MaxMp, BladeDp, BladePp, Wear, ShieldPp;
+        public int HpMode, MpMode, RiskMode, StrengthMode, IntelligenceMode, AgilityMode, MaxHpMode, MaxMpMode, BladeDpMode, BladePpMode, WearMode, ShieldPpMode;
+        /// <summary>The status bits it sets (+0x14) and clears (+0x18).</summary>
+        public uint Set, Clear;
+        /// <summary>Each limb's share of the hit points (+0x20 + 4i), and the DP its armour loses with them (+0x22 + 4i).</summary>
+        public readonly int[] LimbHp = new int[6], LimbWear = new int[6];
+
+        public bool Nothing => HpMode == 0 && MpMode == 0 && RiskMode == 0 && StrengthMode == 0 && IntelligenceMode == 0 && AgilityMode == 0 && MaxHpMode == 0
+            && MaxMpMode == 0 && BladeDpMode == 0 && BladePpMode == 0 && WearMode == 0 && ShieldPpMode == 0 && Set == 0 && Clear == 0;
+
+        /// <summary>Clears what it holds but its fighter and limb (0x80085718), as for a crate that takes nothing.</summary>
+        public void Reset()
+        {
+            Hp = Mp = Risk = Strength = Intelligence = Agility = MaxHp = MaxMp = BladeDp = BladePp = Wear = ShieldPp = 0;
+            HpMode = MpMode = RiskMode = StrengthMode = IntelligenceMode = AgilityMode = MaxHpMode = MaxMpMode = BladeDpMode = BladePpMode = WearMode = ShieldPpMode = 0;
+            Set = Clear = 0;
+            Array.Clear(LimbHp);
+            Array.Clear(LimbWear);
+            Chance = 0;
+            Kind = 4;
+        }
+    }
+
+    /// <summary>An action resolved (BATTLE.PRG's 2124-byte result): its record, its user's entry and each target's.</summary>
+    public sealed class Resolution
+    {
+        public ActionRecord Record;
+        public Combatant? Caster;
+        public Outcome? Self;
+        public readonly List<Outcome> Targets = new();
+        /// <summary>Whether its user could pay for it (0x8008574c), which a live resolve has charged.</summary>
+        public bool Paid = true;
+    }
+
+    // The resolver's passing state (BATTLE.PRG's globals): whether the last effect's prerequisite held (0x800F1A00), the
+    // last hit roll (0x800F1A04), the last amount (0x800F1A08) and whether the last blow was a critical (0x800F1A0C).
+    private bool _prerequisite, _hitRolled, _critical;
+    private int _previous;
+    // The room's trap level, as a trap's reckoning reads it (0x8008e4c4).
+    private int _trapLevel;
+
+    /// <summary>SLUS_010.40 0x800427a8: a roll of 0 to <paramref name="n"/> - 1.</summary>
+    private int Random(int n) => n <= 0 ? 0 : _random.RandiRange(0, n - 1);
+
+    /// <summary>SLUS_010.40 0x80042860: the average of twelve rolls of <see cref="Random"/>, bunched about the middle.</summary>
+    private int Bell(int n)
+    {
+        int sum = 0;
+        for (int i = 0; i < 12; i++) sum += Random(n);
+        return sum / 12;
+    }
+
+    /// <summary>
+    /// Resolves an action (BATTLE.PRG 0x80085b10) by <paramref name="caster"/> (null for a trap) on its targets, each a
+    /// fighter and limb. For each of its two effects, by its prerequisite: none (0) does nothing; 3 falls on the user,
+    /// rolled; 6 to 8 on the first target, unrolled; any other on each target in turn whose prerequisite holds
+    /// (0x8007fdd8), rolled (0x8007f230). A <paramref name="live"/> resolve skips an effect that misses and varies its
+    /// amounts; a preview (the sphere's readout, the enemy planner's reckoning, 0x8008631c) reckons it all the same and
+    /// varies nothing. Each entry then takes Slow and Ashley's crippled limbs by its limbs' hit points (0x80085008) and its
+    /// showing (0x80085a34). A live resolve charges the cost (0x8008574c) at once, whatever lands.
+    /// </summary>
+    /// <remarks>
+    /// Not done: a missile's line of fire (record word 0x0C bit 0x4000, 0x800e6c34), which retail walks from the user
+    /// to the target in 32 steps and turns onto whatever stands in the way; the equipment's class and affinity drift
+    /// after a real hit (0x80080f78, 0x80080c9c), whose bodies were not read; and the kill tally (0x8008554c), which the
+    /// room counts by <see cref="Felled"/>.
+    /// </remarks>
+    public Resolution Resolve(int action, Combatant? caster, List<(Combatant Who, int Limb)> targets, bool live)
+    {
+        var record = _view.Content.Field.Action(action);
+        var r = new Resolution { Record = record, Caster = caster };
+        if (caster != null) r.Self = new Outcome { Who = caster, Limb = caster.Struck };
+        foreach (var (who, limb) in targets) r.Targets.Add(new Outcome { Who = who, Limb = limb });
+        _previous = 0;
+        _hitRolled = false;
+        for (int index = 0; index < 2; index++)
+        {
+            var effect = record.Effects[index];
+            switch (effect.Prerequisite)
+            {
+                case 0:
+                    break;
+                case 3:
+                    if (r.Self == null) break;
+                    _prerequisite = true;
+                    if (!Hits(r, effect, index, r.Self, live) && live) break;
+                    Step(r, effect, index, r.Self, live);
+                    break;
+                case 6 or 7 or 8:
+                    if (r.Targets.Count > 0) Step(r, effect, index, r.Targets[0], live);
+                    break;
+                default:
+                    foreach (var target in r.Targets)
+                    {
+                        if (target.Void) continue;
+                        _prerequisite = Prerequisite(effect, index, target);
+                        if (!_prerequisite) { if (index == 0) target.Chance = 255; continue; }
+                        if (!Hits(r, effect, index, target, live) && live) continue;
+                        Step(r, effect, index, target, live);
+                        // A crate of a kind that takes no blow (+0x954 bit 16) has its result cleared (0x80085f0c).
+                        if (target.Who.Cube && target.Who.CubeKind is not (2 or 4)) target.Reset();
+                    }
+                    break;
+            }
+        }
+        foreach (var entry in r.Self != null ? new List<Outcome>(r.Targets) { r.Self } : r.Targets)
+        {
+            Settle(entry);
+            if (entry.Chance == 255) entry.Chance = 0;
+            if (entry.Kind != 4 && entry.Nothing) { entry.Kind = 4; entry.Chance = 0; }
+            else if (entry.Kind != 4) entry.Kind = entry.HpMode switch { 1 => 0, 2 => 5, 3 => 1, _ => entry.Kind };
+        }
+        if (live && caster != null) r.Paid = Pay(record, caster, apply: true);
+        return r;
+    }
+
+    /// <summary>
+    /// Whether an effect's prerequisite holds for a target (BATTLE.PRG 0x8007fdd8, by the table at 0x800E8254): 1 to 3
+    /// always (but a second effect on 1 not on one the first left untouched), 4 only on class 2 (the undead), 5 never on
+    /// them, 9 on only while the target can take the status (its immunities and the statuses that keep it off), some only
+    /// on one with a weapon, shield or armour; 6 to 8 are never tested here.
+    /// </summary>
+    private bool Prerequisite(ActionEffect effect, int index, Outcome target)
+    {
+        int p = effect.Prerequisite;
+        if (index != 0 && p == 1 && target.Kind == 4) return false;
+        var c = target.Who;
+        bool weapon = c.Blade.Id != 0, armour = c.Shield.Id != 0;
+        foreach (var limb in c.Limbs) armour |= limb.Armour.Id != 0;
+        bool Takes(int bit)
+        {
+            var rule = _view.Content.Field.Status(bit);
+            return (rule.Own & c.Immunity) == 0 && (rule.BlockedBy & c.Status) == 0;
+        }
+        return p switch
+        {
+            1 or 2 or 3 => true,
+            4 => (c.Class & 7) == 2,
+            5 => (c.Class & 7) != 2,
+            9 => Takes(5), 10 => Takes(7), 11 => Takes(9), 12 => Takes(19) && (weapon || armour), 13 => Takes(4),
+            14 => Takes(6), 15 => Takes(8), 16 => Takes(10), 17 => Takes(20) && (weapon || armour), 18 => Takes(11),
+            19 => Takes(12), 20 => Takes(18), 21 => Takes(17), 22 => Takes(13), 23 => Takes(14), 24 => Takes(15), 25 => Takes(16),
+            >= 26 and <= 29 => Takes(p - 5) && weapon,
+            >= 30 and <= 33 => Takes(p - 5) && armour,
+            34 => Takes(29), 35 => Takes(30) && (c.Class & 7) == 2, 36 => Takes(30) && (c.Class & 7) != 2,
+            37 or 38 or 39 => true,
+            _ => false,
+        };
+    }
+
+    /// <summary>
+    /// Rolls an effect on a target (BATTLE.PRG 0x8007f230): a crate is always hit; else its hit function's chance
+    /// (<see cref="HitFunction"/>), none for a spell on one immune to magic (status bit 31), doubled on one with status
+    /// bit 2 (Ashley's crippled left arm), at most 100, kept as the target's chance; and Ashley has a hidden 10 more.
+    /// </summary>
+    private bool Hits(Resolution r, ActionEffect effect, int index, Outcome target, bool live)
+    {
+        int chance = !target.Void && target.Who.Object ? 100 : HitFunction(r, effect, index, target, live);
+        if (r.Record.CostKind == 1 && (target.Who.Status & 0x80000000) != 0) chance = 0;
+        if (!_prerequisite) chance = 255;
+        if (chance != 255)
+        {
+            if (!target.Void && (target.Who.Status & 4) != 0) chance *= 2;
+            if (chance > 100) chance = 100;
+        }
+        if (index == 0 || target.Chance == 255) target.Chance = chance & 0xFF;
+        int roll = Random(100);
+        if (chance == 255) return _hitRolled = false;
+        if (r.Caster != null && r.Caster == Ashley) chance += 10;
+        return _hitRolled = roll < chance;
+    }
+
+    /// <summary>
+    /// A hit function's chance (BATTLE.PRG's table at 0x800E8234, by the effect word's bits 13 to 15): 0 never; 1 only
+    /// if the effect before it landed; 2 a sure 100 with the gems' 20s; 3 agility against agility (each with its gear and
+    /// scaled by what RISK leaves of it, the target's with the limb's bonus) plus 100; 4 intelligence against
+    /// intelligence scaled by the target's share of its hit points; 5 as 3 but 130 less the cost; 6 by the user's RISK;
+    /// 7 by the limb's chain evasion. 3 to 5 vary by a bunched 5 either way on a live roll and take the gems' 20s.
+    /// </summary>
+    private int HitFunction(Resolution r, ActionEffect effect, int index, Outcome target, bool live)
+    {
+        var caster = r.Caster;
+        var t = target.Who;
+        int bonus = target.Limb >= 0 && target.Limb < t.Limbs.Count ? t.Limbs[target.Limb].Agility : 0;
+        int Vary(int c)
+        {
+            if (live) c += Bell(11) - 5;
+            c += Gems(r, caster) - Guards(r, effect, t);
+            return c < 0 ? 0 : c == 255 ? 254 : c;
+        }
+        int Scaled(int value, Combatant c) => value * (100 - c.Risk) / 100;
+        switch (effect.Hit)
+        {
+            case 0: return unchecked((int)0x8007e974);
+            case 1: return _hitRolled ? 100 : 255;
+            case 2: return 100 + Gems(r, caster) - Guards(r, effect, t);
+            case 3: return Vary((caster != null ? Scaled(Agility(caster), caster) : 0) - Scaled(Agility(t) + bonus, t) + 100);
+            case 4:
+            {
+                int defence = Scaled(Intelligence(t) + bonus, t);
+                defence = t.MaxHp != 0 ? defence * t.Hp / t.MaxHp : 0;
+                return Vary((caster != null ? Scaled(Intelligence(caster), caster) : 0) - defence);
+            }
+            case 5: return Vary((caster != null ? Scaled(Agility(caster), caster) : 0) - Scaled(Agility(t) + bonus, t) + 130 - r.Record.Cost);
+            case 6: { int c = ((caster?.Risk ?? 0) + 150) * 100 / 256; return c == 255 ? 254 : c; }
+            default:
+            {
+                int evasion = target.Limb >= 0 && target.Limb < t.Limbs.Count ? t.Limbs[target.Limb].ChainEvasion : 0;
+                int c = (255 - evasion) * 100 / 255;
+                return c == 255 ? 254 : c;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The user's weapon gems' 20 to hit (BATTLE.PRG 0x8007e5e0, with its weapon drawn): effect 2 for an action that
+    /// costs magic points, effect 1 for any other.
+    /// </summary>
+    private static int Gems(Resolution r, Combatant? caster) =>
+        caster != null && caster.Drawn && caster.Blade.Has(r.Record.CostKind == 1 ? 2 : 1) ? 20 : 0;
+
+    /// <summary>
+    /// The target's shield gems' 20s against being hit (BATTLE.PRG 0x8007e6a0, with its weapon drawn): effect 6 against
+    /// an action that costs magic points, effect 5 against any other but the defense abilities (40 to 53) and items
+    /// (224 on); and the gem that guards against the effect's status (the switch at 0x80068A48: Degenerate 11,
+    /// Psychodrain 12, Leadbones 13, slowing 14, Silence 16, paralysis 18, poison 19, numbness 21).
+    /// </summary>
+    private static int Guards(Resolution r, ActionEffect effect, Combatant target)
+    {
+        if (!target.Drawn) return 0;
+        int guard = 0, id = r.Record.Id;
+        if (r.Record.CostKind == 1 ? target.Shield.Has(6) : target.Shield.Has(5) && (id < 40 || id is >= 54 and <= 223)) guard += 20;
+        int gem = effect.Effect switch { 1 => 11, 2 => 12, 3 => 13, 5 => 14, 11 => 16, 15 => 18, 16 => 19, 17 => 21, _ => 0 };
+        if (gem != 0 && target.Shield.Has(gem)) guard += 20;
+        return guard;
+    }
+
     /// <summary>A fighter's agility with what it wears: accessory, every limb's armour, and its weapon and shield while drawn.</summary>
     private static int Agility(Combatant c)
     {
         int agility = c.EffectiveAgility + c.Accessory.Agility;
         foreach (var limb in c.Limbs) agility += limb.Armour.Agility;
-        if (c.Drawn) agility += c.WeaponAgility + c.Shield.Agility;
+        if (c.Drawn) agility += c.Blade.Agility + c.Shield.Agility;
         return agility;
     }
 
-    /// <summary>
-    /// The chance to hit a limb: the attacker's agility less the target's (with the limb's agility bonus), each
-    /// scaled by what RISK leaves of it, plus 100, from 0 to 100; <paramref name="vary"/> adds the roll's 5 either way.
-    /// </summary>
-    public int HitChance(Combatant attacker, Combatant target, int limb, bool vary = false)
+    /// <summary>A fighter's intelligence with what it wears, as hit function 4 sums it (0x8007eca8).</summary>
+    private static int Intelligence(Combatant c)
     {
-        int attack = Agility(attacker) * (100 - attacker.Risk) / 100;
-        int bonus = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Agility : 0;
-        int defence = (Agility(target) + bonus) * (100 - target.Risk) / 100;
-        int chance = attack - defence + 100 + (vary ? _random.RandiRange(-5, 5) : 0);
-        // A drawn weapon's gem of effect 1 adds 20 to the chance; a drawn shield's of effect 5 takes 20 off.
-        if (attacker.Drawn && attacker.Blade.Has(1)) chance += 20;
-        if (target.Drawn && target.Shield.Has(5)) chance -= 20;
-        // Ashley's crippled left arm doubles an enemy's chance to hit her.
-        if (target == Ashley && Crippled(target, 1)) chance *= 2;
-        return Math.Clamp(chance, 0, 100);
+        int intelligence = c.EffectiveIntelligence + c.Accessory.Intelligence;
+        foreach (var limb in c.Limbs) intelligence += limb.Armour.Intelligence;
+        if (c.Drawn) intelligence += c.Blade.Intelligence + c.Shield.Intelligence;
+        return intelligence;
     }
 
     /// <summary>
-    /// Damage to a limb by the retail formula. The weapon's damage type and its strongest affinity set what it
-    /// tests; with it drawn, its damage term is the grip's value for that type, its affinity and its class value
-    /// against the target, less its wear, a quarter of which, plus 100, scales the attacker's strength (with its
-    /// weapon and accessory). The defence is the target's strength above 20 scaled by the limb's type and affinity
-    /// defences, plus the limb armour's strength scaled by its class, type and affinity defences (less a quarter of
-    /// its wear), and the shield's likewise while drawn, all divided by 100 plus half the target's RISK. The damage is
-    /// the difference, never below 0, plus 1 to 5; it doubles on a critical, a RISK/10 + 10 percent chance.
+    /// One effect on one entry (BATTLE.PRG 0x80085390): a crate takes 999 hit points; a spell (an action that costs
+    /// magic points) on one with Magic Ward or immune to magic (status bits 18 and 31) does nothing, and any spell
+    /// that reaches a target takes its Silence, regeneration and Magic Ward away (0x800854f4); anything else is its
+    /// effect's handler (<see cref="Handle"/>).
     /// </summary>
-    /// <param name="type">A damage type to use instead of the weapon's (a monster's special attack names its own).</param>
-    /// <param name="affinity">Likewise an affinity (0 to 7) instead of the attacker's own (<see cref="Combatant.Affinity"/>).</param>
-    public int Damage(Combatant attacker, Combatant target, int limb, int type = 0, int affinity = -1)
+    private void Step(Resolution r, ActionEffect effect, int index, Outcome target, bool live)
     {
-        if (type == 0) type = attacker.Drawn ? attacker.DamageType : 1;
-        if (affinity < 0) affinity = attacker.Affinity;
-        _blowAffinity = affinity;
-        int strength = attacker.EffectiveStrength + attacker.Accessory.Strength + (attacker.Drawn ? attacker.WeaponStrength : 0);
-        int term = attacker.Accessory.Types[type] + attacker.Accessory.Affinities[affinity] + attacker.Accessory.Classes[target.Class & 7];
-        if (attacker.Drawn) term += attacker.Blade.Types[type] + attacker.Blade.Affinities[affinity] + attacker.Blade.Classes[target.Class & 7] - attacker.Blade.Worn;
-        int attack = strength * (term / 4 + 100) / 100;
-        var struck = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb] : new Limb();
-        int limbFactor = 100 + struck.Types[type] + struck.Affinities[affinity] + target.Accessory.Types[type] + target.Accessory.Affinities[affinity];
-        var armour = struck.Armour;
-        int armourFactor = 100 + armour.Classes[attacker.Class & 7] + armour.Types[type] + armour.Affinities[affinity] - armour.Worn / 4;
-        var shield = target.Shield;
-        int shieldFactor = target.Drawn && shield.Id != 0 ? 100 + shield.Classes[attacker.Class & 7] + shield.Types[type] + shield.Affinities[affinity] - shield.Worn / 4 : 0;
-        int defence = ((target.EffectiveStrength + target.Accessory.Strength - 20) * limbFactor + shield.Strength * shieldFactor + armour.Strength * armourFactor) / (target.Risk / 2 + 100);
-        // A weapon gem of effect 3 adds 5 percent to the difference; a shield gem of effect 7 takes 5 off.
-        int scale = 100 + (attacker.Blade.Has(3) ? 5 : 0) - (target.Shield.Has(7) ? 5 : 0);
-        int damage = Math.Max(0, attack - defence) * scale / 100 + 1 + _random.RandiRange(0, 4);
-        if (_random.RandiRange(0, 99) < attacker.Risk / 10 + 10) damage *= 2;
-        // Ashley's crippled right arm halves the damage she does.
-        if (attacker == Ashley && Crippled(attacker, 0)) damage /= 2;
+        var who = target.Who;
+        if (!target.Void && who.Object) { target.HpMode = 1; target.Hp += 999; return; }
+        if (r.Record.CostKind != 1) { Handle(r, effect, index, target, live); return; }
+        if (!target.Void && (who.Status & 0x80040000) != 0) _previous = 0;
+        else Handle(r, effect, index, target, live);
+        if (!target.Void) target.Clear |= who.Status & 0x61000;
+    }
+
+    /// <summary>
+    /// Sets a status on an entry (BATTLE.PRG 0x80081020) unless the target is a crate or a status it has keeps it off:
+    /// the bit, if the target is not immune and has it not already (or the status clears itself, and so starts again),
+    /// and the statuses it clears.
+    /// </summary>
+    private void Afflict(Outcome target, int bit)
+    {
+        var c = target.Who;
+        var rule = _view.Content.Field.Status(bit);
+        if (c.Object || (c.Status & rule.BlockedBy) != 0) return;
+        target.Set |= rule.Own & ~c.Immunity & (~c.Status | rule.Clears);
+        target.Clear |= rule.Clears & c.Status;
+    }
+
+    /// <summary>Clears a status on an entry (BATTLE.PRG 0x800810cc), if the target has it.</summary>
+    private void Cure(Outcome target, int bit)
+    {
+        if (!target.Who.Object) target.Clear |= _view.Content.Field.Status(bit).Own & target.Who.Status;
+    }
+
+    /// <summary>
+    /// An effect's handler (BATTLE.PRG's table at 0x800E8378): 1 to 26 set a status (<see cref="StatusBits"/>); 27 to 30
+    /// cure paralysis, poison, curse and numbness; 31 dispels statuses 5 to 12 and 17 to 28; 32 cures paralysis, poison
+    /// and numbness; 34 cures status 30 and takes every hit point; 35 wears the struck limb's armour and the shield by
+    /// twice the damage; 37 and 38 clear the room's traps; 40 to 49 heal on a condition of the hit taken; 50 to 57 raise
+    /// or lower a stat for good by 1 to 4; 58 is damage, 59 takes magic points, 60 and 61 drain the weapon's or shield's
+    /// PP, 62 and 63 restore hit or magic points, 64 and 65 add PP or DP to the weapon, 66 lowers RISK.
+    /// </summary>
+    /// <remarks>
+    /// Effects 33 (Eureka), 36 (Fixate) and 39 (Unlock) only mark the user's entry (mode bits 26 and 27), whose reader
+    /// was not found; the room does Eureka's and Unlock's work itself. Analyze (14) also sets its target's +0x954 bit 17,
+    /// whose reader was not found either.
+    /// </remarks>
+    private void Handle(Resolution r, ActionEffect effect, int index, Outcome t, bool live)
+    {
+        var who = t.Who;
+        switch (effect.Effect)
+        {
+            case >= 1 and <= 26:
+                Afflict(t, StatusBits[effect.Effect]);
+                break;
+            case 27: Cure(t, 13); break;
+            case 28: Cure(t, 14); break;
+            case 29: Cure(t, 16); break;
+            case 30: Cure(t, 15); break;
+            case 31: t.Clear |= who.Status & 0x1ffe1fe0; break;
+            case 32: t.Clear |= who.Status & 0xe000; break;
+            case 34:
+                Cure(t, 30);
+                t.HpMode = 1;
+                t.Hp = who.Hp;
+                break;
+            case 35:
+                t.Wear = 2 * t.Hp;
+                if (t.Limb is >= 0 and < 6) t.LimbWear[t.Limb] = 2 * t.Hp;
+                t.WearMode = 1;
+                break;
+            case 37: if (live) _view.Flags[64] = 1; break;
+            case 38: if (live) _view.Flags[32] = 1; break;
+            case >= 40 and <= 49:
+            {
+                var taken = _view.Content.Field.Action(_blowAction);
+                bool heals = effect.Effect switch
+                {
+                    40 => taken.CostKind == 1,
+                    41 => taken.CostKind != 1,
+                    49 => _landed,
+                    _ => _blowAffinity == effect.Effect - 42,
+                };
+                if (!heals) break;
+                int amount = Amount(r, effect, index, t, live);
+                t.HpMode = 2;
+                t.Hp += amount;
+                if (!t.Void) HealLimbs(t, amount);
+                break;
+            }
+            case >= 50 and <= 57:
+            {
+                int amount = Random(4) + 1, mode = effect.Effect <= 54 ? 2 : 1;
+                switch ((effect.Effect - 50) % 5)
+                {
+                    case 0: t.Strength += amount; t.StrengthMode = mode; break;
+                    case 1: t.Intelligence += amount; t.IntelligenceMode = mode; break;
+                    case 2: t.Agility += amount; t.AgilityMode = mode; break;
+                    case 3: t.MaxHp += amount; t.MaxHpMode = mode; break;
+                    default: t.MaxMp += amount; t.MaxMpMode = mode; break;
+                }
+                break;
+            }
+            case 58:
+            {
+                _critical = false;
+                int amount = Amount(r, effect, index, t, live);
+                t.Hp += amount;
+                t.HpMode = _critical ? 3 : 1;
+                if (t.Void) break;
+                var shares = Split(r.Record, t, amount);
+                if (!who.Object) t.Clear |= who.Status & 0x8000;
+                if (live) Wear(r.Record, r.Caster, who, amount, shares);
+                break;
+            }
+            case 59:
+            {
+                int amount = Amount(r, effect, index, t, live);
+                if (who.Mp < amount) { amount = who.Mp; _previous = who.Mp; }
+                t.MpMode = 1;
+                t.Mp += amount;
+                break;
+            }
+            case 60:
+                if (who.Blade.Id == 0) break;
+                t.BladePp += who.Blade.Pp;
+                t.BladePpMode = 1;
+                break;
+            case 61:
+                if (!_landed || who.Shield.Id == 0) break;
+                t.ShieldPp += who.Shield.Pp;
+                t.ShieldPpMode = 1;
+                break;
+            case 62:
+            {
+                int amount = Amount(r, effect, index, t, live);
+                t.HpMode = 2;
+                t.Hp += amount;
+                if (!t.Void) HealLimbs(t, amount);
+                break;
+            }
+            case 63:
+                t.Mp += Amount(r, effect, index, t, live);
+                t.MpMode = 2;
+                break;
+            case 64:
+                t.BladePp += Amount(r, effect, index, t, live);
+                t.BladePpMode = 2;
+                break;
+            case 65:
+                t.BladeDp += Amount(r, effect, index, t, live);
+                t.BladeDpMode = 2;
+                break;
+            case 66:
+            {
+                int amount = Amount(r, effect, index, t, live);
+                if (amount == 0) break;
+                t.Risk += amount;
+                t.RiskMode = 2;
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Shares damage out over the target's limbs (BATTLE.PRG 0x80080000) by the action's target kind (the table at
+    /// 0x80068A90): kinds 0 to 4 evenly over the limbs it has (what does not divide is lost); 5, 7 and 14 by the struck
+    /// limb's split; 6, 8, 11 and 12 all on the struck limb; 9, 10 and 13 on none. Returns the shares.
+    /// </summary>
+    private static int[] Split(ActionRecord record, Outcome t, int amount)
+    {
+        var shares = new int[6];
+        var c = t.Who;
+        int limb = t.Limb;
+        switch (record.TargetKind)
+        {
+            case <= 4:
+            {
+                int count = 0;
+                foreach (var l in c.Limbs) if (l.MaxHp != 0) count++;
+                if (count == 0) break;
+                for (int i = 0; i < 6 && i < c.Limbs.Count; i++) if (c.Limbs[i].MaxHp != 0) shares[i] = amount / count;
+                break;
+            }
+            case 5 or 7 or 14:
+                if (limb >= 0 && limb < c.Limbs.Count) for (int i = 0; i < 6; i++) shares[i] = amount * c.Limbs[limb].Split[i] / 100;
+                break;
+            case 6 or 8 or 11 or 12:
+                if (limb is >= 0 and < 6) shares[limb] = amount;
+                break;
+        }
+        for (int i = 0; i < 6; i++) t.LimbHp[i] += shares[i];
+        return shares;
+    }
+
+    /// <summary>
+    /// Shares healing out over the target's limbs (BATTLE.PRG 0x800801e0): each by what it lacks of all the limbs lack,
+    /// the share twice over (its halfword shifted up one).
+    /// </summary>
+    private static void HealLimbs(Outcome t, int amount)
+    {
+        var limbs = t.Who.Limbs;
+        int total = 0;
+        foreach (var l in limbs) total += l.MaxHp - l.Hp;
+        if (total <= 0) return;
+        for (int i = 0; i < 6 && i < limbs.Count; i++) t.LimbHp[i] += (short)(amount * (limbs[i].MaxHp - limbs[i].Hp) / total) * 2;
+    }
+
+    /// <summary>
+    /// A real hit's wear (BATTLE.PRG 0x800802c4 and 0x800803a4), as it is resolved: the user's weapon (but for a spell)
+    /// loses the damage in DP and gains a tenth of it in PP (5% more with a gem of effect 9); the target's shield, while
+    /// drawn, the same (5% less PP with that gem); and each limb's armour loses its share.
+    /// </summary>
+    private static void Wear(ActionRecord record, Combatant? caster, Combatant target, int damage, int[] shares)
+    {
+        if (record.CostKind != 1 && caster != null)
+        {
+            caster.Blade.Wear(damage);
+            caster.Blade.Gain(damage / 10 * (caster.Blade.Has(9) ? 105 : 100) / 100);
+        }
+        if (target.Drawn)
+        {
+            target.Shield.Wear(damage);
+            target.Shield.Gain(damage / 10 * (target.Shield.Has(9) ? 95 : 100) / 100);
+        }
+        for (int i = 0; i < 6 && i < target.Limbs.Count; i++) target.Limbs[i].Armour.Wear(shares[i]);
+    }
+
+    /// <summary>
+    /// An effect's amount (BATTLE.PRG 0x800838ec): 999 on a crate, else its reckoning's (the table at 0x800E830C, by the
+    /// effect word's bits 16 to 21), as a 16-bit value, kept as the last amount. The reckonings: 0 none (the routine
+    /// returns its own address, 4400); 1 the last amount; 2 and 25 a blow (<see cref="Physical"/>); 3 a spell's
+    /// (<see cref="Magic"/>); 12 and 14 a trap's (<see cref="Trapped"/>); 13 healing (<see cref="Mending"/>); 15 five
+    /// times the factor, give or take a bunched 5; 16 and 17 the hit and magic points the target lacks; 26 its RISK. The
+    /// rest answer a hit just dealt or taken (the exchange at [0x800F19CC]): 4, 6 and 18 a tenth per factor of the
+    /// damage dealt, 5 and 11 of the hit or magic points the user lacks, 7 a hundredth of the target's hit points, 8 the
+    /// weapon's PP, each with the chain's links so far; 9, 10, 19, 20 and 22 a tenth per factor of the hit taken, if it
+    /// landed (9 and 19 only for a spell, 10 and 20 not); 21 a tenth per factor of the spell's cost; 23 the shield's PP;
+    /// 24 a tenth per factor of the last amount.
+    /// </summary>
+    /// <remarks>
+    /// The links added are the chain so far; retail adds the exchange's count less one ([0x800F19CC]+0), whose writer was
+    /// not traced.
+    /// </remarks>
+    private int Amount(Resolution r, ActionEffect effect, int index, Outcome t, bool live)
+    {
+        var c = r.Caster;
+        var who = t.Who;
+        int f = effect.Factor, links = _chain;
+        var taken = _view.Content.Field.Action(_blowAction);
+        int amount = !t.Void && who.Object ? 999 : effect.Reckoning switch
+        {
+            0 => 0x1130,
+            1 => _previous,
+            2 => Physical(r, effect, t, index, live, arts: false),
+            3 => Magic(r, effect, t, index, live),
+            4 or 6 or 18 => _lastDamage * f / 10 + links,
+            5 => c != null ? (c.MaxHp - c.Hp) * f / 10 + links : 0,
+            7 => who.Hp * f / 100 + links,
+            8 => (c?.Blade.Pp ?? 0) + links,
+            9 or 19 => taken.CostKind == 1 && _landed ? _lastDamage * f / 10 : 0,
+            10 or 20 => taken.CostKind != 1 && _landed ? _lastDamage * f / 10 : 0,
+            11 => c != null ? (c.MaxMp - c.Mp) * f / 10 + links : 0,
+            12 => Trapped(effect, who, t.Limb, live, cap: true),
+            13 => Mending(r, effect, t, index, live),
+            14 => Trapped(effect, who, t.Limb, live, cap: false),
+            15 => Math.Max(0, f * 5 + (live ? Bell(11) - 5 : 0)),
+            16 => who.MaxHp - who.Hp,
+            17 => who.MaxMp - who.Mp,
+            21 => taken.CostKind == 1 ? taken.Cost * f / 10 : 0,
+            22 => _landed ? _lastDamage * f / 10 : 0,
+            23 => c?.Shield.Pp ?? 0,
+            24 => (int)((uint)(_previous * f) / 10),
+            25 => Physical(r, effect, t, index, live, arts: true),
+            26 => who.Risk,
+            _ => 0,
+        };
+        _previous = (short)amount;
+        return _previous;
+    }
+
+    /// <summary>
+    /// GemScale (BATTLE.PRG 0x8007fe5c): 5% more for the user's weapon gem of effect 4 (a spell) or 3 (anything else),
+    /// 5% less for the target's shield gem of effect 8 or 7, drawn or not.
+    /// </summary>
+    private static int GemScale(ActionRecord record, int value, Combatant? caster, Combatant target)
+    {
+        bool spell = record.CostKind == 1;
+        int scale = 100 + (caster != null && caster.Blade.Has(spell ? 4 : 3) ? 5 : 0) - (target.Shield.Has(spell ? 8 : 7) ? 5 : 0);
+        return (short)((short)value * scale / 100);
+    }
+
+    /// <summary>
+    /// A blow's damage (BATTLE.PRG 0x80081148; reckonings 2 and 25). Its damage type is the effect's, else the weapon's
+    /// (1 without); its affinity the effect's, else the drawn weapon's strongest (<see cref="Combatant.Affinity"/>). The
+    /// attack is the user's strength with its accessory's (and its weapon's while drawn), scaled by a quarter of a term
+    /// plus 100: while drawn the weapon's type, affinity and class (against the target's) values, less the percent of
+    /// its DP worn away, plus its PP's share by its category (BATTLE.PRG 0x800E82F4); and the accessory's type, class and
+    /// affinity values. The factor scales the attack. The defence is the target's strength with its accessory's, less
+    /// 20, times the limb's type and affinity defences and the accessory's type, class (against the user's) and
+    /// affinity values; plus the limb's armour's strength times its own (less a quarter of its wear); plus the drawn
+    /// shield's likewise (and a quarter of its PP percent); over 100 plus half the target's RISK. The difference, by the
+    /// gems (<see cref="GemScale"/>) and at least 0, takes 1 to 5 more on a live blow; an art (25) by a user with status
+    /// bit 1 (Ashley's crippled right arm) is halved; and a live attack (actions 0 to 5) doubles on a critical, a roll
+    /// under a tenth of RISK and 10.
+    /// </summary>
+    /// <remarks>The weapon's type value is the grip's for the damage type; retail reads one byte of the weapon at +0x145
+    /// (0x800813c8), whose writer was not traced.</remarks>
+    private int Physical(Resolution r, ActionEffect effect, Outcome target, int index, bool live, bool arts)
+    {
+        var a = r.Caster;
+        var d = target.Who;
+        if (a == null) return 0;
+        int type = effect.Type != 0 ? effect.Type : a.DamageType;
+        int affinity = effect.Affinity != 0 ? effect.Affinity - 1 : a.Affinity;
+        int ac = a.Class & 7, tc = d.Class & 7;
+        int strength = a.EffectiveStrength + a.Accessory.Strength, term = 0;
+        if (a.Drawn)
+        {
+            var blade = a.Blade;
+            strength += blade.Strength;
+            term = blade.Types[type] + blade.Affinities[affinity] + blade.Classes[tc] - blade.Worn;
+            if (blade.MaxPp != 0) term += blade.Pp * _view.Content.Field.PhantomShare(a.Category) / blade.MaxPp;
+        }
+        term += a.Accessory.Types[type] + a.Accessory.Classes[tc] + a.Accessory.Affinities[affinity];
+        int attack = (short)strength * (short)(term / 4 + 100) / 100;
+        attack = attack * (effect.Factor * 10 + 100) / 100;
+        var limb = target.Limb >= 0 && target.Limb < d.Limbs.Count ? d.Limbs[target.Limb] : new Limb();
+        var armour = limb.Armour;
+        int limbFactor = 100 + limb.Types[type] + limb.Affinities[affinity] + d.Accessory.Types[type] + d.Accessory.Classes[ac] + d.Accessory.Affinities[affinity];
+        int armourFactor = 100 + armour.Types[type] + armour.Classes[ac] + armour.Affinities[affinity] - armour.Worn / 4;
+        int shieldStrength = 0, shieldFactor = 100;
+        if (d.Drawn)
+        {
+            var shield = d.Shield;
+            shieldStrength = shield.Strength;
+            shieldFactor = 100 + (shield.Types[type] & 0xFF) + shield.Affinities[affinity] + shield.Classes[ac] - shield.Worn / 4 + (shield.MaxPp != 0 ? shield.Pp * 100 / shield.MaxPp / 4 : 0);
+        }
+        int defence = (((short)(d.EffectiveStrength + d.Accessory.Strength) - 20) * limbFactor + shieldStrength * shieldFactor + armour.Strength * armourFactor) / (d.Risk / 2 + 100);
+        int damage = GemScale(r.Record, (short)(attack - defence), a, d);
+        if (damage < 0) damage = 0;
+        if (live) damage += 1 + Random(5);
+        if (arts && (a.Status & 2) != 0) damage = (short)damage / 2;
+        if (live && r.Record.Id < 6 && Random(100) < a.Risk / 10 + 10)
+        {
+            damage = (damage & 0xFFFF) * 2;
+            _critical = true;
+        }
+        return (short)damage;
+    }
+
+    /// <summary>
+    /// A spell's damage (BATTLE.PRG 0x800819fc; reckoning 3): the user's intelligence with its accessory's (and its
+    /// weapon's while drawn), scaled by a quarter of a term plus 100 (while drawn, the weapon's affinity value, less the
+    /// percent of its DP worn away, plus its percent of PP; and the accessory's type and affinity values), then by the
+    /// factor; less the target's defence as for a blow but on intelligence and without classes, and with no type
+    /// defences for an effect of type 0; by the gems, at least 0, and 1 to 5 more when live. The affinity is the
+    /// effect's, else the drawn weapon's strongest.
+    /// </summary>
+    private int Magic(Resolution r, ActionEffect effect, Outcome target, int index, bool live)
+    {
+        var a = r.Caster;
+        var d = target.Who;
+        if (a == null) return 0;
+        int type = effect.Type, affinity = effect.Affinity != 0 ? effect.Affinity - 1 : a.Affinity;
+        int intelligence = a.EffectiveIntelligence + a.Accessory.Intelligence, term = 0;
+        if (a.Drawn)
+        {
+            var blade = a.Blade;
+            intelligence += blade.Intelligence;
+            term = blade.Affinities[affinity] - blade.Worn + (blade.MaxPp != 0 ? blade.Pp * 100 / blade.MaxPp : 0);
+        }
+        term += a.Accessory.Types[type] + a.Accessory.Affinities[affinity];
+        int attack = (short)intelligence * (short)(term / 4 + 100) / 100;
+        attack = attack * (effect.Factor * 10 + 100) / 100;
+        int damage = GemScale(r.Record, (short)(attack - MindDefence(d, target.Limb, type, affinity, affinity >= 0)), a, d);
+        if (damage < 0) damage = 0;
+        if (live) damage += 1 + Random(5);
+        return (short)damage;
+    }
+
+    /// <summary>
+    /// Healing (BATTLE.PRG 0x800829b8; reckoning 13), as <see cref="Magic"/> on the one healed but for these: the
+    /// affinity is the effect's alone, its terms counted only when it is not physical; no 1 to 5, but a bunched 5 either
+    /// way when live, and at least 0 after.
+    /// </summary>
+    /// <remarks>With an affinity of 0 retail reads the weapon's affinity term from an unset stack slot (0x80082ab0);
+    /// no action does so, and it is taken as 0.</remarks>
+    private int Mending(Resolution r, ActionEffect effect, Outcome target, int index, bool live)
+    {
+        var a = r.Caster;
+        var d = target.Who;
+        if (a == null) return 0;
+        int type = effect.Type, affinity = effect.Affinity - 1;
+        bool affine = affinity != 0;
+        int Of(int[] values) => affine && affinity >= 0 ? values[affinity] : 0;
+        int intelligence = a.EffectiveIntelligence + a.Accessory.Intelligence, term = 0;
+        if (a.Drawn)
+        {
+            var blade = a.Blade;
+            intelligence += blade.Intelligence;
+            term = Of(blade.Affinities) - blade.Worn + (blade.MaxPp != 0 ? blade.Pp * 100 / blade.MaxPp : 0);
+        }
+        term += a.Accessory.Types[type] + (affinity >= 0 ? a.Accessory.Affinities[affinity] : 0);
+        int amount = intelligence * (term / 4 + 100) / 100;
+        amount = amount * (effect.Factor * 10 + 100) / 100;
+        int result = GemScale(r.Record, amount - MindDefence(d, target.Limb, type, affinity, affine), a, d);
+        if (result < 0) result = 0;
+        if (live) result = Math.Max(0, result + Bell(11) - 5);
+        return (short)result;
+    }
+
+    /// <summary>
+    /// A target's defence against a spell or healing (BATTLE.PRG 0x80081c..., 0x80082c...): its intelligence with its
+    /// accessory's, less 20, times the limb's type (only for a type) and affinity defences and the accessory's type and
+    /// affinity values; plus the limb's armour's intelligence times its own (less a quarter of its wear); plus, while
+    /// drawn, the shield's likewise (and a quarter of its PP percent); over 100 plus half its RISK.
+    /// </summary>
+    private static int MindDefence(Combatant d, int limbIndex, int type, int affinity, bool affine)
+    {
+        var limb = limbIndex >= 0 && limbIndex < d.Limbs.Count ? d.Limbs[limbIndex] : new Limb();
+        var armour = limb.Armour;
+        int Of(int[] values) => affine && affinity >= 0 ? values[affinity] : 0;
+        int limbFactor = 100 + (type != 0 ? limb.Types[type] : 0) + Of(limb.Affinities) + d.Accessory.Types[type] + (affinity >= 0 ? d.Accessory.Affinities[affinity] : 0);
+        int armourFactor = 100 + (type != 0 ? armour.Types[type] : 0) + Of(armour.Affinities) - armour.Worn / 4;
+        int shieldMind = 0, shieldFactor = 100;
+        if (d.Drawn)
+        {
+            var shield = d.Shield;
+            shieldMind = shield.Intelligence;
+            shieldFactor = 100 + (type != 0 ? shield.Types[type] & 0xFF : 0) + Of(shield.Affinities) - shield.Worn / 4 + (shield.MaxPp != 0 ? shield.Pp * 100 / shield.MaxPp / 4 : 0);
+        }
+        return (((short)(d.EffectiveIntelligence + d.Accessory.Intelligence) - 20) * limbFactor + shieldMind * shieldFactor + armour.Intelligence * armourFactor) / (d.Risk / 2 + 100);
+    }
+
+    /// <summary>
+    /// A trap's damage or a heal panel's healing (BATTLE.PRG 0x8008255c and 0x80082ff4; reckonings 12 and 14), read from
+    /// the target alone: a tenth of its most hit points times the factor, plus ten for each trap level and ten more,
+    /// less its defence as for a blow (strength, the limb's type and affinity defences, its armour's and its drawn
+    /// shield's) but without classes, and with no affinity terms for a physical one; at least 0, a bunched 5 either way
+    /// when live. A trap's never fells (<paramref name="cap"/>): at most the hit points less one.
+    /// </summary>
+    public int Trapped(ActionEffect effect, Combatant target, int limbIndex, bool live, bool cap)
+    {
+        int value = (short)(target.MaxHp / 10) * effect.Factor + (_trapLevel + 1) * 10;
+        int type = effect.Type, affinity = effect.Affinity - 1;
+        bool affine = affinity is > 0 and < 8;
+        var limb = limbIndex >= 0 && limbIndex < target.Limbs.Count ? target.Limbs[limbIndex] : new Limb();
+        var armour = limb.Armour;
+        int limbFactor = 100 + (type != 0 ? limb.Types[type] : 0) + (affine ? limb.Affinities[affinity] : 0);
+        int armourFactor = 100 + (type != 0 ? armour.Types[type] : 0) + (affine ? armour.Affinities[affinity] : 0) - armour.Worn / 4;
+        int shieldStrength = 0, shieldFactor = 100;
+        if (target.Drawn)
+        {
+            var shield = target.Shield;
+            shieldStrength = shield.Strength;
+            shieldFactor = 100 + (type != 0 ? shield.Types[type] & 0xFF : 0) + (affine ? shield.Affinities[affinity] : 0) - shield.Worn / 4 + (shield.MaxPp != 0 ? shield.Pp * 100 / shield.MaxPp / 4 : 0);
+        }
+        limbFactor += target.Accessory.Types[type] + (affinity is >= 0 and < 8 ? target.Accessory.Affinities[affinity] : 0);
+        int defence = (((short)(target.EffectiveStrength + target.Accessory.Strength) - 20) * limbFactor + shieldStrength * shieldFactor + armour.Strength * armourFactor) / (target.Risk / 2 + 100);
+        int damage = Math.Max(0, value - defence);
+        if (live) damage = Math.Max(0, damage + Bell(11) - 5);
+        if (cap && damage >= target.Hp) damage = target.Hp - 1;
         return damage;
     }
+
+    /// <summary>
+    /// Slow and Ashley's crippled limbs, by an entry's limbs' hit points after it (BATTLE.PRG 0x80085008): Slow is set
+    /// when every slowing limb it names (0 names none) is at 1 hit point or less, and cleared when one is above; Ashley's
+    /// first four limbs set and clear their bits (<see cref="FieldContent.CrippledBit"/>) likewise.
+    /// </summary>
+    private void Settle(Outcome t)
+    {
+        var c = t.Who;
+        if (t.Void || c.Object) return;
+        int After(int limb)
+        {
+            if (limb < 0 || limb >= c.Limbs.Count || limb >= 6) return 0;
+            int hp = c.Limbs[limb].Hp;
+            return t.HpMode switch { 2 => hp + t.LimbHp[limb], 1 or 3 => hp - t.LimbHp[limb], _ => hp };
+        }
+        if (c.SlowingLimbs is { } slowing && (slowing.A | slowing.B) != 0)
+        {
+            bool standing = slowing.A != 0 && After(slowing.A) >= 2 || slowing.B != 0 && After(slowing.B) >= 2;
+            if ((c.Status & 0x10) == 0 && !standing) Afflict(t, 4);
+            else if ((c.Status & 0x10) != 0 && standing) Cure(t, 4);
+        }
+        if (c != Ashley) return;
+        for (int limb = 0; limb < 4; limb++)
+        {
+            int bit = _view.Content.Field.CrippledBit(limb);
+            if ((c.Status >> bit & 1) != 0) { if (After(limb) >= 2) Cure(t, bit); }
+            else if (After(limb) < 2) Afflict(t, bit);
+        }
+    }
+
+    /// <summary>
+    /// Pays an action's cost (BATTLE.PRG 0x8008574c) by its kind: 1 magic points, 2 RISK (raised by it), 3 hit points
+    /// (more than it must be held), 4 the weapon's PP, 6 the weapon's own (Ashley's attack: its RISK cost); 5 and 7 cost
+    /// nothing. A chain ability from the tenth link on costs the links squared over 10 more. RISK past 100 is held at 100
+    /// and the action goes ahead; any other cost not met fails and takes nothing. <paramref name="apply"/> charges it.
+    /// </summary>
+    /// <remarks>Kind 6 takes the weapon's cost kind from its data's +0x14b, whose writer was not traced: it is taken as
+    /// RISK, as every weapon's cost is.</remarks>
+    public bool Pay(ActionRecord record, Combatant c, bool apply)
+    {
+        int kind = record.CostKind, cost = record.Cost;
+        if (kind == 6) (kind, cost) = (2, c.Cost);
+        if (record.Id is >= 22 and <= 39 && kind == 2 && _chain >= 10) cost += _chain * _chain / 10;
+        int have;
+        switch (kind)
+        {
+            case 1: have = c.Mp; break;
+            case 2: have = 100 - c.Risk; break;
+            case 3: have = c.Hp; cost++; break;
+            case 4: have = c.Blade.Pp; break;
+            default: return true;
+        }
+        if (have < cost)
+        {
+            if (kind != 2) return false;
+            if (apply) c.Risk = 100;
+            return true;
+        }
+        if (!apply) return true;
+        switch (kind)
+        {
+            case 1: c.Mp = have - cost; break;
+            case 2: c.Risk = 100 - (have - cost); break;
+            case 3: c.Hp = have - (cost - 1); break;
+            case 4: c.Blade.Lose(cost); break;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Applies an entry to its fighter (BATTLE.PRG 0x800875c8), as the action's effect reaches it: nothing comes of it
+    /// ("Miss"); hit points (with each limb's share; armour wears with damage), magic points, RISK, the stats for good
+    /// (cap 999), the most hit and magic points, the weapon's DP and PP, the shield's and struck armour's DP, the
+    /// shield's PP; then the statuses it clears, then those it sets. Death waits for the next status tick
+    /// (<see cref="Recover"/>). <paramref name="action"/> is Ashley's action that may fell it (-1 none).
+    /// </summary>
+    private void Apply(Outcome t, int action = -1, bool flinch = true, bool front = true)
+    {
+        var c = t.Who;
+        if (t.Void) return;
+        var rules = _view.Content.Field;
+        if (t.Kind == 4) { if (!c.Cube) Number(c, "Miss"); return; }
+        switch (t.HpMode)
+        {
+            case 2:
+                if (!c.Cube) Number(c, "+" + Math.Min(t.Hp, c.MaxHp - c.Hp));
+                c.Hp = Math.Min(c.MaxHp, c.Hp + t.Hp);
+                for (int i = 0; i < 6 && i < c.Limbs.Count; i++) c.Limbs[i].Hp = Math.Clamp(c.Limbs[i].Hp + t.LimbHp[i], 0, c.Limbs[i].MaxHp);
+                break;
+            case 1 or 3:
+                for (int i = 0; i < 6 && i < c.Limbs.Count; i++)
+                {
+                    c.Limbs[i].Hp = Math.Max(0, c.Limbs[i].Hp - t.LimbHp[i]);
+                    c.Limbs[i].Armour.Wear(t.LimbWear[i]);
+                }
+                if (c.Hp > 0 && c.Hp <= t.Hp) c.FelledBy = action;
+                Strike(c, t.Hp, flinch, front);
+                break;
+        }
+        switch (t.MpMode)
+        {
+            case 2: c.Mp = Math.Min(c.MaxMp, c.Mp + t.Mp); break;
+            case 1: c.Mp = Math.Max(0, c.Mp - t.Mp); break;
+        }
+        if (t.RiskMode == 2) c.Risk = Math.Max(0, c.Risk - t.Risk);
+        foreach (var (stat, amount, mode) in new[] { (0, t.Strength, t.StrengthMode), (1, t.Intelligence, t.IntelligenceMode), (2, t.Agility, t.AgilityMode), (3, t.MaxHp, t.MaxHpMode), (4, t.MaxMp, t.MaxMpMode) })
+        {
+            if (mode == 0 || stat >= 3 && mode != 2) continue;
+            int by = mode == 2 ? amount : -amount;
+            if (c == Ashley) { _view.Grow(stat, by, fill: false); continue; }
+            switch (stat)
+            {
+                case 0: c.Strength = Math.Clamp(c.Strength + by, 0, 999); break;
+                case 1: c.Intelligence = Math.Clamp(c.Intelligence + by, 0, 999); break;
+                case 2: c.Agility = Math.Clamp(c.Agility + by, 0, 999); break;
+                case 3: c.MaxHp = Math.Min(999, c.MaxHp + by); break;
+                default: c.MaxMp = Math.Min(999, c.MaxMp + by); break;
+            }
+        }
+        if (t.BladeDpMode == 2) c.Blade.Mend(t.BladeDp);
+        if (t.BladePpMode == 2) c.Blade.Gain(t.BladePp);
+        else if (t.BladePpMode == 1) c.Blade.Lose(t.BladePp);
+        if (t.WearMode == 1)
+        {
+            c.Shield.Wear(t.Wear);
+            if (t.Limb >= 0 && t.Limb < c.Limbs.Count) c.Limbs[t.Limb].Armour.Wear(t.Wear);
+        }
+        if (t.ShieldPpMode == 1) c.Shield.Lose(t.ShieldPp);
+        for (int bit = 0; bit < 32; bit++) if ((t.Clear >> bit & 1) != 0) c.ClearStatus(bit, rules);
+        for (int bit = 0; bit < 32; bit++) if ((t.Set >> bit & 1) != 0) c.SetStatus(bit, rules);
+    }
+
+    /// <summary>
+    /// A shape an action takes its targets in (BATTLE.PRG's descriptor, tested by 0x800c1564 through the table at
+    /// 0x80069844): its kind (a range or area record's fourth byte, low three bits), its x, y and z radii (32 units each),
+    /// its pitch (the fourth byte's high five bits, 16ths of a 4096th of a turn), its yaw and its centre. A point is
+    /// moved to the centre and turned by the yaw and pitch (y is down); then 1 is an ellipsoid; 2 a cylinder centred on
+    /// the centre and 3 one standing on it, as high as its y radius; 4 a cone standing on it, narrowing to a point at that
+    /// height, and 5 the same turned over and centred; 6 a box and 7 a diamond standing on it; 0 holds nothing.
+    /// </summary>
+    public readonly record struct Shape(int Kind, int X, int Y, int Z, int Pitch, float Yaw, Vector3 Centre)
+    {
+        public static Shape Of(int[] bytes, float yaw, Vector3 centre) => new(bytes[3] & 7, bytes[0], bytes[1], bytes[2], bytes[3] & 0xF8, yaw, centre);
+
+        public bool Holds(Vector3 point)
+        {
+            int pitch = Kind == 5 ? Pitch + 128 : Pitch;
+            var local = new Basis(Vector3.Right, pitch * 16 * Mathf.Tau / 4096) * (new Basis(Vector3.Up, -Yaw * Mathf.Tau / 4096) * (point - Centre));
+            int x = (int)local.X, y = (int)local.Y, z = (int)local.Z;
+            // An axis in units of its radius, 4096 a radius (0x800c1564: the offset times 0x8000 over the radius, down 12).
+            static long Unit(int d, int r) => r == 0 ? (d == 0 ? 0 : 0x10000) : (long)d * (0x8000 / r) >> 12;
+            int rx = X, rz = Z;
+            bool Ellipse(int dx, int dz) => Unit(dx, rx) * Unit(dx, rx) + Unit(dz, rz) * Unit(dz, rz) < 65536;
+            int height = Y;
+            if (Kind is 2 or 5) { y -= 32 * Y; height = 2 * Y; }
+            bool upright = -32 * height <= y && y <= 0;
+            switch (Kind)
+            {
+                case 1: return Unit(x, X) * Unit(x, X) + Unit(y, Y) * Unit(y, Y) + Unit(z, Z) * Unit(z, Z) < 65536;
+                case 2 or 3: return upright && Ellipse(x, z);
+                case 4 or 5:
+                {
+                    if (!upright || height == 0) return false;
+                    int scale = 256 - -y * 8 / height;
+                    return scale > 0 && Ellipse(x * 256 / scale, z * 256 / scale);
+                }
+                case 6: return upright && Math.Abs(x) <= 32 * X && Math.Abs(z) <= 32 * Z;
+                case 7: return upright && (long)Math.Abs(x) * Z + (long)Math.Abs(z) * X <= 32L * X * Z;
+                default: return false;
+            }
+        }
+    }
+
+    /// <summary>A fighter's middle, its model's centre height above its feet (BATTLE.PRG 0x800a190c), where its shapes are centred.</summary>
+    private static Vector3 Middle(Combatant c) => c.Actor.Position + new Vector3(0, c.Centre, 0);
+
+    /// <summary>
+    /// What a shape holds, in actor order (BATTLE.PRG 0x80071f68): the fighters the action's target kind takes (its side
+    /// bits, 0x800E81D4: 7 for fighters; the user only when the kind allows, 0x800E81B4), each by its middle, or for a kind
+    /// that takes limbs (0x800E81C4) each of their limbs by its point (0x800a1b9c).
+    /// </summary>
+    /// <remarks>Fighters are the hostile ones and the user; retail tests each actor's side bits (+0x1c), not kept here.</remarks>
+    private List<(Combatant Who, int Limb)> Scan(ActionRecord record, Combatant caster, Shape shape)
+    {
+        var kind = _view.Content.Field.TargetKind(record.TargetKind);
+        var found = new List<(Combatant, int)>();
+        if ((kind.Sides & 7) == 0) return found;
+        foreach (var c in Combatants.Values)
+        {
+            if (c == caster ? !kind.Self || c.Dead || c.Hp == 0 : !c.Targetable) continue;
+            if (!kind.Limbs) { if (shape.Holds(Middle(c))) found.Add((c, c.Struck)); continue; }
+            for (int limb = 0; limb < c.Limbs.Count; limb++)
+                if (c.Limbs[limb].MaxHp > 0 && shape.Holds(Aim(c, limb))) found.Add((c, limb));
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// Everything an action aimed at <paramref name="target"/> (and its limb) takes (BATTLE.PRG 0x800708ec, 0x80070b04):
+    /// for kinds 2, 4, 6 and 8 those of the range's <paramref name="candidates"/> inside the area round the chosen point
+    /// (the record's bytes 8 to 11, unturned; 0x80072734, 0x8007053c); for kinds 11 and 12 every fighter or limb inside
+    /// the range's shape from the user aimed at the point, pitched up a quarter turn (0x800719fc); else the target alone.
+    /// </summary>
+    private List<(Combatant Who, int Limb)> Area(ActionRecord record, Combatant caster, Combatant target, int limb, List<(Combatant Who, int Limb)> candidates)
+    {
+        bool limbs = _view.Content.Field.TargetKind(record.TargetKind).Limbs;
+        Vector3 Point(Combatant c, int l) => limbs && l >= 0 ? Aim(c, l) : Middle(c);
+        var point = Point(target, limb);
+        switch (record.TargetKind)
+        {
+            case 2 or 4 or 6 or 8:
+            {
+                var area = Shape.Of(record.Area, 0, point);
+                return candidates.FindAll(c => area.Holds(Point(c.Who, c.Limb)));
+            }
+            case 11 or 12:
+            {
+                var from = Middle(caster);
+                var to = point - from;
+                int pitch = (int)(Mathf.Atan2(to.Y, new Vector2(to.X, to.Z).Length()) * 4096 / Mathf.Tau / 16) + 64;
+                return Scan(record, caster, new Shape(record.Range[3] & 7, record.Range[0], record.Range[1], record.Range[2], pitch, caster.Actor.FacingToward(point), from));
+            }
+            default:
+                return Request(record, target, limb);
+        }
+    }
+
+    /// <summary>The fighters and limbs an action on <paramref name="target"/> takes: the limb chosen for one that takes limbs, else the fighter's own (its data's +0x36).</summary>
+    private List<(Combatant Who, int Limb)> Request(ActionRecord record, Combatant target, int limb) =>
+        new() { (target, _view.Content.Field.TargetKind(record.TargetKind).Limbs && limb >= 0 ? limb : target.Struck) };
 
     /// <summary>
     /// The battle abilities' timing (BATTLE.PRG 0x80078AB4), in 60 Hz ticks about the moment the hit lands: a button set
@@ -798,7 +1772,7 @@ public sealed class FieldBattle
                 _hud?.Timing(grade, _random.RandiRange(0, 7));
                 if (grade != 2 || i == _lastButton) break;
                 _lastButton = i;
-                Apply(slots[i], chain);
+                UseAbility(slots[i], chain);
                 _view.CountAbilityPoint(chain);
                 if (!chain) break;
                 _chain++;
@@ -815,95 +1789,35 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// An ability's effects from its installed record (BATTLE.PRG 0x80085390: each effect's handler from the table at
-    /// 0x800E8378, its amount from the reckoning table at 0x800E830C). The amount: 1 the previous effect's; 4, 6 and 18
-    /// a tenth per factor of the last hit; 5 and 11 of the hit points or magic points Ashley lacks; 8 her weapon's PP;
-    /// 22 of the hit taken, if it landed; 10 and 20 the same for a blow, 9, 19 and 21 for a spell; 23 her shield's PP.
-    /// A chain's amounts add its links so far. The effect's prerequisite 3 falls on Ashley, any other on the other
-    /// side: the enemy struck for a chain, the attacker for a defense. Then 58 takes hit points, 59 magic points, 62
-    /// restores hit points (40 and 41 only against a spell or a blow, 42 to 48 only against their affinity, 49 only if
-    /// the hit landed), 63 magic points, 64 the weapon's PP and 65 its DP; 60 and 61 spend all the weapon's or the
-    /// shield's PP; 11, 15, 16 and 17 set silence, paralysis, poison or numbness and 27 and 30 cure paralysis or
-    /// numbness. The timing runs on blows only, so no hit taken is a spell.
+    /// A chain or defense ability, resolved and applied at once (BATTLE.PRG 0x8006fd24 resolves a link live, <see
+    /// cref="Resolve"/>): Ashley is its user, and its target the enemy struck for a chain, or the attacker for a
+    /// defense; it costs its RISK (and more from the tenth link). Its amounts answer the hit just dealt or taken
+    /// (<see cref="Amount"/>): the timing runs on blows only, so no hit taken is a spell.
     /// </summary>
-    private void Apply(int id, bool chain)
+    private void UseAbility(int id, bool chain)
     {
         if (Ashley == null || _lastStruck == null) return;
         var ability = _view.Content.Data("abilities").GetValueOrDefault(id.ToString(), new GDictionary()).AsGodotDictionary();
         if (ability.Count == 0) return;
-        Ashley.Risk = Math.Min(100, Ashley.Risk + ability["cost"].AsInt32());
+        var other = chain ? _lastStruck : _attacker;
+        if (other == null) return;
         // Its flash: a resident small effect, on the one struck for a chain, on Ashley for a defense.
         int visual = ability.GetValueOrDefault("visual", 0).AsInt32();
         if (visual > 0) _view.PlayResident(visual, chain ? Ashley.Actor : _lastStruck.Actor, chain ? _lastStruck.Actor : Ashley.Actor);
-        var other = chain ? _lastStruck : _attacker;
-        const bool magic = false;
-        int links = chain ? _chain : 0, previous = 0;
-        foreach (var value in ability["effects"].AsGodotArray())
+        var result = Resolve(id, Ashley, new List<(Combatant, int)> { (other, chain ? _victimLimb : other.Struck) }, live: true);
+        if (result.Self != null) Apply(result.Self);
+        foreach (var target in result.Targets)
         {
-            var effect = value.AsGodotDictionary();
-            int kind = effect["effect"].AsInt32(), reckoning = effect["reckoning"].AsInt32(), factor = effect["factor"].AsInt32();
-            var target = effect.GetValueOrDefault("prerequisite", 0).AsInt32() == 3 ? Ashley : other;
-            if (target == null) continue;
-            int amount = reckoning switch
-            {
-                1 => previous,
-                4 or 6 or 18 => _lastDamage * factor / 10 + links,
-                5 => (Ashley.MaxHp - Ashley.Hp) * factor / 10 + links,
-                8 => Ashley.Blade.Pp + links,
-                11 => (Ashley.MaxMp - Ashley.Mp) * factor / 10 + links,
-                22 => _landed ? _lastDamage * factor / 10 : 0,
-                10 or 20 => !magic && _landed ? _lastDamage * factor / 10 : 0,
-                9 or 19 or 21 => 0,
-                23 => Ashley.Shield.Pp,
-                _ => 0,
-            };
-            previous = amount;
-            switch (kind)
-            {
-                case 58:
-                    if (amount <= 0) break;
-                    if (chain) _lastDamage = amount;
-                    Strike(target, amount, chain ? id : -1, flinch: false);
-                    break;
-                case 59:
-                    target.Mp -= Math.Min(target.Mp, Math.Max(0, amount));
-                    break;
-                case 62:
-                case 40 when magic:
-                case 41 when !magic:
-                case >= 42 and <= 48 when kind - 42 == _blowAffinity:
-                case 49 when _landed:
-                    if (amount > 0) Number(target, "+" + target.Heal(amount));
-                    break;
-                case 63:
-                    target.Restore(amount);
-                    break;
-                case 64:
-                    target.Blade.Gain(amount);
-                    break;
-                case 65:
-                    target.Blade.Mend(amount);
-                    break;
-                case 60:
-                    if (target.Blade.MaxPp > 0) target.Blade.Drain();
-                    break;
-                case 61:
-                    if (_landed && target.Shield.MaxPp > 0) target.Shield.Drain();
-                    break;
-                case 11 or 15 or 16 or 17:
-                    target.Afflict(kind, _view.Content.Field);
-                    break;
-                case 27 or 30:
-                    target.Cure(kind);
-                    break;
-            }
+            // A chain's damage is the hit the next link answers.
+            if (chain && target.HpMode is 1 or 3 && target.Hp > 0) _lastDamage = target.Hp;
+            if (target.Kind != 4) Apply(target, chain ? id : -1, flinch: false);
         }
     }
 
     /// <summary>
-    /// A Break Art (the menu's Break Arts): it needs the weapon drawn and more hit points than its cost, which it
-    /// takes. It strikes the nearest enemy in Ashley's sphere: the wind-up is battle animation 91 (or 93), the release
-    /// the art's own set for the target's height, and the hit is her attack's damage scaled by the art's factor.
+    /// A Break Art (the menu's Break Arts): it needs the weapon drawn and more hit points than its cost. It strikes the
+    /// nearest enemy in Ashley's sphere, resolved (and its hit points paid) as it starts: the wind-up is battle
+    /// animation 91 (or 93), the release the art's own set for the target's height, and its blow lands at its effect's.
     /// </summary>
     public string Art(int id, FieldPlayer player)
     {
@@ -921,7 +1835,7 @@ public sealed class FieldBattle
                 aim = (c, c.Limbs.FindIndex(limb => limb.MaxHp > 0));
         }
         if (aim is not { } target) return _view.RetailMessage(0);
-        Ashley.Hp -= cost;
+        _resolution = Resolve(id, Ashley, Request(_view.Content.Field.Action(id), target.Who, target.Limb), live: true);
         player.Halt();
         _spell = art;
         _spellTarget = target.Who;
@@ -944,6 +1858,8 @@ public sealed class FieldBattle
 
     private GDictionary? _spell;
     private Combatant? _spellTarget;
+    // What Ashley's spell, art or item under way was resolved to as it started.
+    private Resolution? _resolution;
     // The spell under way, by action (0 for none or an art).
     private int _spellAction;
     private bool _released;
@@ -965,33 +1881,34 @@ public sealed class FieldBattle
         if (Ashley.Mp < cost) return "Not enough MP.";
         if (Ashley.Has(Silence)) return "Ashley is silenced.";
         if (Ashley.Has(Paralysis)) return "Ashley is paralysed.";
-        bool heals = false;
-        foreach (var effect in spell["effects"].AsGodotArray()) heals |= effect.AsGodotDictionary()["effect"].AsInt32() == 62;
-        // The sphere opens on what it can take: Ashley for one that heals, else the enemies within its range, nearest
-        // first; nothing is spent until a target is chosen.
-        var candidates = new List<Combatant>();
-        if (heals) candidates.Add(Ashley);
-        else
+        // The sphere opens on what its range takes (BATTLE.PRG 0x80071f68): every fighter (or limb) inside its shape,
+        // turned with Ashley about her middle, in actor order, Ashley herself only for a kind that may be used on its
+        // user; nothing is spent until a target is chosen.
+        var record = _view.Content.Field.Action(id);
+        var found = Scan(record, Ashley, Shape.Of(record.Range[0] == 255 ? Ashley.WeaponRange : record.Range, Ashley.Actor.Facing, Middle(Ashley)));
+        if (found.Count == 0) return _view.RetailMessage(0);
+        var candidates = new List<(Combatant Who, List<int> Parts)>();
+        foreach (var (who, limb) in found)
         {
-            var range = spell["range"].AsGodotArray();
-            float reach = Math.Max(range[0].AsInt32(), range[2].AsInt32()) * 32f;
-            foreach (var c in Combatants.Values)
-                if (c.Targetable && (c.Actor.Position - Ashley.Actor.Position).Length() <= reach) candidates.Add(c);
-            if (candidates.Count == 0) return _view.RetailMessage(0);
-            candidates.Sort((a, b) => (a.Actor.Position - Ashley.Actor.Position).Length().CompareTo((b.Actor.Position - Ashley.Actor.Position).Length()));
+            int at = candidates.FindIndex(c => c.Who == who);
+            if (at < 0) candidates.Add((who, new List<int> { limb }));
+            else candidates[at].Parts.Add(limb);
         }
         player.Halt();
-        if (!AimAt(candidates, spell, target => { confirmed?.Invoke(); BeginCast(id, spell, target, player); })) return "Not now.";
+        if (!AimAt(candidates, spell, (target, limb) => { confirmed?.Invoke(); BeginCast(id, spell, target, limb, found, player); }, spellAction: id)) return "Not now.";
         return "";
     }
 
-    /// <summary>A spell's cast once its target is chosen: its MP, the wind-up and its name announced.</summary>
-    private void BeginCast(int id, GDictionary spell, Combatant target, FieldPlayer player)
+    /// <summary>
+    /// A spell's cast once its target is chosen: it is resolved on all its area takes (<see cref="Area"/>), and its MP
+    /// paid, at once (BATTLE.PRG 0x80070f28), then the wind-up plays and its name is announced.
+    /// </summary>
+    private void BeginCast(int id, GDictionary spell, Combatant target, int limb, List<(Combatant Who, int Limb)> found, FieldPlayer player)
     {
         if (Ashley == null) return;
-        int cost = spell["cost"].AsInt32();
-        if (Ashley.Mp < cost) return;
-        Ashley.Mp -= cost;
+        var record = _view.Content.Field.Action(id);
+        if (!Pay(record, Ashley, apply: false)) return;
+        _resolution = Resolve(id, Ashley, Area(record, Ashley, target, limb, found), live: true);
         _view.Acted(id);
         player.Halt();
         _spell = spell;
@@ -1090,8 +2007,8 @@ public sealed class FieldBattle
         if (_landing && Lands(_castEffect))
         {
             _landing = false;
-            if (_artNumber >= 0) StrikeArt(_spell!, _spellTarget!);
-            else Release(Ashley!, _spell!, _spellTarget!, play: false);
+            if (_resolution != null) Release(_resolution);
+            _resolution = null;
             if (Ashley!.Dead) return;
         }
         if (--_frames > 0) return;
@@ -1134,284 +2051,104 @@ public sealed class FieldBattle
         _phase = Phase.Free;
     }
 
-    /// <summary>An art's hit, at its effect's: it rolls to hit as an attack does, and deals the attack's damage scaled by its factor (a tenth each, over 100).</summary>
-    private void StrikeArt(GDictionary art, Combatant target)
-    {
-        int factor = art["effects"].AsGodotArray()[0].AsGodotDictionary()["factor"].AsInt32();
-        int limb = _victimLimb;
-        if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(Ashley!, target, limb, vary: true) + 10)) { Number(target, "Miss"); return; }
-        int damage = Damage(Ashley!, target, limb) * (factor * 10 + 100) / 100;
-        Strike(target, damage, 184);
-    }
-
     /// <summary>
-    /// A spell's effects on its target. To hit (hit function 5): agility, each scaled by RISK, less the target's,
-    /// plus 130 less the spell's cost, give or take 5; healing and help (2) always land. Damage (effect 58): the
-    /// caster's intelligence (with weapon and accessory), scaled by a quarter of the weapon's affinity term plus 100
-    /// and by the factor, less the target's intelligence above 20 scaled by its limb's type and affinity defences and
-    /// its armour's, over 100 plus half its RISK; plus 1 to 5. Healing (62): the same shape on Ashley's own
-    /// intelligence. A status effect (1 to 26) lands by its hit roll and is set for its duration.
+    /// What an action resolved at its launch does, applied as its effect reaches its targets (BATTLE.PRG 0x8006cb04 and
+    /// 0x8006ca20): its user's entry when anything falls on it, then each target's. A kill by Ashley's attack, chain
+    /// ability or art (costs of RISK, hit points or the weapon's) counts for her weapon (0x8008554c).
     /// </summary>
-    private void Release(Combatant caster, GDictionary spell, Combatant target, bool play = true)
+    private void Release(Resolution r)
     {
-        if (play) _castEffect = _view.PlayEffect(spell.GetValueOrDefault("visual", 0).AsInt32(), caster.Actor, target.Actor);
-        foreach (var value in spell["effects"].AsGodotArray())
+        int action = r.Caster == Ashley && r.Record.CostKind is 2 or 3 or 6 ? r.Record.Id : -1;
+        if (r.Self is { Nothing: false } self) Apply(self, action);
+        foreach (var target in r.Targets)
         {
-            var effect = value.AsGodotDictionary();
-            int kind = effect["effect"].AsInt32();
-            // Effects 38 and 37 clear the room's traps (flags 32 and 64; 0x80084340, 0x80084310).
-            if (kind is 37 or 38) { _view.Flags[kind == 38 ? 32 : 64] = 1; continue; }
-            var (hp, status, missed, shown, _) = Reckon(caster, spell, effect, target);
-            if (missed) { if (shown) Number(target, "Miss"); continue; }
-            if (status != 0) { target.Afflict(status, _view.Content.Field); Number(target, spell["name"].AsString()); continue; }
-            if (kind == 62) { target.Hp += hp; Number(target, "+" + hp); continue; }
-            if (hp >= 0) continue;
-            Strike(target, -hp);
-            if (target.Dead && target == Ashley) return;
+            Apply(target, action);
+            if (Ashley is { Dead: true }) return;
         }
     }
 
     /// <summary>
-    /// What one of a spell's effects does to its target, as <see cref="Release"/> describes: the hit points it restores
-    /// (or takes, below 0), the status it sets, or a miss (shown, but not for a physical status's), with the chance it
-    /// was rolled against (100 for what always lands; BATTLE.PRG keeps it with the result, 0x8007f3d0). An enemy
-    /// reckons its moves ahead with these same rolls (<see cref="Score"/>).
+    /// What the sphere's readout gives as a spell's "HP" (its preview, <see cref="Resolve"/> unvaried): the hit points
+    /// it would restore or take (footage: Heal on Ashley at 116 of 250 reads "HP 59", and she is at 175 after it), else
+    /// the target's own; and its chance.
     /// </summary>
-    private (int Hp, int Status, bool Missed, bool Shown, int Chance) Reckon(Combatant caster, GDictionary spell, GDictionary effect, Combatant target)
+    /// <remarks>Damage reads one more than the preview's amount, as it did; which call retail's readout makes, and so
+    /// whether it has the live blow's 1 to 5, was not traced.</remarks>
+    private (int Points, int Chance) SpellReadout(int action, Combatant target, int limb)
     {
-        int kind = effect["effect"].AsInt32(), factor = effect["factor"].AsInt32(), hit = effect["hit"].AsInt32();
-        int type = Math.Clamp(effect["type"].AsInt32(), 1, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
-        // Healing is reckoned on the one healed, give or take 5 (0x800829B8).
-        if (kind == 62) return (Math.Min(target.MaxHp - target.Hp, Math.Max(0, SpellDamage(caster, effect, target, target.Struck) + _random.RandiRange(-5, 5))), 0, false, false, 100);
-        if (kind is >= 1 and <= 26 && kind != 4 && kind != 9 && kind != 14)
-        {
-            // A status spell lands by its hit roll (help always does) and sets its status; a physical one (hit
-            // function 3, a monster's special attack) by the attack's chance.
-            // A drawn shield's gem that guards against the status takes 20 off its chance, which the always-landing
-            // help spells otherwise have whole.
-            int guard = Guarded(target, kind) ? 20 : 0;
-            int chance = hit switch
-            {
-                3 => HitChance(caster, target, -1, vary: true) - guard,
-                5 => Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard,
-                _ => 100 - guard,
-            };
-            if (_random.RandiRange(0, 99) >= chance) return (0, 0, true, hit != 3, chance);
-            return (0, kind, false, false, chance);
-        }
-        if (kind != 58 || target == caster) return (0, 0, false, false, 100);
-        // A spell on the whole target lands on its record's limb (the request's limb, 0x8007138C).
-        int limb = target.Struck;
-        if (hit == 3 && effect["reckoning"].AsInt32() == 2)
-        {
-            // A physical action (a monster's special attack): the attack's chance and damage by its own type and
-            // affinity, scaled by its factor as a spell is.
-            int chance = HitChance(caster, target, limb, vary: true);
-            if (_random.RandiRange(0, 99) >= chance) return (0, 0, true, true, chance);
-            return (-(Damage(caster, target, limb, type, affinity) * (factor * 10 + 100) / 100), 0, false, false, chance);
-        }
-        int odds = 100;
-        if (hit == 5)
-        {
-            odds = Math.Clamp(Agility(caster) * (100 - caster.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32() + _random.RandiRange(-5, 5), 0, 100);
-            if (_random.RandiRange(0, 99) >= Math.Min(100, odds + (caster == Ashley ? 10 : 0))) return (0, 0, true, true, odds);
-        }
-        return (-(SpellDamage(caster, effect, target, limb) + 1 + _random.RandiRange(0, 4)), 0, false, false, odds);
+        var record = _view.Content.Field.Action(action);
+        var preview = Resolve(action, Ashley, Request(record, target, limb), live: false).Targets[0];
+        int points = preview.HpMode switch { 2 => preview.Hp, 1 or 3 => preview.Hp + 1, _ => target.Hp };
+        return (points, preview.Chance);
     }
 
     /// <summary>
-    /// A spell effect's strength from its caster (BATTLE.PRG's magic damage and healing calculators, 0x800819FC and
-    /// 0x800829B8): intelligence with the accessory's (and the weapon's while drawn), scaled by a quarter of a term
-    /// plus 100 (the weapon's affinity less the percent of its DP worn away plus its percent of PP, while drawn, and
-    /// the accessory's type and affinity), and by the effect's factor.
+    /// A trap's blow on Ashley as the test reads it: its reckoning (<see cref="Trapped"/>) at the room's trap level for
+    /// one of her limbs.
     /// </summary>
-    private static int SpellAttack(Combatant caster, GDictionary effect)
+    public int TrapDamage(Combatant target, ActionEffect effect, int level, int limb, bool vary)
     {
-        int type = Math.Clamp(effect["type"].AsInt32(), 0, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
-        int intelligence = caster.EffectiveIntelligence + caster.Accessory.Intelligence + (caster.Drawn ? caster.Blade.Intelligence : 0);
-        var blade = caster.Blade;
-        int term = caster.Drawn ? (affinity != 0 ? blade.Affinities[affinity] : 0) - blade.Worn + (blade.MaxPp != 0 ? blade.Pp * 100 / blade.MaxPp : 0) : 0;
-        term += (type != 0 ? caster.Accessory.Types[type] : 0) + caster.Accessory.Affinities[affinity];
-        return intelligence * (term / 4 + 100) / 100 * (effect["factor"].AsInt32() * 10 + 100) / 100;
+        _trapLevel = level;
+        return Trapped(effect, target, limb, vary, cap: true);
     }
 
     /// <summary>
-    /// A damage or healing spell's amount before its variation: <see cref="SpellAttack"/> less the target's defence,
-    /// its intelligence (with its accessory's) above 20 scaled by the limb's type and affinity defences and its
-    /// accessory's, plus its armour's intelligence scaled by the armour's (less a quarter of the percent worn away) and,
-    /// while its weapon is drawn, its shield's (plus a quarter of its percent of PP), all over 100 plus half its RISK;
-    /// a type 0 effect meets no type defence. Healing is reckoned the same way on the one healed, so Ashley's own
-    /// intelligence and armour take from her Heal (footage: 59 at 116 of 250).
+    /// A trap's action on Ashley (a room trap of type n is action n + 6, <see cref="Installation.InventoryConversion.TrapActions"/>),
+    /// resolved with no user at the room's trap level and applied at once, on one of her limbs at random (how retail picks
+    /// the limb was not read): damage (<see cref="Trapped"/>), a heal panel's healing (the same less its defence, with
+    /// no cap) and its RISK cut, a status, or a cure.
     /// </summary>
-    private static int SpellDamage(Combatant caster, GDictionary effect, Combatant target, int limb)
-    {
-        int type = Math.Clamp(effect["type"].AsInt32(), 0, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
-        var struck = limb >= 0 ? target.Limbs[limb] : new Limb();
-        int Factor(Gear gear) => (type != 0 ? gear.Types[type] : 0) + (affinity != 0 ? gear.Affinities[affinity] : 0);
-        int stat = 100 + (type != 0 ? struck.Types[type] : 0) + (affinity != 0 ? struck.Affinities[affinity] : 0) + (type != 0 ? target.Accessory.Types[type] : 0) + target.Accessory.Affinities[affinity];
-        int armour = 100 + Factor(struck.Armour) - struck.Armour.Worn / 4;
-        int defence = (target.EffectiveIntelligence + target.Accessory.Intelligence - 20) * stat + struck.Armour.Intelligence * armour;
-        if (target.Drawn)
-        {
-            var shield = target.Shield;
-            defence += shield.Intelligence * (100 + Factor(shield) - shield.Worn / 4 + (shield.MaxPp != 0 ? shield.Pp * 100 / shield.MaxPp / 4 : 0));
-        }
-        defence /= target.Risk / 2 + 100;
-        // Effect 4 in the weapon and 8 in the shield do for spells what 3 and 7 do for blows.
-        int scale = 100 + (caster.Blade.Has(4) ? 5 : 0) - (target.Shield.Has(8) ? 5 : 0);
-        return Math.Max(0, (SpellAttack(caster, effect) - defence) * scale / 100);
-    }
-
-    /// <summary>
-    /// What the sphere's readout gives as a spell's "HP": the hit points it would restore or take before its
-    /// variation (footage: Heal on Ashley at 116 of 250 reads "HP 59", and she is at 175 after it), else the target's own.
-    /// </summary>
-    private int SpellPoints(GDictionary spell, Combatant target)
-    {
-        foreach (var value in spell["effects"].AsGodotArray())
-        {
-            var effect = value.AsGodotDictionary();
-            switch (effect["effect"].AsInt32())
-            {
-                case 62: return SpellDamage(Ashley!, effect, target, target.Struck);
-                case 58 when target != Ashley: return SpellDamage(Ashley!, effect, target, target.Struck) + 1;
-            }
-        }
-        return target.Hp;
-    }
-
-    /// <summary>
-    /// A damage trap's blow (BATTLE.PRG's trap-panel reckoning): a tenth of the most hit points times the effect's
-    /// factor, plus ten for each trap level and ten more, less a defence: (strength with the accessory's, less 20)
-    /// times the limb's factor (100, or 100 plus the limb's defence against the damage type, plus its defence against
-    /// the affinity and the accessory's), plus the limb's armour strength times its factor (likewise from the armour,
-    /// less a quarter of the percent of its DP worn away), plus the shield's while the weapon is drawn (likewise, and
-    /// plus a quarter of its PP percent), all over 100 plus half the RISK. With <paramref name="vary"/> it moves by
-    /// up to 5 either way. It never fells: at most the hit points less one.
-    /// </summary>
-    public int TrapDamage(Combatant target, GDictionary effect, int level, int limb, bool vary)
-    {
-        int value = target.MaxHp / 10 * effect["factor"].AsInt32() + (level + 1) * 10;
-        int type = Math.Clamp(effect["type"].AsInt32(), 0, 3), affinity = effect["affinity"].AsInt32() - 1;
-        var part = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb] : null;
-        var armour = part?.Armour ?? new Gear();
-        int statFactor = 100, armourFactor = 100, shieldFactor = 100, shieldStat = 0;
-        if (type != 0)
-        {
-            statFactor = (part?.Types[type] ?? 0) + 100;
-            armourFactor = armour.Types[type] + 100;
-        }
-        if (affinity is > 0 and < 8)
-        {
-            statFactor += part?.Affinities[affinity] ?? 0;
-            armourFactor += armour.Affinities[affinity];
-        }
-        if (armour.MaxDp != 0) armourFactor -= (armour.MaxDp - armour.Dp) * 100 / armour.MaxDp >> 2;
-        if (target.Drawn)
-        {
-            var shield = target.Shield;
-            shieldStat = shield.Strength;
-            if (type != 0) shieldFactor += shield.Types[type];
-            if (affinity is > 0 and < 8) shieldFactor += shield.Affinities[affinity];
-            if (shield.MaxDp != 0) shieldFactor -= (shield.MaxDp - shield.Dp) * 100 / shield.MaxDp >> 2;
-            if (shield.MaxPp != 0) shieldFactor += shield.Pp * 100 / shield.MaxPp >> 2;
-        }
-        statFactor += target.Accessory.Types[type] + (affinity is >= 0 and < 8 ? target.Accessory.Affinities[affinity] : 0);
-        int defence = ((target.EffectiveStrength + target.Accessory.Strength - 20) * statFactor + shieldStat * shieldFactor + armour.Strength * armourFactor) / (target.Risk / 2 + 100);
-        int damage = Math.Max(0, value - defence);
-        if (vary) damage = Math.Max(0, damage + _random.RandiRange(-5, 5));
-        return Math.Min(damage, Math.Max(0, target.Hp - 1));
-    }
-
-    /// <summary>
-    /// A trap's action on Ashley (<see cref="Installation.InventoryConversion.TrapActions"/>), at the room's trap
-    /// level. Its damage is <see cref="TrapDamage"/>'s, on one of her limbs at random (how retail picks the limb was not
-    /// read); a heal panel heals the same value before defence: a tenth of her most hit points times the effect's
-    /// factor, plus ten for each level and ten more. A status trap sets its status (15 paralysis, 16 poison, 18 curse); the cure panels
-    /// clear by <see cref="Combatant.Cure"/> (32 paralysis, poison and numbness, 29 curse).
-    /// </summary>
-    public void Trap(GDictionary action, int level)
+    public void Trap(int action, int visual, int level)
     {
         if (Ashley is not { } ashley || ashley.Dead) return;
-        _view.PlayEffect(action.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor);
-        foreach (var value in action["effects"].AsGodotArray())
-        {
-            var effect = value.AsGodotDictionary();
-            int kind = effect["effect"].AsInt32();
-            int strength = ashley.MaxHp / 10 * effect["factor"].AsInt32() + (level + 1) * 10;
-            switch (kind)
-            {
-                case 58:
-                {
-                    var limbs = new List<int>();
-                    for (int l = 0; l < ashley.Limbs.Count; l++) if (ashley.Limbs[l].MaxHp > 0) limbs.Add(l);
-                    int limb = limbs.Count > 0 ? limbs[_random.RandiRange(0, limbs.Count - 1)] : -1;
-                    Strike(ashley, TrapDamage(ashley, effect, level, limb, true));
-                    break;
-                }
-                case 62:
-                {
-                    Number(ashley, "+" + ashley.Heal(strength));
-                    break;
-                }
-                case Paralysis or Poison or Curse:
-                    ashley.Afflict(kind, _view.Content.Field);
-                    break;
-                case >= 27 and <= 32:
-                    ashley.Cure(kind);
-                    break;
-            }
-        }
+        _view.PlayEffect(visual, ashley.Actor, ashley.Actor);
+        var limbs = new List<int>();
+        for (int l = 0; l < ashley.Limbs.Count; l++) if (ashley.Limbs[l].MaxHp > 0) limbs.Add(l);
+        int limb = limbs.Count > 0 ? limbs[_random.RandiRange(0, limbs.Count - 1)] : -1;
+        _trapLevel = level;
+        Release(Resolve(action, null, new List<(Combatant, int)> { (ashley, limb) }, live: true));
         ShowStatus();
     }
 
     /// <summary>
-    /// Whether the target's drawn shield holds a gem that guards against a status (BATTLE.PRG's defence gem bonus): 11
-    /// Degenerate, 12 Psychodrain, 13 Leadbones, 14 Slow, 16 Silence, 18 Paralysis, 19 Poison and 21 Numbness.
+    /// An item used on Ashley (actions 224 on; MAINMENU.PRG maps each consumable to one), resolved live with her as
+    /// user and target and applied at once. Returns her entry.
     /// </summary>
-    private static bool Guarded(Combatant target, int status) => target.Drawn && status switch
+    public Outcome? UseAction(int action)
     {
-        Degenerate => target.Shield.Has(11), Psychodrain => target.Shield.Has(12), Leadbones => target.Shield.Has(13), Slow => target.Shield.Has(14),
-        Silence => target.Shield.Has(16), Paralysis => target.Shield.Has(18), Poison => target.Shield.Has(19), Numbness => target.Shield.Has(21),
-        _ => false,
-    };
-
-    /// <summary>
-    /// A blow's wear (BATTLE.PRG 0x800802c4 and 0x800803a4): the attacker's weapon and, while drawn, the target's
-    /// shield lose the damage in DP, and each gains a tenth of it in PP, five percent more for a weapon with a gem of
-    /// effect 9 and five percent less for a shield with one.
-    /// </summary>
-    private static void Wear(Combatant attacker, Combatant target, int damage)
-    {
-        attacker.Blade.Wear(damage);
-        attacker.Blade.Gain(damage / 10 * (attacker.Blade.Has(9) ? 105 : 100) / 100);
-        if (!target.Drawn) return;
-        target.Shield.Wear(damage);
-        target.Shield.Gain(damage / 10 * (target.Shield.Has(9) ? 95 : 100) / 100);
+        if (Ashley is not { } ashley) return null;
+        var result = Resolve(action, ashley, new List<(Combatant, int)> { (ashley, ashley.Struck) }, live: true);
+        Release(result);
+        ShowStatus();
+        return result.Targets[0];
     }
 
     /// <summary>
-    /// Damage off the hit points, its number shown (to at most 999), then death (70) at none (Ashley's ends the
-    /// battle; an enemy's is counted as felled by the action <paramref name="felledBy"/>, -1 for none), or else a
-    /// flinch from the front or back unless <paramref name="flinch"/> is false. Returns whether the target is dead.
+    /// Damage off the hit points, its number shown (to at most 999; none for a crate, 0x80087578), then a flinch from the
+    /// front or back unless <paramref name="flinch"/> is false or none are left. A fighter left at none dies at the next
+    /// status tick (<see cref="Recover"/>). Returns whether it has none left.
     /// </summary>
-    public bool Strike(Combatant target, int damage, int felledBy = -1, bool flinch = true, bool front = true)
+    public bool Strike(Combatant target, int damage, bool flinch = true, bool front = true)
     {
         target.Hp = Math.Max(0, target.Hp - damage);
-        Number(target, Math.Min(999, damage).ToString());
-        if (target.Dead) return true;
-        if (target.Hp == 0)
-        {
-            target.Dead = true;
-            Play(target, Death, 4, once: true);
-            if (target == Ashley) { _phase = Phase.Dying; _frames = 90; return true; }
-            if (felledBy >= 0) Felled?.Invoke(target, felledBy);
-            Defeated?.Invoke(target);
-            return true;
-        }
+        if (!target.Cube) Number(target, Math.Min(999, damage).ToString());
+        if (target.Dead || target.Hp == 0) return true;
         int flinched = target == Ashley ? (front ? AshleyFlinchFront : AshleyFlinchBack) : front ? FlinchFront : FlinchBack;
         if (flinch && Play(target, flinched, 2) is { } set) target.Actor.Queue($"{set}_1", 6);
         return false;
+    }
+
+    /// <summary>
+    /// A fighter at no hit points dies (BATTLE.PRG 0x800792e4, at the status tick): its death (70); Ashley's ends the
+    /// battle; an enemy's counts as felled by Ashley's action, if one did it.
+    /// </summary>
+    private void Die(Combatant c)
+    {
+        c.Dead = true;
+        Play(c, Death, 4, once: true);
+        if (c == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
+        if (c.FelledBy >= 0) Felled?.Invoke(c, c.FelledBy);
+        Defeated?.Invoke(c);
     }
 
     /// <summary>
@@ -1421,13 +2158,14 @@ public sealed class FieldBattle
     /// </summary>
     private static readonly int[] StatusBits = { -1, 5, 7, 9, 19, 4, 6, 8, 10, 20, 11, 12, 18, 17, 29, 13, 14, 15, 16, 21, 22, 23, 24, 25, 26, 27, 28 };
 
-    /// <summary>A fighter's statuses as BATTLE.PRG keeps them, a bit each (its data's +0x948).</summary>
-    private static uint StatusWord(Combatant c)
-    {
-        uint word = 0;
-        foreach (int status in c.Statuses.Keys) if (status > 0 && status < StatusBits.Length && StatusBits[status] >= 0) word |= 1u << StatusBits[status];
-        return word;
-    }
+    /// <summary>The status bit an effect id sets (<see cref="StatusBits"/>), or -1.</summary>
+    public static int StatusBit(int effect) => effect > 0 && effect < StatusBits.Length ? StatusBits[effect] : -1;
+
+    /// <summary>
+    /// The status rules whose duration loads each of the five group timers (BATTLE.PRG 0x80086fa8 reads rule 5's for
+    /// the stat changes, 11's for Slow and Quicken, 19's for Tarnish to the guards, and 13's for paralysis and for numbness).
+    /// </summary>
+    private static readonly int[] GroupDurations = { 5, 11, 19, 13, 13 };
 
     /// <summary>
     /// One move an enemy has planned (a 20-byte entry of its AI record's list at +0x2f0, built by BATTLE.PRG
@@ -1443,12 +2181,12 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// A fighter as the planner reckons it (BATTLE.PRG's 24-byte snapshot, 0x800dc424): hit, magic and its weapon's
-    /// and shield's phantom points, each with its most, and its statuses.
+    /// A fighter as the planner reckons it (BATTLE.PRG's 24-byte snapshot, 0x800dc424): hit and magic points, its
+    /// weapon's and shield's DP (its data's +0x150 and +0x2b4), each with its most, and its statuses.
     /// </summary>
     private struct Standing
     {
-        public int Hp, MaxHp, Mp, MaxMp, BladePp, BladeMaxPp, ShieldPp, ShieldMaxPp;
+        public int Hp, MaxHp, Mp, MaxMp, BladeDp, BladeMaxDp, ShieldDp, ShieldMaxDp;
         public uint Statuses;
     }
 
@@ -1488,8 +2226,7 @@ public sealed class FieldBattle
     /// A fighter's well-being as an enemy reckons it (BATTLE.PRG 0x800dcc94, summed by 0x800dc284): six times the
     /// standing of its statuses (<see cref="FieldContent.Status"/>; silence only for one with a magic cost,
     /// <see cref="MostMagic"/>), less 128 when it is down and 84 under 44/128 of its hit points; plus four times its hit
-    /// points, its magic points, and twice its weapon's and its shield's phantom points, each a share of its most in
-    /// 128ths.
+    /// points, its magic points, and twice its weapon's and its shield's DP, each a share of its most in 128ths.
     /// </summary>
     private int WellBeing(Combatant c, Standing s)
     {
@@ -1500,8 +2237,8 @@ public sealed class FieldBattle
         if (s.Hp == 0) standing -= 128;
         if (s.Hp * 128 < s.MaxHp * 44) standing -= 84;
         int life = s.MaxHp != 0 ? s.Hp * 128 / s.MaxHp : 0, magic = s.MaxMp != 0 ? s.Mp * 128 / s.MaxMp : 0;
-        int phantom = (s.BladeMaxPp != 0 ? s.BladePp * 128 / s.BladeMaxPp : 0) + (s.ShieldMaxPp != 0 ? s.ShieldPp * 128 / s.ShieldMaxPp : 0);
-        return 6 * standing + 4 * life + magic + 2 * phantom;
+        int gear = (s.BladeMaxDp != 0 ? s.BladeDp * 128 / s.BladeMaxDp : 0) + (s.ShieldMaxDp != 0 ? s.ShieldDp * 128 / s.ShieldMaxDp : 0);
+        return 6 * standing + 4 * life + magic + 2 * gear;
     }
 
     /// <summary>The fighters the planner reckons with (BATTLE.PRG's actor list, 0x800f1928): Ashley and every living fighter but the crates.</summary>
@@ -1566,7 +2303,7 @@ public sealed class FieldBattle
         {
             if (relation >= 3) return false;
             int most = MostMagic(target);
-            bool unable = (StatusWord(target) & 0x9E2B0) != 0 || most != 0 && target.Has(Silence);
+            bool unable = (target.Status & 0x9E2B0) != 0 || most != 0 && target.Has(Silence);
             bool short_ = most != 0 && (target.Mp < most || target.Mp * 2 < target.MaxMp);
             bool weak = target.Hp * 2 < target.MaxHp;
             int troubles = (unable ? 1 : 0) | (short_ ? 2 : 0) | (weak ? 4 : 0);
@@ -1578,13 +2315,13 @@ public sealed class FieldBattle
 
     /// <summary>
     /// What a move would leave the fight at (BATTLE.PRG 0x800dcc94), as a plan entry's score: each fighter's standing
-    /// (0x800dc424) after the move, its user paying the cost (magic points, hit points or its weapon's phantom points;
-    /// 0x800dc888) and its target taking what the move rolls (an attack its hit and <see cref="Damage"/>, a spell each
-    /// effect's <see cref="Reckon"/>; a miss takes nothing), each fighter's <see cref="WellBeing"/> added for an ally and
-    /// taken off for any other but one standing neither way; times 128, plus the weight: the chance the move rolled on
-    /// its target, in 128ths, or 0 had it missed (0x800dcbd8); 128 for none. An action flagged 0x20 is passed over nine
-    /// times in ten; one flagged 0x10, for an enemy that weighs those lightly, is not reckoned: it scores 1 over standing
-    /// still, at weight 40.
+    /// (0x800dc424) after the move, reckoned by the same resolver as the move itself, unvaried (0x8008631c,
+    /// <see cref="Resolve"/>): its user pays the cost (magic points, hit points, or for the weapon's own cost its DP;
+    /// 0x800dc888) and each entry's hit and magic points, the weapon's and the shield's DP and statuses go on its
+    /// fighter's standing; each fighter's <see cref="WellBeing"/> added for an ally and taken off for any other but one
+    /// standing neither way; times 128, plus the weight: the chance the move has on its target, in 128ths (0x800dcbd8; 0
+    /// when nothing came of it), or 128 for none. An action flagged 0x20 is passed over nine times in ten; one flagged
+    /// 0x10, for an enemy that weighs those lightly, is not reckoned: it scores 1 over standing still, at weight 40.
     /// </summary>
     private int Score(Combatant enemy, int action, Combatant? target, int limb, List<Combatant> fighters, out int weight)
     {
@@ -1595,53 +2332,37 @@ public sealed class FieldBattle
         foreach (var f in fighters)
             standings[f] = new Standing
             {
-                Hp = f.Hp, MaxHp = f.MaxHp, Mp = f.Mp, MaxMp = f.MaxMp, BladePp = f.Blade.Pp, BladeMaxPp = f.Blade.MaxPp,
-                ShieldPp = f.Shield.Pp, ShieldMaxPp = f.Shield.MaxPp, Statuses = StatusWord(f),
+                Hp = f.Hp, MaxHp = f.MaxHp, Mp = f.Mp, MaxMp = f.MaxMp, BladeDp = f.Blade.Dp, BladeMaxDp = f.Blade.MaxDp,
+                ShieldDp = f.Shield.Dp, ShieldMaxDp = f.Shield.MaxDp, Statuses = f.Status,
             };
         int bonus = 0;
         if (enemy.WeighsLightly && (record.Flags & 0x10) != 0) { bonus = 1; weight = 40; }
         else if (action != 0 && target != null)
         {
+            var result = Resolve(action, enemy, Request(record, target, limb), live: false);
+            // 0x800dc30c: mode 2 adds, any other takes off, held between 0 and the most.
+            static int Moved(int value, int most, int by, int mode) => Math.Clamp(mode == 2 ? value + by : value - by, 0, most);
             var user = standings[enemy];
             switch (record.CostKind)
             {
-                case 1: user.Mp = Math.Clamp(user.Mp - record.Cost, 0, user.MaxMp); break;
-                case 3: user.Hp = Math.Clamp(user.Hp - record.Cost, 0, user.MaxHp); break;
-                case 6: user.BladePp = Math.Clamp(user.BladePp - record.Cost, 0, user.BladeMaxPp); break;
+                case 1: user.Mp = Moved(user.Mp, user.MaxMp, record.Cost, 1); break;
+                case 3: user.Hp = Moved(user.Hp, user.MaxHp, record.Cost, 1); break;
+                case 6: user.BladeDp = Moved(user.BladeDp, user.BladeMaxDp, record.Cost, 1); break;
             }
             standings[enemy] = user;
-            weight = 0;
-            var struck = standings[target];
-            var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
-            if (action is < 54 or > 183 || spell.Count == 0)
+            foreach (var entry in result.Self != null ? new List<Outcome>(result.Targets) { result.Self } : result.Targets)
             {
-                int chance = Math.Min(100, HitChance(enemy, target, limb, vary: true));
-                if (_random.RandiRange(0, 99) < chance)
-                {
-                    struck.Hp = Math.Clamp(struck.Hp - Damage(enemy, target, limb), 0, struck.MaxHp);
-                    weight = chance + chance / 4 + chance / 32;
-                }
+                if (entry.Void || !standings.TryGetValue(entry.Who, out var standing)) continue;
+                standing.Hp = Moved(standing.Hp, standing.MaxHp, entry.Hp, entry.HpMode);
+                standing.Mp = Moved(standing.Mp, standing.MaxMp, entry.Mp, entry.MpMode);
+                standing.BladeDp = Moved(standing.BladeDp, standing.BladeMaxDp, entry.BladeDp, entry.BladeDpMode);
+                standing.ShieldDp = Moved(standing.ShieldDp, standing.ShieldMaxDp, entry.Wear, entry.WearMode);
+                standing.Statuses = (standing.Statuses | entry.Set) & ~entry.Clear;
+                standings[entry.Who] = standing;
             }
-            else
-            {
-                bool landed = false;
-                int chance = 0;
-                foreach (var value in spell["effects"].AsGodotArray())
-                {
-                    var (hp, status, missed, _, odds) = Reckon(enemy, spell, value.AsGodotDictionary(), target);
-                    if (missed) continue;
-                    landed = true;
-                    chance = odds;
-                    struck.Hp = Math.Clamp(struck.Hp + hp, 0, struck.MaxHp);
-                    if (status > 0 && status < StatusBits.Length && StatusBits[status] is int bit and >= 0)
-                    {
-                        var (_, clears, blockedBy, _) = _view.Content.Field.Status(bit);
-                        if ((struck.Statuses & blockedBy) == 0) struck.Statuses = struck.Statuses & ~(clears & struck.Statuses) | 1u << bit;
-                    }
-                }
-                if (landed) weight = Math.Clamp(chance, 0, 100) + Math.Clamp(chance, 0, 100) / 4 + Math.Clamp(chance, 0, 100) / 32;
-            }
-            standings[target] = struck;
+            var mine = result.Targets.Find(entry => entry.Who == target && !entry.Void);
+            int chance = mine?.Chance ?? 0;
+            weight = (chance + chance / 4 + chance / 32) & 0xFF;
         }
         int total = 0;
         foreach (var f in fighters)
@@ -1761,12 +2482,17 @@ public sealed class FieldBattle
         foreach (var c in fighters)
         {
             if (clock >= 2881) foreach (var limb in c.Limbs) limb.Hp = Math.Min(limb.Hp + 2, limb.MaxHp);
-            if (c.SlowingLimbs is { } pair && (pair.A < c.Limbs.Count && c.Limbs[pair.A].Hp >= 2 || pair.B < c.Limbs.Count && c.Limbs[pair.B].Hp >= 2)) c.Statuses.Remove(Slow);
+            if (c.SlowingLimbs is { } pair && (pair.A < c.Limbs.Count && c.Limbs[pair.A].Hp >= 2 || pair.B < c.Limbs.Count && c.Limbs[pair.B].Hp >= 2)) c.Status &= ~0x10u;
             if (frames / 120 > 0) c.Hp = Math.Min(c.Hp - 1 + frames / 120, c.MaxHp);
             if (frames / 180 > 0) c.Mp = Math.Min(c.Mp - 1 + frames / 180, c.MaxMp);
             if (c.Has(Poison)) c.Hp = Math.Max(0, c.Hp - seconds / _view.Content.Field.Status(StatusBits[Poison]).Period * (c.MaxHp * 5) / 100);
             if (c.Has(Regen)) c.Hp = Math.Max(0, c.Hp + seconds / _view.Content.Field.Status(StatusBits[Regen]).Period * (c.MaxHp * 5) / 100);
-            foreach (var (status, left) in new Dictionary<int, int>(c.Statuses)) if (left >= 0 && left <= clock) c.Statuses.Remove(status);
+            // A group's statuses end once its timer, a status tick every 30 frames, is past the clock (0x800de2f4).
+            for (int group = 0; group < 5; group++)
+            {
+                uint mask = _view.Content.Field.StatusGroup(group);
+                if ((c.Status & mask) != 0 && c.Timers[group] * 30 <= clock) c.Status &= ~mask;
+            }
         }
     }
 
@@ -1787,8 +2513,8 @@ public sealed class FieldBattle
         _lastResorts.Clear();
         _lastResortSlots = 0;
         foreach (var limb in enemy.Limbs) foreach (int action in limb.Actions) _planned.RemoveWhere(mark => mark.Action == action);
-        var kept = new List<(Combatant C, int Hp, int Mp, Dictionary<int, int> Statuses, int[] Limbs)>();
-        foreach (var f in fighters) kept.Add((f, f.Hp, f.Mp, new Dictionary<int, int>(f.Statuses), f.Limbs.ConvertAll(l => l.Hp).ToArray()));
+        var kept = new List<(Combatant C, int Hp, int Mp, uint Status, int[] Limbs)>();
+        foreach (var f in fighters) kept.Add((f, f.Hp, f.Mp, f.Status, f.Limbs.ConvertAll(l => l.Hp).ToArray()));
         int wait = Math.Max(enemy.Cooldown, enemy.Recovery / 35), clock = 0;
         var passes = _view.Content.Field.PlanPasses();
         var keep = new int[3];
@@ -1810,12 +2536,11 @@ public sealed class FieldBattle
             foreach (var entry in _lastResorts) { entry.Weight = 128; enemy.Plans.Add(entry); }
             SortPlans(enemy.Plans, 0, enemy.Plans.Count - 1);
         }
-        foreach (var (c, hp, mp, statuses, limbs) in kept)
+        foreach (var (c, hp, mp, status, limbs) in kept)
         {
             c.Hp = hp;
             c.Mp = mp;
-            c.Statuses.Clear();
-            foreach (var (status, left) in statuses) c.Statuses[status] = left;
+            c.Status = status;
             for (int i = 0; i < limbs.Length; i++) c.Limbs[i].Hp = limbs[i];
         }
         if (enemy.Plans.Count >= 2)
@@ -1864,7 +2589,7 @@ public sealed class FieldBattle
     {
         _planClock = 0;
         var fighters = Fighters();
-        foreach (var enemy in Combatants.Values) if (enemy != Ashley && enemy.Hostile && !enemy.Dead && !enemy.Cube) PlanMoves(enemy, fighters);
+        foreach (var enemy in Combatants.Values) if (enemy != Ashley && enemy.Hostile && !enemy.Dead && enemy.Hp > 0 && !enemy.Cube) PlanMoves(enemy, fighters);
     }
 
     /// <summary>
@@ -1892,29 +2617,26 @@ public sealed class FieldBattle
 
     /// <summary>
     /// An enemy's planned move, when it is a spell (54 to 140) or special attack (141 to 183, such as breaths and tail
-    /// attacks): it pays the action's cost (<see cref="FieldContent.Action"/>: magic points, or hit points), then
-    /// the wind-up and release on its target, and its effects by the same rules as Ashley's. Anything else is an attack.
+    /// attacks), resolved and paid for as it set out (<paramref name="result"/>): the wind-up and release on its target,
+    /// and what it was resolved to lands at the effect's hit. Anything else is an attack.
     /// </summary>
-    private bool EnemySpell(Combatant enemy, int action, Combatant target)
+    private bool EnemySpell(Combatant enemy, int action, Combatant target, Resolution result)
     {
         if (action is < 54 or > 183) return false;
         var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
         if (spell.Count == 0) return false;
-        var record = _view.Content.Field.Action(action);
-        if (record.CostKind == 1) enemy.Mp = Math.Max(0, enemy.Mp - record.Cost);
-        if (record.CostKind == 3) enemy.Hp = Math.Max(1, enemy.Hp - record.Cost);
         enemy.Actor.Facing = enemy.Actor.FacingToward(target.Actor.Position);
         if (Play(enemy, 85, 6) == null) Play(enemy, 87, 6);
         // Its casting lasts as Ashley's does, while its name shows, sparkling in mode 2 for a spell and 3 for a
         // special attack (footage: the Dullahan's Drain Heart).
-        _enemyCast = (enemy, spell, target, FieldView.AnnounceFrames + 9);
+        _enemyCast = (enemy, spell, target, result, FieldView.AnnounceFrames + 9);
         _enemyChant = _view.PlayResident(56, enemy.Actor, enemy.Actor, mode: action <= 140 ? 2 : 3);
         HoldCamera(enemy, target, spell, null);
         _view.Announce(action <= 140 ? 23 : 24, spell["name"].AsString());
         return true;
     }
 
-    private (Combatant Caster, GDictionary Spell, Combatant Target, int Frames)? _enemyCast;
+    private (Combatant Caster, GDictionary Spell, Combatant Target, Resolution Result, int Frames)? _enemyCast;
     private FieldEffect? _enemyChant;
 
     /// <summary>The visual effect of the spell last released, which the HUD stays put away for.</summary>
@@ -1953,12 +2675,12 @@ public sealed class FieldBattle
         // Its effect plays now; what it does lands at the effect's hit, or once the effect has run.
         var target = cast.Target;
         _castEffect = _enemyEffect = _view.PlayEffect(cast.Spell.GetValueOrDefault("visual", 0).AsInt32(), cast.Caster.Actor, target.Actor);
-        _enemyRelease = (cast.Caster, cast.Spell, target);
+        _enemyRelease = (cast.Caster, cast.Result);
         cast.Caster.Timer = EnemyPause;
     }
 
     private FieldEffect? _enemyEffect;
-    private (Combatant Caster, GDictionary Spell, Combatant Target)? _enemyRelease;
+    private (Combatant Caster, Resolution Result)? _enemyRelease;
 
     /// <summary>
     /// Whether what a spell or art does lands now: at its effect's hit (its timeline's action 0 or 1), or with no hit
@@ -1973,8 +2695,8 @@ public sealed class FieldBattle
         if (!Lands(_enemyEffect)) return;
         _enemyRelease = null;
         _enemyEffect = null;
-        if (release.Caster.Dead || release.Target.Dead) return;
-        Release(release.Caster, release.Spell, release.Target, play: false);
+        if (release.Caster.Dead) return;
+        Release(release.Result);
     }
 
     /// <summary>
@@ -2064,8 +2786,9 @@ public sealed class FieldBattle
     }
 
     /// <summary>A spell or item waiting on the sphere for its target, and the spell (null for an item).</summary>
-    private Action<Combatant>? _aimed;
+    private Action<Combatant, int>? _aimed;
     private GDictionary? _aimSpell;
+    private int _aimAction;
 
     /// <summary>
     /// Opens the sphere on what a spell or an item can be used on, each taken whole ("TARGET" down the right, the
@@ -2075,13 +2798,14 @@ public sealed class FieldBattle
     /// (footage: Heal's "Ashley Riot HP 59/100%", "TARGET: Single LIT/Human"; an Elixir's "TARGET: Single"). False,
     /// and nothing opened, while another action is under way.
     /// </summary>
-    public bool AimAt(List<Combatant> candidates, GDictionary? spell, Action<Combatant> confirm, GDictionary? action = null)
+    public bool AimAt(List<(Combatant Who, List<int> Parts)> candidates, GDictionary? spell, Action<Combatant, int> confirm, GDictionary? action = null, int spellAction = 0)
     {
         if (candidates.Count == 0 || Ashley == null || _phase != Phase.Free) return false;
         _targets.Clear();
-        foreach (var c in candidates) _targets.Add((c, new List<int> { -1 }));
+        _targets.AddRange(candidates);
         _aimed = confirm;
         _aimSpell = spell;
+        _aimAction = spellAction;
         _target = 0;
         _part = 0;
         _phase = Phase.Sphere;
@@ -2096,26 +2820,22 @@ public sealed class FieldBattle
         return true;
     }
 
-    /// <summary>A spell's chance on its target as the sphere shows it: healing and help always land; others by agility, each scaled by RISK, less the target's, plus 130 less the cost.</summary>
-    private int SpellChance(GDictionary spell, Combatant target)
-    {
-        foreach (var effect in spell["effects"].AsGodotArray()) if (effect.AsGodotDictionary()["effect"].AsInt32() == 62) return 100;
-        return Math.Clamp(Agility(Ashley!) * (100 - Ashley!.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32(), 0, 100);
-    }
-
     private void StepSphere(FieldPlayer player)
     {
         if (_pressed("ps_cross")) { _aimed = null; CloseSphere(); return; }
         if (_aimed != null)
         {
-            if (_targets.Count > 1 && _pressed("ps_right")) { _target = (_target + 1) % _targets.Count; ShowTarget(); }
-            if (_targets.Count > 1 && _pressed("ps_left")) { _target = (_target + _targets.Count - 1) % _targets.Count; ShowTarget(); }
+            if (_targets.Count > 1 && _pressed("ps_right")) { _target = (_target + 1) % _targets.Count; _part = 0; ShowTarget(); }
+            if (_targets.Count > 1 && _pressed("ps_left")) { _target = (_target + _targets.Count - 1) % _targets.Count; _part = 0; ShowTarget(); }
+            int count = _targets[_target].Parts.Count;
+            if (count > 1 && _pressed("ps_down")) { _part = (_part + 1) % count; ShowTarget(); }
+            if (count > 1 && _pressed("ps_up")) { _part = (_part + count - 1) % count; ShowTarget(); }
             if (!_pressed("ps_circle")) return;
             var act = _aimed;
-            var aimedAt = _targets[_target].Who;
+            var (aimedAt, aimedParts) = _targets[_target];
             _aimed = null;
             CloseSphere();
-            act(aimedAt);
+            act(aimedAt, aimedParts[Math.Min(_part, aimedParts.Count - 1)]);
             return;
         }
         int before = _target * 64 + _part;
@@ -2130,6 +2850,8 @@ public sealed class FieldBattle
             var (who, chosen) = _targets[_target];
             int limb = chosen[_part];
             CloseSphere();
+            // The attack is resolved, and its RISK paid, as it starts (BATTLE.PRG 0x80070f28).
+            _blow = Resolve(1, Ashley!, Request(_view.Content.Field.Action(1), who, limb), live: true);
             Strike(Ashley!, who, limb);
         }
     }
@@ -2166,10 +2888,12 @@ public sealed class FieldBattle
         }
         if (_aimed != null)
         {
-            // A spell's or an item's target, whole: its name, then its hit points and the spell's chance or the item's
-            // chance alone; "Single", with a spell's affinity and the target's class.
+            // A spell's or an item's target, whole (or the limb chosen, for a spell that takes limbs): its name, then its
+            // hit points and the spell's chance or the item's chance alone; "Single", with a spell's affinity and the
+            // target's class.
+            bool byLimb = _aimAction != 0 && _view.Content.Field.TargetKind(_view.Content.Field.Action(_aimAction).TargetKind).Limbs;
             string chance = _aimSpell is { } spell
-                ? SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { SpellPoints(spell, who), SpellChance(spell, who) })
+                ? SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: SpellReadout(_aimAction, who, limb) is var (points, spellOdds) ? new[] { points, spellOdds } : null)
                 : SystemBox.Fill(text.GetValueOrDefault("item_chance", new GDictionary()).AsGodotDictionary(), numbers: new[] { 0, 100 });
             int affinity = 0;
             if (_aimSpell is { } cast) foreach (var effect in cast["effects"].AsGodotArray()) { affinity = Math.Max(0, effect.AsGodotDictionary()["affinity"].AsInt32() - 1); break; }
@@ -2180,10 +2904,10 @@ public sealed class FieldBattle
             }).Trim(' ');
             string whole = text.GetValueOrDefault("whole_target", "#TARGET").AsString().TrimStart('#');
             _hud?.Targets(new List<string> { whole }, 0);
-            _hud?.AimedAt(Aim(who, -1), Project);
+            _hud?.AimedAt(Aim(who, byLimb ? limb : -1), Project);
             // The whole target is lit (part -1 lights every vertex), cyan at once: an aimed target does not flash red
             // (footage: Ashley under the Elixir's sphere).
-            Highlight(who, -2);
+            Highlight(who, byLimb ? limb : -2);
             _flash = 0;
             return;
         }
@@ -2215,7 +2939,9 @@ public sealed class FieldBattle
             return;
         }
         // The chosen part's own hit points, and the chance to hit it.
-        string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, HitChance(Ashley!, who, limb) });
+        // Its chance is the attack's preview (BATTLE.PRG 0x8008631c, unvaried; without Ashley's hidden 10).
+        int odds = Resolve(1, Ashley, Request(_view.Content.Field.Action(1), who, limb), live: false).Targets[0].Chance;
+        string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, odds });
         // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), its affinity, the target's
         // class, in the information box.
         _view.SystemBox.Open(4, 0);
@@ -2495,7 +3221,7 @@ public sealed class FieldBattle
         if (_phase == Phase.WindUp)
         {
             if (--_frames > 0) return;
-            if (_attacker.Dead || !InSphere(_attacker, _victim)) { _attacker.Timer = EnemyPause; _phase = Phase.Free; return; }
+            if (_attacker.Dead || _attacker.Hp == 0 || !InSphere(_attacker, _victim)) { _attacker.Timer = EnemyPause; _blow = null; _phase = Phase.Free; return; }
             Strike(_attacker, _victim, _victimLimb);
             return;
         }
@@ -2520,49 +3246,44 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// Resolves a hit: the roll (the player has a hidden 10 more), damage, shared out over the limbs by the struck
-    /// limb's split, the flinch or death. The attack raises the attacker's RISK by its blade's cost.
+    /// A blow lands: what it was resolved to as it started (<see cref="_blow"/>) is applied to its target, with the
+    /// blow's flash at the struck limb, a miss shown, the flinch from the front or back; the hit dealt or taken is what
+    /// chain and defense abilities answer.
     /// </summary>
     private void Land(Combatant attacker, Combatant target)
     {
-        int limb = _victimLimb;
         target.Engaged = true;
-        attacker.Risk = Math.Min(100, attacker.Risk + attacker.Cost);
+        var blow = _blow;
+        _blow = null;
+        var entry = blow?.Targets.Find(t => t.Who == target);
+        if (blow == null || entry == null) return;
         // A crate takes no number (0x80087578) and does not move. One whose record has +0x954 bit 16 (every kind but 2
-        // and 4) has its blow's result cleared (0x80085718): the flash and nothing else (footage, 6:02). A kind 2 or 4
-        // crate takes the blow as anyone does, its one hit point gone on a hit, and breaks (0x80074a20).
+        // and 4) has its blow's result cleared (0x80085f0c): the flash and nothing else (footage, 6:02). A kind 2 or 4
+        // crate is always hit for 999 (0x8007f28c, 0x800838ec) and breaks (0x80074a20).
         if (target.Cube)
         {
-            if (target.CubeKind is not (2 or 4)) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
-            if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(attacker, target, -1, vary: true) + 10)) { _view.PlayResident(0x27, attacker.Actor, target.Actor); return; }
             _view.PlayResident(1, attacker.Actor, target.Actor);
-            _view.BreakCrate(target.Actor.Id);
+            if (entry.Kind != 4) { target.Hp = 0; _view.BreakCrate(target.Actor.Id); }
             return;
         }
-        int chance = Math.Min(100, HitChance(attacker, target, limb, vary: true) + (attacker == Ashley ? 10 : 0));
+        int limb = entry.Limb;
+        var first = blow.Record.Effects[0];
+        _blowAction = blow.Record.Id;
+        _blowAffinity = first.Affinity != 0 ? first.Affinity - 1 : attacker.Affinity;
         _landed = false;
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
         int bone = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Bone : -1;
-        if (_random.RandiRange(0, 99) >= chance) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
+        if (entry.Kind == 4) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
         _view.PlayResident(1, attacker.Actor, target.Actor, bone);
-        int damage = Damage(attacker, target, limb);
-        _lastDamage = damage;
+        _lastDamage = entry.HpMode is 1 or 3 ? entry.Hp : 0;
         _lastStruck = target;
         _landed = true;
-
-        if (limb >= 0 && limb < target.Limbs.Count)
-            for (int i = 0; i < target.Limbs.Count; i++)
-            {
-                int share = i < 6 ? target.Limbs[limb].Split[i] : 0;
-                target.Limbs[i].Hp = Math.Max(0, target.Limbs[i].Hp - damage * share / 100);
-                // Each limb's armour wears by its share of the damage.
-                target.Limbs[i].Armour.Wear(damage * share / 100);
-            }
-        Wear(attacker, target, damage);
         var toward = (attacker.Actor.Position - target.Actor.Position) with { Y = 0 };
         float facing = target.Actor.Facing * Mathf.Tau / 4096f;
         bool front = new Vector3(-Mathf.Sin(facing), 0, -Mathf.Cos(facing)).Dot(toward) >= 0;
-        if (Strike(target, damage, attacker == Ashley ? 1 : -1, front: front)) return;
+        if (blow.Self is { Nothing: false } self) Apply(self);
+        Apply(entry, attacker == Ashley ? blow.Record.Id : -1, front: front);
+        if (target.Hp == 0) return;
         if (target == Ashley) { _player?.Halt(); _stagger = 15; }
         target.Timer = Math.Max(target.Timer, 30);
     }
@@ -2586,7 +3307,7 @@ public sealed class FieldBattle
         }
         foreach (var enemy in Combatants.Values)
         {
-            if (!enemy.Hostile || enemy.Dead || enemy.Suspended || !enemy.Drawn || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) continue;
+            if (!enemy.Hostile || enemy.Dead || enemy.Hp == 0 || enemy.Suspended || !enemy.Drawn || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) continue;
             var actor = enemy.Actor;
             // One off the ground carries on falling until it lands.
             if (enemy.Mover is { Busy: true } falling) { falling.Step(null, walk: true); continue; }
@@ -2691,10 +3412,13 @@ public sealed class FieldBattle
             var record = _view.Content.Field.Action(move.Action);
             enemy.Cooldown = _view.Document.GetValueOrDefault("cooldown", 150).AsInt32();
             if (move.Action is < 22 or > 53) enemy.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + enemy.RecoveryBonus) * 256;
-            if (EnemySpell(enemy, move.Action, move.Target)) return;
+            // It is resolved, and its cost paid, as it sets out (BATTLE.PRG 0x80073d30).
+            var blow = Resolve(move.Action, enemy, Request(record, move.Target, move.Limb), live: true);
+            if (EnemySpell(enemy, move.Action, move.Target, blow)) return;
+            _blow = blow;
             _attacker = enemy;
             _victim = move.Target;
-            _victimLimb = move.Limb;
+            _victimLimb = blow.Targets[0].Limb;
             _frames = EnemyWindUp;
             _phase = Phase.WindUp;
             return;
@@ -2836,44 +3560,107 @@ public sealed class FieldBattle
         }
     }
 
+    /// <summary>The battle clock (BATTLE.PRG [0x800E8490], 0 to 719) and the limb whose turn it is to mend ([0x800E8494]).</summary>
+    private int _clock, _mending;
+
     /// <summary>
-    /// RISK falls and Ashley recovers over time: with her weapon drawn RISK drops 1 every 60 frames, MP rises 1 every
-    /// 90 and HP 1 every 120 (and a limb with it, in turn); sheathed, every 15, 30 and 60.
+    /// How far the battle clock runs a frame ([0x8005E24C]). Retail writes 1, 2 and 4 to it (0x8006fc90, 0x800742c4,
+    /// 0x800703e4, 0x80074218, 0x8007c384) and which holds in play was not traced; 2 keeps RISK's fall at the 60 frames
+    /// measured from the footage.
+    /// </summary>
+    private const int ClockStep = 2;
+
+    /// <summary>
+    /// The battle clock's step for every fighter (BATTLE.PRG 0x80088554): every 240 the next limb's turn to mend comes;
+    /// every 30, a fighter with hit points recovers: with its weapon drawn RISK falls 1 every 120, magic points rise 1
+    /// and its weapon and shield each lose a PP every 180, and hit points (and the limb whose turn it is) rise 1 every
+    /// 240; sheathed RISK falls 1 every 30 (every 120 with status bit 3, Ashley's crippled body), magic points rise every
+    /// 60 and hit points every 120. Every 60 the status tick runs (<see cref="Tick"/>), and one at no hit points dies
+    /// (0x800889d4).
     /// </summary>
     private void Recover()
     {
         if (Ashley == null || Ashley.Dead) return;
         _tick++;
-        // Statuses run down, and poison and regeneration act: poison takes a twentieth of the hit points left (and 0
-        // to 5 more) every 2 seconds, regeneration gives a twentieth of the most, less 2, every 5.
-        foreach (var c in Combatants.Values)
+        _clock = (_clock + ClockStep) % 720;
+        if (_clock % 240 == 0) _mending = (_mending + 1) % 6;
+        if (_clock % 30 != 0) return;
+        foreach (var c in new List<Combatant>(Combatants.Values))
         {
-            if (c.Dead) continue;
-            foreach (int status in new List<int>(c.Statuses.Keys))
-                if (c.Statuses[status] > 0 && --c.Statuses[status] == 0) c.Statuses.Remove(status);
-            if (c.Has(Poison) && _tick % 60 == 0) { int harm = Math.Max(1, c.Hp / 20 + _random.RandiRange(0, 5)); c.Hp = Math.Max(1, c.Hp - harm); Number(c, harm.ToString()); }
-            if (c.Has(Regen) && _tick % 150 == 0) c.Heal(Math.Max(1, c.MaxHp / 20 - 2 + _random.RandiRange(0, 4)));
-        }
-        // A crippled body slows RISK's fall with the weapon sheathed.
-        int risk = Drawn || Crippled(Ashley, 3) ? 60 : 15, magic = Drawn ? 90 : 30, health = Drawn ? 120 : 60;
-        if (_tick % risk == 0) Ashley.Risk = Math.Max(0, Ashley.Risk - 1);
-        if (_tick % magic == 0) Ashley.Restore(1);
-        if (_tick % health == 0)
-        {
-            Ashley.Heal(1);
-            if (Ashley.Limbs.Count > 0)
+            if (c.Dead || c.Cube) continue;
+            if (c.Hp != 0)
             {
-                var limb = Ashley.Limbs[(int)(_tick / health % Ashley.Limbs.Count)];
-                limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1);
+                var limb = _mending < c.Limbs.Count ? c.Limbs[_mending] : null;
+                bool drawn = c == Ashley ? Drawn : c.Drawn;
+                if (drawn)
+                {
+                    if (_clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
+                    if (_clock % 180 == 0)
+                    {
+                        c.Restore(1);
+                        c.Blade.Lose(1);
+                        c.Shield.Lose(1);
+                    }
+                    if (_clock % 240 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
+                }
+                else
+                {
+                    if ((c.Status & 8) == 0 || _clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
+                    if (_clock % 60 == 0) c.Restore(1);
+                    if (_clock % 120 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
+                }
+                if (_clock % 60 == 0) Tick(c);
+            }
+            if (_clock % 60 == 0 && c.Hp == 0) Die(c);
+        }
+    }
+
+    /// <summary>
+    /// The status tick (BATTLE.PRG 0x80087ef4): each running group timer counts down, and at 0 its group's statuses end.
+    /// Poison's or regeneration's turn counts down too: poison then takes a twentieth of the hit points and 0 to 5 more
+    /// (at least 1; it can fell), every 2 ticks; regeneration gives a twentieth of the most less 2 and a bunched 0 to 4
+    /// (no least), and each limb an eighth of that, every 5. Slow ends once a slowing limb is above 1 hit point, and
+    /// Ashley's crippled-limb bits once their limb is.
+    /// </summary>
+    private void Tick(Combatant c)
+    {
+        var rules = _view.Content.Field;
+        for (int group = 0; group < 5; group++)
+        {
+            if (c.Timers[group] == 0 || --c.Timers[group] != 0) continue;
+            uint mask = rules.StatusGroup(group);
+            for (int bit = 0; bit < 32; bit++) if ((mask >> bit & 1) != 0) c.ClearStatus(bit, rules);
+        }
+        if (c.Timers[5] != 0 && --c.Timers[5] == 0)
+        {
+            if ((c.Status & 0x4000) != 0)
+            {
+                c.Timers[5] = rules.Status(14).Period;
+                int harm = c.Hp / 20 + Random(6);
+                if (harm <= 0) harm = 1;
+                c.Hp = c.Hp < harm ? 0 : c.Hp - harm;
+                Number(c, harm.ToString());
+            }
+            else if ((c.Status & 0x20000) != 0)
+            {
+                c.Timers[5] = rules.Status(17).Period;
+                int amount = c.MaxHp / 20 - 2 + Bell(5);
+                c.Hp = Math.Clamp(c.Hp + amount, 0, c.MaxHp);
+                foreach (var limb in c.Limbs) if (limb.MaxHp != 0) limb.Hp = Math.Clamp(limb.Hp + amount / 8, 0, limb.MaxHp);
             }
         }
+        int Hp(int limb) => limb >= 0 && limb < c.Limbs.Count ? c.Limbs[limb].Hp : 0;
+        if ((c.Status & 0x10) != 0 && c.SlowingLimbs is { } slowing && (Hp(slowing.A) >= 2 || Hp(slowing.B) >= 2)) c.ClearStatus(4, rules);
+        if (c != Ashley || c.SlowingLimbs is not { A: not 0 }) return;
+        for (int limb = 0; limb < 4; limb++)
+            if (Hp(limb) >= 2) c.ClearStatus(rules.CrippledBit(limb), rules);
     }
 
     private void ShowStatus()
     {
         if (Ashley == null) return;
         _hud?.Set(Ashley.Hp, Ashley.MaxHp, Ashley.Mp, Ashley.MaxMp, Ashley.Risk, Drawn, Ashley.Limbs.ConvertAll(limb => (limb.Hp, limb.MaxHp)));
-        _hud?.ShowStatuses(Ashley.Statuses.Keys);
+        _hud?.ShowStatuses(Ashley.Status);
         _status.Text = _hud == null ? $"HP {Ashley.Hp}/{Ashley.MaxHp}   MP {Ashley.Mp}/{Ashley.MaxMp}   RISK {Ashley.Risk}" + (Drawn ? "   BATTLE" : "") : "";
         if (GameOver) _status.Text += "   GAME OVER";
     }

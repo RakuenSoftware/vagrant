@@ -432,11 +432,11 @@ public sealed partial class BattleHud : RetailScreen
         [FieldBattle.Enlighten] = 64, [FieldBattle.Leadbones] = 80, [FieldBattle.Invigorate] = 96,
     };
 
-    /// <summary>Ashley's statuses, by effect id, shown as icons right of the MP block.</summary>
-    public void ShowStatuses(IEnumerable<int> statuses)
+    /// <summary>Ashley's statuses (her status bits, <see cref="FieldBattle.Combatant.Status"/>), shown as icons right of the MP block.</summary>
+    public void ShowStatuses(uint statuses)
     {
         var shown = new List<int>();
-        foreach (int status in statuses) if (StatusColumns.ContainsKey(status)) shown.Add(status);
+        foreach (int status in StatusColumns.Keys) if ((statuses >> FieldBattle.StatusBit(status) & 1) != 0) shown.Add(status);
         shown.Sort();
         if (shown.SequenceEqual(_statuses)) return;
         _statuses = shown.ToArray();

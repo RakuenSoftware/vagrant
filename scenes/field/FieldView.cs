@@ -4689,13 +4689,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Raises one of Ashley's stats for good (0 strength, 1 intelligence, 2 agility, 3 most hit points, 4 most magic
-    /// points, the last two filling as they grow), to at most 999, and keeps it in <see cref="Gains"/>. Returns the
-    /// amount it grew.
+    /// Raises (or lowers, to no less than 0) one of Ashley's stats for good (0 strength, 1 intelligence, 2 agility, 3
+    /// most hit points, 4 most magic points, the last two filling as they grow when <paramref name="fill"/>; an item's
+    /// raise, BATTLE.PRG 0x800875c8, does not fill them), to at most 999, and keeps it in <see cref="Gains"/>. Returns
+    /// the amount it grew.
     /// </summary>
-    public int Grow(int stat, int amount)
+    public int Grow(int stat, int amount, bool fill = true)
     {
-        if (Battle?.Ashley is not { } ashley || amount <= 0) return 0;
+        if (Battle?.Ashley is not { } ashley || amount == 0) return 0;
         ref int value = ref ashley.Strength;
         switch (stat)
         {
@@ -4704,11 +4705,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case 3: value = ref ashley.MaxHp; break;
             case 4: value = ref ashley.MaxMp; break;
         }
-        amount = Math.Min(amount, 999 - value);
-        if (amount <= 0) return 0;
+        amount = Math.Clamp(amount, -value, 999 - value);
+        if (amount == 0) return 0;
         value += amount;
-        if (stat == 3) ashley.Hp += amount;
-        if (stat == 4) ashley.Mp += amount;
+        if (fill && stat == 3) ashley.Hp = Math.Clamp(ashley.Hp + amount, 0, ashley.MaxHp);
+        if (fill && stat == 4) ashley.Mp = Math.Clamp(ashley.Mp + amount, 0, ashley.MaxMp);
         Gains[stat] += amount;
         return amount;
     }
@@ -5354,7 +5355,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             var traps = _content.Has("trap_actions") ? _content.Data("trap_actions") : new GDictionary();
             if (traps.GetValueOrDefault(type.ToString(), new GDictionary()).AsGodotDictionary() is not { Count: > 0 } action) return;
             Announce(22 + action["kind"].AsInt32(), action["name"].AsString());
-            Battle.Trap(action, Document.GetValueOrDefault("trap_level", 0).AsInt32());
+            Battle.Trap(type + 6, action.GetValueOrDefault("visual", 0).AsInt32(), Document.GetValueOrDefault("trap_level", 0).AsInt32());
             return;
         }
     }

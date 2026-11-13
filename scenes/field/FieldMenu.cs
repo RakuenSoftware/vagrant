@@ -1518,7 +1518,7 @@ public sealed partial class FieldMenu : PanelContainer
                             if (definition.ContainsKey("name")) _view.Announce(27, definition["name"].AsString());
                             else if (note.Length > 0) _view.Message(note);
                         }
-                        if (_view.Battle is not { Ashley: { } holder } battle || !battle.AimAt(new List<FieldBattle.Combatant> { holder }, null, _ => battle.UseItem(definition, () => Use(id)), definition)) TakeEffect();
+                        if (_view.Battle is not { Ashley: { } holder } battle || !battle.AimAt(new List<(FieldBattle.Combatant, List<int>)> { (holder, new List<int> { -1 }) }, null, (_, _) => battle.UseItem(definition, () => Use(id)), definition)) TakeEffect();
                         return false;
                     }
                 }
@@ -1665,9 +1665,9 @@ public sealed partial class FieldMenu : PanelContainer
     }
 
     /// <summary>
-    /// Uses a consumable on Ashley. Effect 0x3e restores hit points, 0x3f magic points and 0x42 lowers RISK, by five
-    /// times the factor (give or take 5), or in full; the curing and strengthening effects need statuses and stats
-    /// the battle does not keep yet, so they are spent without effect.
+    /// Uses a consumable on Ashley: its action (MAINMENU.PRG's map) resolved and applied by the battle
+    /// (<see cref="FieldBattle.UseAction"/>): hit and magic points restored, RISK lowered, statuses cured or set, stats
+    /// raised or lowered for good. A grimoire teaches its spell instead.
     /// </summary>
     private string Use(int id)
     {
@@ -1680,51 +1680,24 @@ public sealed partial class FieldMenu : PanelContainer
         bool seeing = definition["effects"].AsGodotArray().Count > 0 && definition["effects"].AsGodotArray()[0].AsGodotDictionary()["effect"].AsInt32() == 33;
         if (seeing) foreach (var effect in _view.SeeTraps(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor)) _view.Battle?.HideHudFor(effect);
         else _view.Battle?.HideHudFor(_view.PlayEffect(definition.GetValueOrDefault("visual", 0).AsInt32(), ashley.Actor, ashley.Actor));
+        // The item's action is resolved and applied on her (BATTLE.PRG 0x80085b10), and what changed is told.
         var parts = new List<string>();
-        var random = new RandomNumberGenerator();
-        foreach (var value in definition["effects"].AsGodotArray())
+        int hp = ashley.Hp, mp = ashley.Mp, risk = ashley.Risk;
+        uint status = ashley.Status;
+        var outcome = _view.Battle?.UseAction(definition.GetValueOrDefault("action", 0).AsInt32());
+        if (outcome != null && outcome.Kind != 4)
         {
-            var effect = value.AsGodotDictionary();
-            int kind = effect["effect"].AsInt32(), reckoning = effect["reckoning"].AsInt32(), factor = effect["factor"].AsInt32();
-            int Amount(int missing, int current) => reckoning switch { 15 => Math.Max(0, factor * 5 + random.RandiRange(-5, 5)), 16 or 17 => missing, 26 => current, _ => 0 };
-            switch (kind)
-            {
-                case 0x3E:
-                {
-                    parts.Add($"HP +{ashley.Heal(Amount(ashley.MaxHp - ashley.Hp, ashley.Hp))}");
-                    break;
-                }
-                case 0x3F:
-                {
-                    parts.Add($"MP +{ashley.Restore(Amount(ashley.MaxMp - ashley.Mp, ashley.Mp))}");
-                    break;
-                }
-                case 0x42:
-                {
-                    int risk = Math.Min(ashley.Risk, Amount(0, ashley.Risk));
-                    ashley.Risk -= risk;
-                    parts.Add($"RISK -{risk}");
-                    break;
-                }
-                case >= 0x1B and <= 0x20:
-                    // The magic cancel and the cure-all report themselves whether or not anything was cured.
-                    parts.Add(ashley.Cure(kind) || kind is 0x1F or 0x20 ? (kind == 0x1F ? "magic cancelled" : "cured") : "no effect");
-                    break;
-                case 10:
-                    ashley.Afflict(FieldBattle.Quicken, _view.Content.Field);
-                    parts.Add("quickened");
-                    break;
-                // Elixirs: strength, intelligence, agility, most hit points or most magic points, 1 to 4 more for good.
-                case >= 50 and <= 54:
-                {
-                    int stat = kind - 50, gain = _view.Grow(stat, random.RandiRange(1, 4));
-                    parts.Add($"{new[] { "STR", "INT", "AGL", "Max HP", "Max MP" }[stat]} +{gain}");
-                    break;
-                }
-            }
+            if (outcome.HpMode == 2) parts.Add($"HP +{ashley.Hp - hp}");
+            if (outcome.MpMode == 2) parts.Add($"MP +{ashley.Mp - mp}");
+            if (outcome.RiskMode == 2) parts.Add($"RISK -{risk - ashley.Risk}");
+            if ((status & ~ashley.Status) != 0) parts.Add("cured");
+            if ((ashley.Status & ~status) != 0) parts.Add("strengthened");
+            string[] stats = { "STR", "INT", "AGL", "Max HP", "Max MP" };
+            foreach (var (stat, amount, mode) in new[] { (0, outcome.Strength, outcome.StrengthMode), (1, outcome.Intelligence, outcome.IntelligenceMode), (2, outcome.Agility, outcome.AgilityMode), (3, outcome.MaxHp, outcome.MaxHpMode), (4, outcome.MaxMp, outcome.MaxMpMode) })
+                if (mode != 0) parts.Add($"{stats[stat]} {(mode == 2 ? "+" : "-")}{amount}");
         }
         if (--_view.Items[id] <= 0) _view.Items.Remove(id);
-        return $"{_view.ItemName(id)}: " + (parts.Count > 0 ? string.Join(", ", parts) : "no effect yet.");
+        return $"{_view.ItemName(id)}: " + (parts.Count > 0 ? string.Join(", ", parts) : "no effect.");
     }
 
     /// <summary>
@@ -1805,16 +1778,12 @@ public sealed partial class FieldMenu : PanelContainer
     private List<int> StatusIcons(FieldBattle.Combatant who)
     {
         var bits = new SortedSet<int>();
-        foreach (int status in who.Statuses.Keys)
+        foreach (var (status, icon) in new[]
         {
-            int bit = status switch
-            {
-                FieldBattle.Degenerate => 0, FieldBattle.Herakles => 1, FieldBattle.Psychodrain => 2, FieldBattle.Enlighten => 3, FieldBattle.Leadbones => 4, FieldBattle.Invigorate => 5,
-                FieldBattle.Quicken => 6, FieldBattle.Silence => 7, FieldBattle.Paralysis => 8, FieldBattle.Poison => 9, FieldBattle.Numbness => 10, FieldBattle.Curse => 11, FieldBattle.Regen => 12,
-                _ => -1,
-            };
-            if (bit >= 0) bits.Add(bit);
-        }
+            (FieldBattle.Degenerate, 0), (FieldBattle.Herakles, 1), (FieldBattle.Psychodrain, 2), (FieldBattle.Enlighten, 3), (FieldBattle.Leadbones, 4), (FieldBattle.Invigorate, 5),
+            (FieldBattle.Quicken, 6), (FieldBattle.Silence, 7), (FieldBattle.Paralysis, 8), (FieldBattle.Poison, 9), (FieldBattle.Numbness, 10), (FieldBattle.Curse, 11), (FieldBattle.Regen, 12),
+        })
+            if (who.Has(status)) bits.Add(icon);
         return new List<int>(bits);
     }
 
