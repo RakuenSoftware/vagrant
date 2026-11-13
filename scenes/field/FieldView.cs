@@ -4258,7 +4258,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public readonly List<int> Spells = new();
     /// <summary>The spells Ashley has cast to the end at least once (retail's action unlocked byte), which the save keeps.</summary>
     public readonly HashSet<int> Mastered = new();
-    /// <summary>The weapon Ashley has taken up (blade and grip records, and a name), or null for her starting one; her armour by limb (-1 the accessory, -3 the shield).</summary>
+    /// <summary>The carried weapon Ashley has taken up (blade and grip records, and a name), or null when unarmed or before inventory loads; her armour by limb (-1 the accessory, -3 the shield).</summary>
     public GDictionary? EquippedWeapon;
     public readonly Dictionary<int, GDictionary> EquippedArmour = new();
 
@@ -4551,6 +4551,30 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         var list = new List<GDictionary>();
         foreach (var value in Equipment) if (value.AsGodotDictionary()["kind"].AsString() == "gem") list.Add(value.AsGodotDictionary());
+        return list;
+    }
+
+    /// <summary>The weapons Ashley carries, assembled: each with its blade and grip records and a name.</summary>
+    public List<GDictionary> Weapons()
+    {
+        var list = new List<GDictionary>();
+        var blades = new Dictionary<int, GDictionary>();
+        var grips = new Dictionary<int, GDictionary>();
+        foreach (var value in Equipment)
+        {
+            var entry = value.AsGodotDictionary();
+            var record = entry["record"].AsGodotDictionary();
+            if (entry["kind"].AsString() == "blades") blades[record["slot"].AsInt32()] = record;
+            if (entry["kind"].AsString() == "grips") grips[record["slot"].AsInt32()] = record;
+        }
+        foreach (var value in Equipment)
+        {
+            var entry = value.AsGodotDictionary();
+            var record = entry["record"].AsGodotDictionary();
+            if (entry["kind"].AsString() == "weapons" && blades.TryGetValue(record["blade"].AsInt32(), out var blade) && grips.TryGetValue(record["grip"].AsInt32(), out var grip))
+                list.Add(new GDictionary { ["blade"] = blade, ["grip"] = grip, ["name"] = record["name"], ["entry"] = entry });
+            if (entry["kind"].AsString() == "weapon") list.Add(new GDictionary { ["blade"] = record["blade"], ["grip"] = record["grip"], ["name"] = record["name"], ["entry"] = entry });
+        }
         return list;
     }
 
@@ -5164,26 +5188,37 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Gives Ashley the New Game inventory, once.</summary>
     private void LoadInventory()
     {
-        if (_inventoryLoaded) return;
-        _inventoryLoaded = true;
-        var inventory = _content.Data("inventory");
-        foreach (var value in inventory["items"].AsGodotArray())
+        if (!_inventoryLoaded)
         {
-            var item = value.AsGodotDictionary();
-            Items[item["id"].AsInt32()] = Items.GetValueOrDefault(item["id"].AsInt32()) + item["count"].AsInt32();
+            _inventoryLoaded = true;
+            var inventory = _content.Data("inventory");
+            foreach (var value in inventory["items"].AsGodotArray())
+            {
+                var item = value.AsGodotDictionary();
+                Items[item["id"].AsInt32()] = Items.GetValueOrDefault(item["id"].AsInt32()) + item["count"].AsInt32();
+            }
+            foreach (string kind in new[] { "weapons", "blades", "grips", "armour" })
+                foreach (var value in inventory[kind].AsGodotArray()) Equipment.Add(new GDictionary { ["kind"] = kind, ["record"] = value });
+            // She starts wearing what the records say she wears: byte 38 is the limb (1 right arm, 2 left arm, 3 head, 4
+            // body, 5 legs, 6 shield, 7 accessory; 0 carried).
+            foreach (var value in Equipment)
+            {
+                var entry = value.AsGodotDictionary();
+                if (entry["kind"].AsString() != "armour") continue;
+                var record = entry["record"].AsGodotDictionary();
+                int worn = record.GetValueOrDefault("limb", 0).AsInt32() switch { 1 => 0, 2 => 1, 3 => 2, 4 => 3, 5 => 4, 6 => -3, 7 => -1, _ => int.MinValue };
+                if (worn != int.MinValue) EquippedArmour[worn] = record;
+            }
         }
-        foreach (string kind in new[] { "weapons", "blades", "grips", "armour" })
-            foreach (var value in inventory[kind].AsGodotArray()) Equipment.Add(new GDictionary { ["kind"] = kind, ["record"] = value });
-        // She starts wearing what the records say she wears: byte 38 is the limb (1 right arm, 2 left arm, 3 head, 4
-        // body, 5 legs, 6 shield, 7 accessory; 0 carried).
-        foreach (var value in Equipment)
-        {
-            var entry = value.AsGodotDictionary();
-            if (entry["kind"].AsString() != "armour") continue;
-            var record = entry["record"].AsGodotDictionary();
-            int worn = record.GetValueOrDefault("limb", 0).AsInt32() switch { 1 => 0, 2 => 1, 3 => 2, 4 => 3, 5 => 4, 6 => -3, 7 => -1, _ => int.MinValue };
-            if (worn != int.MinValue) EquippedArmour[worn] = record;
-        }
+        // The initial weapon is carried equipment too. Battle must write wear and PP back to the record the menu
+        // and saves use, including old saves whose default weapon was represented by an empty weapon field.
+        if (EquippedWeapon == null && !Unarmed)
+            foreach (var weapon in Weapons())
+                if (weapon["entry"].AsGodotDictionary()["record"].AsGodotDictionary().GetValueOrDefault("equipped", false).AsBool())
+                {
+                    EquippedWeapon = weapon;
+                    break;
+                }
     }
 
     /// <summary>An item's name, from the installed name table.</summary>

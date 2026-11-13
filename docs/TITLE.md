@@ -63,6 +63,7 @@ With HDR 2D active (the shared display owner enables it on Forward+), the window
 
 ## Not yet converted
 
-- Menu sound effects, which need the game's sound driver.
 - The attract demo. The idle timeout currently returns straight to the intro.
-- Memory card saves. Continue shows a notice instead of the load screen.
+
+Menu sounds use the game's sound driver. Continue opens the memory-card LOAD screens and resumes the selected
+save; those older omissions have been implemented.

@@ -51,30 +51,6 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>In the Gems tab, the weapon picked to take a gem (null while choosing the weapon).</summary>
     private GDictionary? _gemWeapon;
 
-    /// <summary>The weapons Ashley carries, assembled: each with its blade and grip records and a name.</summary>
-    private List<GDictionary> Weapons()
-    {
-        var list = new List<GDictionary>();
-        var blades = new Dictionary<int, GDictionary>();
-        var grips = new Dictionary<int, GDictionary>();
-        foreach (var value in _view.Equipment)
-        {
-            var entry = value.AsGodotDictionary();
-            var record = entry["record"].AsGodotDictionary();
-            if (entry["kind"].AsString() == "blades") blades[record["slot"].AsInt32()] = record;
-            if (entry["kind"].AsString() == "grips") grips[record["slot"].AsInt32()] = record;
-        }
-        foreach (var value in _view.Equipment)
-        {
-            var entry = value.AsGodotDictionary();
-            var record = entry["record"].AsGodotDictionary();
-            if (entry["kind"].AsString() == "weapons" && blades.TryGetValue(record["blade"].AsInt32(), out var blade) && grips.TryGetValue(record["grip"].AsInt32(), out var grip))
-                list.Add(new GDictionary { ["blade"] = blade, ["grip"] = grip, ["name"] = record["name"], ["entry"] = entry });
-            if (entry["kind"].AsString() == "weapon") list.Add(new GDictionary { ["blade"] = record["blade"], ["grip"] = record["grip"], ["name"] = record["name"], ["entry"] = entry });
-        }
-        return list;
-    }
-
     /// <summary>The loose blades, shields and armour that can be combined: all but the one already picked.</summary>
     private List<GDictionary> CombineList()
     {
@@ -91,7 +67,7 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>What takes gems: the weapons, then the shields (each as a holder with "shield" set and its record as the entry's).</summary>
     private List<GDictionary> GemHolders()
     {
-        var list = Weapons();
+        var list = _view.Weapons();
         foreach (var piece in Armour())
             if (piece.GetValueOrDefault("id", 0).AsInt32() is >= 127 and <= 142)
                 list.Add(new GDictionary { ["entry"] = new GDictionary { ["record"] = piece }, ["name"] = _view.ItemName(piece["id"].AsInt32()), ["shield"] = true });
@@ -102,7 +78,7 @@ public sealed partial class FieldMenu : PanelContainer
     private List<(GDictionary Record, string Name)> RepairList()
     {
         var list = new List<(GDictionary, string)>();
-        foreach (var weapon in Weapons()) list.Add((weapon["blade"].AsGodotDictionary(), weapon["name"].AsString()));
+        foreach (var weapon in _view.Weapons()) list.Add((weapon["blade"].AsGodotDictionary(), weapon["name"].AsString()));
         foreach (var piece in Armour())
             if (piece.GetValueOrDefault("max_dp", 0).AsInt32() > 0) list.Add((piece, _view.ItemName(piece["id"].AsInt32())));
         return list;
@@ -582,7 +558,7 @@ public sealed partial class FieldMenu : PanelContainer
         var entry = thing.AsGodotDictionary();
         string kind = entry["kind"].AsString();
         if (kind == "weapons")
-            foreach (var weapon in Weapons())
+            foreach (var weapon in _view.Weapons())
                 if (weapon["entry"].AsGodotDictionary() == entry) return WeaponRow(weapon) with { Badge = _storing && _view.Holds(weapon) ? 2 : 0 };
         var record = entry["record"].AsGodotDictionary();
         var shown = _view.BagEntry(new GDictionary { ["kind"] = kind switch { "blades" => "blade", "grips" => "grip", _ => kind }, ["record"] = record });
@@ -914,7 +890,7 @@ public sealed partial class FieldMenu : PanelContainer
         }
         if (_category == 0)
         {
-            foreach (var weapon in Weapons()) rows.Add(WeaponRow(weapon) with { Badge = _view.Holds(weapon) ? 2 : 0 });
+            foreach (var weapon in _view.Weapons()) rows.Add(WeaponRow(weapon) with { Badge = _view.Holds(weapon) ? 2 : 0 });
             return rows;
         }
         foreach (var held in CategoryEntries())
@@ -958,7 +934,7 @@ public sealed partial class FieldMenu : PanelContainer
         var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
         if (slot == 0)
         {
-            foreach (var weapon in Weapons()) if (_view.Holds(weapon)) return WeaponRow(weapon);
+            foreach (var weapon in _view.Weapons()) if (_view.Holds(weapon)) return WeaponRow(weapon);
         }
         else if (_view.EquippedArmour.TryGetValue(SlotLimbs[slot], out var worn) && worn.Count > 0) return ArmourRow(worn);
         return new ItemMenu.Row(SystemBox.Entry(strings, 20), -1, -1, SystemBox.Entry(strings, 21));
@@ -972,7 +948,7 @@ public sealed partial class FieldMenu : PanelContainer
     private List<GDictionary> SlotCandidates(int slot)
     {
         var list = new List<GDictionary>();
-        if (slot == 0) { foreach (var weapon in Weapons()) if (!_view.Holds(weapon)) list.Add(weapon); return list; }
+        if (slot == 0) { foreach (var weapon in _view.Weapons()) if (!_view.Holds(weapon)) list.Add(weapon); return list; }
         var (low, high) = slot switch { 1 => (127, 142), 4 => (143, 158), 5 => (159, 174), 6 => (175, 190), 7 => (207, 253), _ => (191, 206) };
         foreach (var piece in Armour())
         {
@@ -987,7 +963,7 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>What a slot has on: the weapon in hand (with its blade and grip) or the piece worn there; null for none.</summary>
     private GDictionary? Worn(int slot)
     {
-        if (slot == 0) { foreach (var weapon in Weapons()) if (_view.Holds(weapon)) return weapon; return null; }
+        if (slot == 0) { foreach (var weapon in _view.Weapons()) if (_view.Holds(weapon)) return weapon; return null; }
         return _view.EquippedArmour.TryGetValue(SlotLimbs[slot], out var worn) && worn.Count > 0 ? worn : null;
     }
 
@@ -1083,7 +1059,7 @@ public sealed partial class FieldMenu : PanelContainer
     private bool SetupGreyed(int command) => command is Assemble or Repair or Combine && !_view.Workshop;
 
     /// <summary>The weapons or shields SETUP's lists show.</summary>
-    private List<GDictionary> SetupHolders() => _setupKind == 0 ? Weapons() : GemHolders().FindAll(holder => holder.ContainsKey("shield"));
+    private List<GDictionary> SetupHolders() => _setupKind == 0 ? _view.Weapons() : GemHolders().FindAll(holder => holder.ContainsKey("shield"));
 
     /// <summary>SETUP's page as drawn: its headers, its rows (with icons for things), and its information.</summary>
     private (List<string> Headers, List<ItemMenu.Row> Rows, bool Icons) SetupPage()
@@ -1277,7 +1253,7 @@ public sealed partial class FieldMenu : PanelContainer
             {
                 if (!_view.InSet(entry)) { _view.MenuSound(FieldView.MenuInvalid); return; }
                 _view.MenuSound(FieldView.MenuSelect);
-                var weapons = Weapons();
+                var weapons = _view.Weapons();
                 var record = entry["record"].AsGodotDictionary();
                 string part = entry["kind"].AsString() == "blades" ? "blade" : "grip";
                 int found = weapons.FindIndex(weapon => weapon[part].AsGodotDictionary().RecursiveEqual(record));
@@ -1529,13 +1505,13 @@ public sealed partial class FieldMenu : PanelContainer
         {
             if (_page == Items && (pressed("ps_l1") || pressed("ps_r1"))) { _tab = (_tab + (pressed("ps_r1") ? 1 : TabCount - 1)) % TabCount; _cursor = 0; _note = ""; _blade = null; _gemWeapon = null; _combining = null; }
             if (_tab >= TabCount) _tab = 0;
-            int count = _page != Items ? 0 : _tab switch { 0 => Consumables().Count, 1 => Weapons().Count, 2 => Armour().Count, 3 => _view.Parts(_blade).Count, 4 => _gemWeapon == null ? GemHolders().Count : _view.Gems().Count, 5 => CombineList().Count, _ => RepairList().Count };
+            int count = _page != Items ? 0 : _tab switch { 0 => Consumables().Count, 1 => _view.Weapons().Count, 2 => Armour().Count, 3 => _view.Parts(_blade).Count, 4 => _gemWeapon == null ? GemHolders().Count : _view.Gems().Count, 5 => CombineList().Count, _ => RepairList().Count };
             if (_page == Items && _tab > 0)
             {
                 if (count > 0 && step != 0) _cursor = (_cursor + step + count) % count;
                 if (pressed("ps_circle") && count > 0)
                 {
-                    if (_tab == 1) { var weapon = Weapons()[Math.Min(_cursor, count - 1)]; _view.Equip(weapon); _note = $"Ashley took up {weapon["name"]}."; }
+                    if (_tab == 1) { var weapon = _view.Weapons()[Math.Min(_cursor, count - 1)]; _view.Equip(weapon); _note = $"Ashley took up {weapon["name"]}."; }
                     else if (_tab == 5)
                     {
                         // A first blade, then a second to fuse with it.
@@ -1564,7 +1540,7 @@ public sealed partial class FieldMenu : PanelContainer
                 }
                 else if (_tab == 1 && _view.Workshop && pressed("ps_select") && count > 0)
                 {
-                    _renaming = Weapons()[Math.Min(_cursor, count - 1)];
+                    _renaming = _view.Weapons()[Math.Min(_cursor, count - 1)];
                     _rename.Text = _renaming["name"].AsString();
                     _rename.Visible = true;
                     _rename.GrabFocus();
@@ -1573,7 +1549,7 @@ public sealed partial class FieldMenu : PanelContainer
                 else if (_tab == 1 && _view.Workshop && pressed("ps_square") && count > 0)
                 {
                     // The weapon in her hand comes apart only when asked twice, as retail asks first.
-                    var weapon = Weapons()[Math.Min(_cursor, count - 1)];
+                    var weapon = _view.Weapons()[Math.Min(_cursor, count - 1)];
                     if (_view.Holds(weapon) && _confirming != _cursor) { _note = "This weapon is currently equipped. Square again to remove and disassemble it."; _confirming = _cursor; }
                     else { _note = _view.Disassemble(weapon); _cursor = 0; _confirming = -1; }
                 }
@@ -2250,7 +2226,7 @@ public sealed partial class FieldMenu : PanelContainer
         else if (_page == Items && _tab == 1)
         {
             lines.Add("< Weapons >   (L1 / R1)");
-            var weapons = Weapons();
+            var weapons = _view.Weapons();
             for (int i = 0; i < weapons.Count; i++)
             {
                 var blade = weapons[i]["blade"].AsGodotDictionary();

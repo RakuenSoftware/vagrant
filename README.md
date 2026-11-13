@@ -38,6 +38,8 @@ godot-dotnet --headless --path . res://tests/field_contracts.tscn -- --install-r
 # Movement timing and distance, followed separately by the final boss's swoop and event handoff.
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=13,1 --movement
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
+# Disk save resumed in a fresh field, then another room: weapon wear/PP, stats, inventory and progression.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # Every visual effect's records, programs, frame tables and vibration envelopes.
 godot-dotnet --headless --path . res://tests/effect_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-effects
 # The title flow, timings, menu wheel and both option pickers, driven with pad input.
