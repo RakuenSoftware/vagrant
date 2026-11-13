@@ -186,6 +186,10 @@ public sealed class FieldContent
             // SETUP's pages (MENU/MENU12.BIN, laid out as ITEMHELP.BIN is): their words, help and refusals.
             "setup_menu" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/MENU12.BIN")) },
             "gadget_bag" => InventoryConversion.GadgetBag(Read("MENU/MENUB.PRG")),
+            // OPTIONS' words (MENU/MENU8.PRG, loaded at 0x80102800; its string table at 0x80105558, file offset 0x2D58): each setting's name
+            // and help, then each setting's choices with their help (WEAPON STATUS 4 and 5 with ON and OFF at 30 to 33,
+            // ARMOR STATUS 6 and 7 with 34 to 37; 0x80102c0c and 0x80102dbc).
+            "options_menu" => new JsonObject { ["strings"] = InventoryConversion.MenuStrings(Read("MENU/MENU8.PRG"), 0x2D58) },
             "item_menu" => ItemMenu(),
             "equip_labels" => InventoryConversion.EquipLabels(Read("MENU/MAINMENU.PRG")),
             "container_menu" => InventoryConversion.ContainerMenu(Read("MENU/MENUD.PRG")),

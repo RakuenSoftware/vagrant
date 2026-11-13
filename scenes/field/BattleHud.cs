@@ -504,6 +504,9 @@ public sealed partial class BattleHud : RetailScreen
     public void AddNotice(Rect2 piece, Rect2 value, bool raised, Color colour) =>
         _notices.Add(new Notice { Piece = piece, Value = value, Raised = raised, Colour = colour, Wait = _notices.Count });
 
+    /// <summary>The gear-change notices on the screen now.</summary>
+    public int NoticesShown => _notices.FindAll(n => n.Wait < 0).Count;
+
     private void StepNotices()
     {
         if (_notices.Count == 0) return;

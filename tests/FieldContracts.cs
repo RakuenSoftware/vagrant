@@ -139,6 +139,9 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--options-window") _optionsWindow = true;
+            // --options=N sets the OPTIONS word ([0x80060020]) as a player's choices would: 0x40 WEAPON STATUS ON, 0x80 ARMOR STATUS ON.
+            if (argument.StartsWith("--options=", StringComparison.Ordinal)) _options = Convert.ToUInt32(argument["--options=".Length..], 16);
             if (argument == "--swoop") _swoop = true;
             if (argument == "--movement") _movement = true;
             if (argument == "--reveal-traps") _revealTraps = true;
@@ -202,6 +205,7 @@ public partial class FieldContracts : Node
                 }
             }
             foreach (var (flag, value) in _startFlags) _view.Flags[flag] = value;
+            _view.Options = _options;
             AddChild(_view);
             return;
         }
@@ -254,6 +258,9 @@ public partial class FieldContracts : Node
         }
         if (_view == null || _shot < 0) return;
         _frame++;
+        // A gear-change notice, once, 10 frames after the first shows.
+        if (_view.Battle?.Hud is { NoticesShown: > 0 } && _noticeAt == 0) { _noticeAt = _frame + 10; GD.Print($"FIELD: a gear-change notice shows at frame {_frame}"); }
+        if (_noticeAt > 0 && _frame == _noticeAt && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture("battle_notice");
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
         if (_room != null) { StepRoom(); return; }
         if (_battleFrame != 0) { StepBattle(); return; }
@@ -292,6 +299,7 @@ public partial class FieldContracts : Node
         if (elapsed == 1)
         {
             if (!_view.Controlled || _view.Player == null) { Finish("control did not pass to the player after the prologue"); return; }
+            if (CheckCombatRules() is { Length: > 0 } rules) { Finish(rules); return; }
             _start = _view.Player.Position;
             _startEye = _view.Gameplay.Eye;
             Input.ActionPress("ps_up");
@@ -326,6 +334,7 @@ public partial class FieldContracts : Node
     private void StepRoom()
     {
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (_optionsWindow && _view.Controlled && StepOptionsWindow()) return;
         if (StepResults()) return;
         if (_frame % _tapEvery == 0 && !_view.Controlled) Tap("ps_circle");
         if (_view.EventNode != _lastNode) { _lastNode = _view.EventNode; _nodeFrame = _frame; GD.Print($"ROOM node {_lastNode} at {_frame}"); }
@@ -1341,6 +1350,95 @@ public partial class FieldContracts : Node
     }
 
     /// <summary>
+    /// With <c>--options-window</c>, once Ashley is the player's: the field menu's Options opens the settings window, whose
+    /// OPTIONS settings WEAPON STATUS and ARMOR STATUS are captured, set ON (the options word gains 0x40 and 0x80) and
+    /// the window closed.
+    /// </summary>
+    private bool _optionsWindow;
+    private int _optionsStep;
+
+    private bool StepOptionsWindow()
+    {
+        if (_optionsStep < 0) return false;
+        int step = _optionsStep++;
+        if (step == 10) Tap("ps_triangle");
+        if (step is >= 30 and < 120 && step % 10 == 0 && _view.MenuRow != 7) Tap("ps_down");
+        if (step == 130) { if (_view.MenuRow != 7) { Finish($"the command list did not reach Options (row {_view.MenuRow})"); return true; } Tap("ps_circle"); }
+        if (step == 150)
+        {
+            if (_view.FindChildren("Settings", "", true, false).OfType<Wol.Games.Vagrant.Scenes.SettingsDialog>().FirstOrDefault(d => d.Visible) is not { } dialog) { Finish("Options did not open the settings window"); return true; }
+            var weapon = dialog.FindChildren("WEAPON_STATUS", "OptionButton", true, false).OfType<OptionButton>().FirstOrDefault();
+            var armour = dialog.FindChildren("ARMOR_STATUS", "OptionButton", true, false).OfType<OptionButton>().FirstOrDefault();
+            if (weapon == null || armour == null || !weapon.IsVisibleInTree()) { Finish("the settings window has no WEAPON STATUS or ARMOR STATUS"); return true; }
+            if (weapon.Selected != 1 || armour.Selected != 1) { Finish("WEAPON STATUS or ARMOR STATUS is not OFF in a new game"); return true; }
+            for (Node? up = weapon; up != null; up = up.GetParent()) if (up is ScrollContainer scroll) { scroll.EnsureControlVisible(weapon); break; }
+            _optionsDialog = dialog;
+        }
+        if (step == 160) Capture("options_off");
+        if (step == 165)
+        {
+            foreach (string name in new[] { "WEAPON_STATUS", "ARMOR_STATUS" })
+                if (_optionsDialog!.FindChildren(name, "OptionButton", true, false).OfType<OptionButton>().First() is var choice) { choice.Select(0); choice.EmitSignal(OptionButton.SignalName.ItemSelected, 0L); }
+            if ((_view.Options & 0xC0) != 0xC0) { Finish($"choosing ON left the options word 0x{_view.Options:x}"); return true; }
+            GD.Print($"FIELD: OPTIONS' WEAPON STATUS and ARMOR STATUS set ON: options word 0x{_view.Options:x}");
+        }
+        if (step == 175) Capture("options_on");
+        if (step == 180) _optionsDialog!.Hide();
+        if (step is 200 or 220) Tap("ps_cross");
+        if (step == 260) { _optionsStep = -1; if (_view.MenuOpen) { Finish("the menu did not close after Options"); return true; } }
+        return true;
+    }
+    private Wol.Games.Vagrant.Scenes.SettingsDialog? _optionsDialog;
+
+    /// <summary>
+    /// Retail facts the battle's rules rest on, read from the disc:
+    /// <list type="bullet">
+    /// <item>healing's reckoning (13, BATTLE.PRG 0x800829b8) is only ever given an affinity of 2 or more, so its
+    /// branches for index 0 (a stale stack slot, 0x80082aa4) and 255 never run;</item>
+    /// <item>no character record has a class above 5, so 0x80080a9c's path for classes 6 and 7 (fallers through its
+    /// caller's s1 and s2) never runs;</item>
+    /// <item>OPTIONS' WEAPON STATUS and ARMOR STATUS (MENU8.PRG) are named and offered ON and OFF in retail's words,
+    /// both OFF in a new game, and choosing ON sets bits 0x40 and 0x80;</item>
+    /// <item>a trap tile an effect shows is marked 0x400 in the enemies' grid (0x800e68ec), which every walker's shunned
+    /// marks (4, 5, 5 or 7, table 0x80069C18) include.</item>
+    /// </list>
+    /// </summary>
+    private string CheckCombatRules()
+    {
+        var content = _view.Content;
+        for (int id = 0; id < 256; id++)
+            foreach (var effect in content.Field.Action(id).Effects)
+                if (effect.Reckoning == 13 && effect.Affinity < 2) return $"action {id} heals with affinity {effect.Affinity}";
+        int records = 0;
+        for (int zone = 0; zone < 256; zone++)
+        {
+            byte[] znd;
+            try { znd = content.Disc($"MAP/ZONE{zone:d3}.ZND"); }
+            catch (Exception) { continue; }
+            int units = BitConverter.ToInt32(znd, 8), templates = BitConverter.ToInt32(znd, units), first = units + 4 + templates * 8;
+            for (int t = 0; t < templates && first + (t + 1) * 0x464 <= znd.Length; t++, records++)
+                if (znd[first + t * 0x464 + 3] >> 5 > 5) return $"zone {zone}'s character {t} has class {znd[first + t * 0x464 + 3] >> 5}";
+        }
+        var initial = content.Disc("BATTLE/INITBTL.PRG");
+        if (initial[Wol.Games.Vagrant.Installation.MapConversion.AshleyRecord + 3] >> 5 > 5) return "Ashley's record has a class above 5";
+        GD.Print($"FIELD: {records} character records, every class 0 to 5; healing's affinities all 2 or more");
+        var strings = content.Data("options_menu")["strings"].AsGodotArray();
+        string Entry(int i) => SystemBox.Entry(strings, i);
+        if (Entry(4) != "WEAPON STATUS" || Entry(6) != "ARMOR STATUS" || Entry(30) != "ON" || Entry(32) != "OFF" || Entry(34) != "ON" || Entry(36) != "OFF")
+            return $"OPTIONS reads {Entry(4)} {Entry(30)}/{Entry(32)}, {Entry(6)} {Entry(34)}/{Entry(36)}";
+        if ((_view.Options & 0xC0) != 0) return $"a new game's options word is 0x{_view.Options:x}";
+        GD.Print($"FIELD: OPTIONS offers \"{Entry(4)}\" ({Entry(5).Replace("\n", " ")}) and \"{Entry(6)}\", {Entry(30)} or {Entry(32)}");
+        if (_view.Battle is { } battle)
+        {
+            battle.MarkTrap(31, 31);
+            if (!battle.Marked((31, 31), 0x400)) return "a shown trap's tile was not marked 0x400";
+            foreach (var c in battle.Combatants.Values)
+                if (c.Mind is { } mind && mind.Shuns != 0 && (mind.Shuns & 4) == 0) return $"{c.Name} does not shun a shown trap's tile ({mind.Shuns})";
+        }
+        return "";
+    }
+
+    /// <summary>
     /// Steps Ashley onto the room's first damage trap: it is announced by name under no header, and costs what the
     /// trap's reckoning gives for one of her limbs (<see cref="FieldBattle.TrapDamage"/>), 5 either way. Her hit points and
     /// statuses are put back after.
@@ -1562,7 +1660,8 @@ public partial class FieldContracts : Node
         GD.Print($"FIELD: workshop: {taken} {made}");
         return "";
     }
-    private int _battleFrame, _press, _wonFrame, _sphereClock = -1;
+    private int _battleFrame, _press, _wonFrame, _sphereClock = -1, _noticeAt;
+    private uint _options;
     private int _masterySpell = -1, _masteryAt;
     private bool _masteryDone;
 

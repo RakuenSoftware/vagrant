@@ -1533,33 +1533,31 @@ public sealed partial class FieldBattle
     /// A class value learnt (BATTLE.PRG 0x80080a9c): classes 0 to 5 rise with the next two round them falling.
     /// </summary>
     /// <remarks>
-    /// For classes 6 and 7 the switch sets no fallers, and 0x80080a9c reads its s1 and s2 as left by its caller: from
-    /// 0x80080f78 the weapon record's address and the action record's, from 0x80080c9c the chosen limb's offset (its
-    /// index times 0xdc, or none for the shield) and the piece's index. Its "fallers" are then bytes that far past the
-    /// record, outside it, so only the rise is kept.
+    /// For classes 6 and 7 the jump table (0x80068B10, six entries) is skipped and the fallers are the caller's s1 and
+    /// s2: from 0x80080f78 the blade's address (data+0x54) and the action record's, so the bytes at the wrapped sums
+    /// blade+blade+0x20 and blade+action+0x20 would fall. That path is never taken: the class passed is a fighter's
+    /// data+0x37 &amp; 7 (0x8008195c, 0x80081978), which only 0x80076a28 writes, from its character record's byte 3 bits
+    /// 5 to 7, and every character record on the disc (each ZND's templates and INITBTL.PRG's Ashley) has class 0 to
+    /// 5; a crate's record is cleared to 0 (0x800764b8). The contracts check this from the disc.
     /// </remarks>
     private void ClassDrift(Gear gear, int c, Action<int, bool>? told)
     {
-        if (c is < 0 or > 7) return;
-        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random, told);
+        if (c is < 0 or > 5) return;
+        gear.Drift(false, c, new[] { (c + 1) % 6, (c + 2) % 6 }, Random, told);
     }
 
-    /// <summary>
-    /// Whether Ashley is told of her weapon's and her armour's changes (option bits 0x40 and 0x80 of [0x80060020], set by
-    /// OPTIONS' "Weapon status" and "Armor status", MENU8 0x80103b50 and 0x80103b94). Retail's default for both is off
-    /// ("Turn the weapon status display off. This is the default setting."); the port has no such options, so they keep it.
-    /// </summary>
-    public bool ToldWeapon, ToldArmour;
 
     /// <summary>
     /// What tells of a change to one of Ashley's pieces (BATTLE.PRG 0x80096768, only for her own gear): a notice in the
     /// lower-left corner (<see cref="BattleHud.AddNotice"/>). <paramref name="piece"/> is retail's argument: 240 her
     /// weapon, 241 her shield, else the armoured limb's body part (its data's +0x39e), which picks the piece's sprite
-    /// (1 head, 2 and 3 the arms, 4 legs, 5 and 6 the body).
+    /// (1 head, 2 and 3 the arms, 4 legs, 5 and 6 the body). Each kind is told only while its OPTIONS setting is ON:
+    /// WEAPON STATUS for the weapon, ARMOR STATUS for the shield and armour (bits 0x40 and 0x80 of [0x80060020],
+    /// <see cref="FieldView.Options"/>).
     /// </summary>
     private Action<int, bool>? Told(Combatant owner, int piece)
     {
-        if (owner != Ashley || _hud == null || !(piece == 240 ? ToldWeapon : ToldArmour)) return null;
+        if (owner != Ashley || _hud == null || (_view.Options & (piece == 240 ? 0x40u : 0x80u)) == 0) return null;
         int sprite = piece switch { 240 => 0, 241 => 1, 1 => 4, 4 => 6, 6 => 5, 2 or 3 or 5 => piece, _ => piece };
         return (index, raised) =>
         {
@@ -1606,9 +1604,15 @@ public sealed partial class FieldBattle
     /// affinity is the effect's alone, its terms counted only when it is not physical; no 1 to 5, but a bunched 5 either
     /// way when live, and at least 0 after.
     /// </summary>
-    /// <remarks>With a physical affinity (index 0) retail skips the store at 0x80082ac0 and reads the weapon's term
-    /// from a stack slot left by whatever ran before; with none (index 255) it reads past the arrays. No action does
-    /// either (only Heal uses this, with light), and both are taken as 0.</remarks>
+    /// <remarks>
+    /// Retail takes the affinity index as the effect word's bits 29 to 31 less one (0x80082a54). For index 0 (affinity
+    /// 1) 0x80082aa4 skips the store at 0x80082ac0, so the weapon's term is the halfword left at sp+30 by an earlier
+    /// call; for affinity 0 the index is 255 and it reads +0x184+510. Neither is reached: 0x800829b8 is only reckoning
+    /// 13 (the table at 0x800E830C, entry at 0x800E8340; no direct call), and the only effects in SLUS_010.40's action
+    /// table (256 records at 0x8004B9DC, two effects each, every action id an AI, menu or trap names below 256) that
+    /// name it are Heal's (actions 65 and 96), affinity 6, light. The contracts check this from the disc. The branches
+    /// below for index 0 and 255 therefore never run, as in retail.
+    /// </remarks>
     private int Mending(Resolution r, ActionEffect effect, Outcome target, int index, bool live)
     {
         var a = r.Caster;

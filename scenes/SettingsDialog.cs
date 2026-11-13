@@ -9,7 +9,8 @@ namespace Wol.Games.Vagrant.Scenes;
 /// <summary>
 /// The settings window the title's Settings item and the field menu's Options open: the shared graphics panel, master
 /// volume and the shared controls panel for the pad's buttons. Graphics and volume are saved when it closes, controls
-/// as they change.
+/// as they change. Opened from the field it also holds retail's own OPTIONS settings the port keeps (MENU8.PRG): WEAPON
+/// STATUS and ARMOR STATUS, named, explained and chosen ON or OFF in retail's words.
 /// </summary>
 public sealed partial class SettingsDialog : AcceptDialog
 {
@@ -22,6 +23,15 @@ public sealed partial class SettingsDialog : AcceptDialog
     public HSlider Volume => _volume;
     private GraphicsSettings _graphics = null!;
     private TabContainer _tabs = null!;
+    /// <summary>Retail's OPTIONS settings, shown only when the window is opened from the field.</summary>
+    private VBoxContainer _game = null!;
+
+    /// <summary>
+    /// The OPTIONS settings shown: the bit each sets in the options word ([0x80060020]), the string of its name (its
+    /// help follows), and the string of its first choice, ON (its help, then OFF and OFF's help, follow). The choice
+    /// sets the bit for ON and clears it for OFF (MENU8.PRG 0x80103b50, 0x80103b94: bit = (2 - choice) &amp; 1).
+    /// </summary>
+    private static readonly (uint Bit, int Name, int Choices)[] GameOptions = { (0x40, 4, 30), (0x80, 6, 34) };
 
     public override void _Ready()
     {
@@ -71,6 +81,9 @@ public sealed partial class SettingsDialog : AcceptDialog
             Text = "Enhanced makes bright things bloom (torches, burning windows, spells), draws fire and magic brighter (brighter still on an HDR display) and lets them light the characters near them when characters are Enhanced. Original lights the fields as on the PlayStation.",
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
         });
+        _game = new VBoxContainer { Name = "Game", Visible = false };
+        _game.AddThemeConstantOverride("separation", 10);
+        options.AddChild(_game);
         options.AddChild(new Label { Text = "Master volume" });
         _volume = new HSlider { MinValue = 0, MaxValue = 100, Step = 1, Value = _audio.Volume * 100, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         _volume.ValueChanged += value => _audio.Volume = (float)value / 100f;
@@ -99,9 +112,15 @@ public sealed partial class SettingsDialog : AcceptDialog
         };
     }
 
-    /// <summary>Opens the window with the current values, the fullscreen choice focused.</summary>
-    public void Open()
+    /// <summary>
+    /// Opens the window with the current values, the fullscreen choice focused; with <paramref name="field"/>, retail's
+    /// OPTIONS settings too, on its options word.
+    /// </summary>
+    public void Open(Field.FieldView? field = null)
     {
+        foreach (var child in _game.GetChildren()) { _game.RemoveChild(child); child.QueueFree(); }
+        _game.Visible = field != null && field.Content.Has("options_menu");
+        if (_game.Visible) ShowOptions(field!);
         _volume.SetValueNoSignal(_audio.Volume * 100);
         _characters.Selected = CharacterQuality.Enhanced ? 1 : 0;
         _lighting.Selected = FieldLighting.Enhanced ? 1 : 0;
@@ -109,5 +128,34 @@ public sealed partial class SettingsDialog : AcceptDialog
         PopupCentered();
         _tabs.CurrentTab = 0;
         GetNode<Control>("Tabs/General/Options/Graphics/Fullscreen").GrabFocus();
+    }
+
+    /// <summary>
+    /// Retail's OPTIONS settings (MENU8.PRG): each its name and help, as the options list and its help line show them,
+    /// and its two choices, ON and OFF, the one in force chosen (0x801005e0 marks it), with the chosen one's help under
+    /// it as retail's help line gives it.
+    /// </summary>
+    private void ShowOptions(Field.FieldView field)
+    {
+        var strings = field.Content.Data("options_menu")["strings"].AsGodotArray();
+        foreach (var (bit, name, choices) in GameOptions)
+        {
+            _game.AddChild(new Label { Text = Field.SystemBox.Entry(strings, name) });
+            _game.AddChild(new Label { Text = Field.SystemBox.Entry(strings, name + 1), AutowrapMode = TextServer.AutowrapMode.WordSmart });
+            var choice = new OptionButton { Name = Field.SystemBox.Entry(strings, name).Replace(' ', '_') };
+            choice.AddItem(Field.SystemBox.Entry(strings, choices));
+            choice.AddItem(Field.SystemBox.Entry(strings, choices + 2));
+            var help = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+            void Chosen(long index)
+            {
+                field.Options = index == 0 ? field.Options | bit : field.Options & ~bit;
+                help.Text = Field.SystemBox.Entry(strings, choices + 1 + 2 * (int)index);
+            }
+            choice.Selected = (field.Options & bit) != 0 ? 0 : 1;
+            Chosen(choice.Selected);
+            choice.ItemSelected += Chosen;
+            _game.AddChild(choice);
+            _game.AddChild(help);
+        }
     }
 }

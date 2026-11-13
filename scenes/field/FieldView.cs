@@ -427,7 +427,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             },
             ["mastered"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(Mastered, a => (Variant)a))),
             ["weapon"] = EquippedWeapon ?? new GDictionary(), ["unarmed"] = Unarmed,
-            ["armour"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(EquippedArmour, a => (Variant)new GDictionary { ["limb"] = a.Key, ["record"] = a.Value }))), ["gains"] = new GArray(Array.ConvertAll(Gains, a => (Variant)a)), ["art_kills"] = new GArray(Array.ConvertAll(ArtKills, a => (Variant)a)), ["drawn"] = Battle.Drawn, ["hud"] = HudShown, ["yaw"] = Gameplay.Yaw, ["distance"] = Gameplay.TargetDistance,
+            ["armour"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(EquippedArmour, a => (Variant)new GDictionary { ["limb"] = a.Key, ["record"] = a.Value }))), ["gains"] = new GArray(Array.ConvertAll(Gains, a => (Variant)a)), ["art_kills"] = new GArray(Array.ConvertAll(ArtKills, a => (Variant)a)), ["drawn"] = Battle.Drawn, ["hud"] = HudShown, ["options"] = (long)Options, ["yaw"] = Gameplay.Yaw, ["distance"] = Gameplay.TargetDistance,
         };
         int generation = 0;
         for (int c = 1; c <= 2; c++)
@@ -581,6 +581,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         _playerMp = save["mp"].AsInt32();
         _playerDrawn = save["drawn"].AsBool();
         HudShown = save.GetValueOrDefault("hud", true).AsBool();
+        Options = (uint)save.GetValueOrDefault("options", 0).AsInt64();
         Gameplay.Yaw = save["yaw"].AsSingle();
         Gameplay.Distance = Gameplay.TargetDistance = save["distance"].AsSingle();
         var tile = save["tile"].AsGodotArray();
@@ -5239,6 +5240,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         if (_messageFrames > 0 && --_messageFrames == 0) SystemBox.Text = "";
     }
+
+    /// <summary>
+    /// The OPTIONS word ([0x80060020]) as far as the port keeps it: 0x40 WEAPON STATUS and 0x80 ARMOR STATUS (MENU8.PRG
+    /// 0x80102c0c and 0x80102dbc, ON setting the bit), which let the battle tell of Ashley's gear changes. Both are off in
+    /// a new game ("This is the default setting." is OFF's help), and a save keeps the word (MENU7.PRG 0x80106a58 copies
+    /// the 32 bytes at 0x80060020 into the save; loading restores them).
+    /// </summary>
+    public uint Options;
 
     /// <summary>
     /// BATTLE.PRG's resident clocks, which no room change resets (0 as the game starts): the battle clock ([0x800E8490],
