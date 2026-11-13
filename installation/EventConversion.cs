@@ -850,8 +850,13 @@ public sealed class EventConversion
                 // Writes the actor's tile (x, level, z) into three flags, which the script then tests.
                 Await(pc, "actor.tile_flags", new JsonObject { ["actor"] = Actor(pc + 1), ["flag"] = Word(pc + 3) });
                 return null;
+            case 0x21:
+                // Walks the actor to a tile's centre (BATTLE.PRG 0x800b75f4: x at +3, z at +5, each * 128 + 64), the same
+                // walk as 2a's (0x8007cff8) to that point.
+                Command("actor.path", new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = new JsonArray { Byte(pc + 3) * 128 + 64, Byte(pc + 5) * 128 + 64 } });
+                return null;
             case 0x2a:
-                // Walks the actor along a route to a map point (x, z); a wait on mask 1 waits for it to arrive.
+                // Walks the actor to a map point (x, z; BATTLE.PRG 0x800b7d10 by 0x8007cff8); a wait on mask 1 waits for it to arrive.
                 Command("actor.path", new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = new JsonArray { Short(pc + 3), Short(pc + 5) } });
                 return null;
             case 0x2d:
