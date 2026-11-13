@@ -1919,6 +1919,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 if (Actor(args) is not { } walker) return Error.Ok;
                 var point = args["position"].AsGodotArray();
+                // An enemy walks by its AI's scripted walk (BATTLE.PRG 0x8007cff8).
+                if (Battle?.ScriptedWalk(walker.Id, point[0].AsInt32(), point[1].AsInt32()) == true) return Error.Ok;
                 var goal = new Vector3(point[0].AsSingle(), 0, point[1].AsSingle());
                 goal.Y = FloorHeight(goal);
                 var route = Path(walker.Position, goal);
@@ -2104,6 +2106,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (targets.Count == 0 && type == "camera.anchor") return Field.SetCameraAnchor("");
         foreach (var actor in targets)
         {
+            // A wait on the route of an enemy walking by its AI lasts until its walk ends.
+            if (type == "actor.wait" && (args["activity"].AsInt32() & 32) != 0 && Battle?.Scripted(actor.Id) == true)
+            {
+                var walker = actor;
+                _waits.Add((id, () => Battle?.Scripted(walker.Id) != true));
+                continue;
+            }
             var own = args.Duplicate();
             own["actor"] = actor.Id;
             if (own.GetValueOrDefault("ground", false).AsBool())
@@ -3927,6 +3936,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // Events draw and sheathe weapons too (3f); damage numbers left by the fight run out during them.
         Battle?.ShowWeapons();
         if (!Controlled) Battle?.StepNumbers();
+        // Enemies an event sets walking walk by their AI (battle mode 3, BATTLE.PRG 0x800e5308).
+        if (!Controlled) Battle?.StepScripted();
         foreach (var actor in Actors.Values)
         {
             if (!actor.Tinted) Light(actor, actor.Parent != null ? actor.Parent.Light : FloorLight(actor));

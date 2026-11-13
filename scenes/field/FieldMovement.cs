@@ -1589,4 +1589,88 @@ public sealed partial class FieldBattle
         }
         return m.Settling != 0;
     }
+
+    /// <summary>
+    /// Sets an enemy walking to a map point for an event (BATTLE.PRG 0x800e527c, by event opcodes 21 and 2a through
+    /// 0x8007cff8): it lets its token and icons go, and its AI is held by a walk of its own (<see cref="StepScripted"/>);
+    /// false for one without an AI (it walks as the event's own route).
+    /// </summary>
+    public bool ScriptedWalk(string id, int x, int z)
+    {
+        if (!Combatants.TryGetValue(id, out var c) || c == Ashley || c.Mind is not { } m || c.Mover == null || c.Dead) return false;
+        if (_cells == null) Survey();
+        ReleaseToken(c);
+        Show(c, 0);
+        m.Script ??= m.Walker();
+        m.Script.ScriptPoint = (x, z);
+        m.Held = true;
+        return true;
+    }
+
+    /// <summary>Whether an actor still walks for an event (its record at +0x18c).</summary>
+    public bool Scripted(string id) => Combatants.TryGetValue(id, out var c) && c.Mind?.Script != null;
+
+    /// <summary>
+    /// The event's frame of the scripted walks (BATTLE.PRG 0x800e5308, battle mode 3): each held enemy walks (never
+    /// runs, facing no one, its marks waded) by its own record from where it stands: a walker by its waypoint for the
+    /// point until within 32 of it, a flyer or hopper for the point's tile until on it; then it stands and its walk
+    /// ends (0x800e5240).
+    /// </summary>
+    public void StepScripted()
+    {
+        foreach (var c in Combatants.Values)
+        {
+            if (c.Dead || c.Mind is not { Script: { } walk } own) continue;
+            c.Mind = walk;
+            try
+            {
+                walk.Pause = 0;
+                if (walk.LeapHold != 0) walk.LeapHold--;
+                if ((walk.Detour >> 5 & 0x7F) != 0) walk.Detour -= 1u << 5;
+                walk.Wades = true;
+                walk.Run = walk.CrossesZones = walk.Wary = false;
+                walk.FaceTarget = 16;
+                walk.Tile = TileOf(c);
+                walk.Zone = walk.Passage = Cell(walk.Tile) & 15;
+                Afresh(walk);
+                _issued = -1;
+                if (Settle(c) || c.Mover is { Busy: true } || c.HopState != 0)
+                {
+                    if (c.Mover is { Busy: true } leaping) leaping.Step(null, walk: true);
+                    continue;
+                }
+                var (gx, gz) = walk.ScriptPoint;
+                var p = c.Actor.Position;
+                bool done;
+                walk.Command = Body.Stand;
+                if (c.Gait == Gait.Walk)
+                {
+                    done = (gx - p.X) * (gx - p.X) + (gz - p.Z) * (gz - p.Z) < 1024;
+                    if (!done && walk.Riding != 0) Ride(c);
+                    else if (!done)
+                    {
+                        walk.Goal = (gx >> 7, gz >> 7);
+                        Head(c, new Vector3(gx, p.Y, gz));
+                    }
+                }
+                else
+                {
+                    done = walk.Goal == walk.Tile && walk.Goal == (gx >> 7, gz >> 7);
+                    if (!done)
+                    {
+                        walk.Goal = (gx >> 7, gz >> 7);
+                        Move(c, 0, 0);
+                    }
+                }
+                Perform(c);
+                if (done)
+                {
+                    if (_walking.Remove(c)) { c.Mover?.Halt(); Play(c, 1, 6); }
+                    own.Script = null;
+                    own.Held = false;
+                }
+            }
+            finally { c.Mind = own; }
+        }
+    }
 }
