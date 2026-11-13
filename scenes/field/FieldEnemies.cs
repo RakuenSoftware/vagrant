@@ -624,17 +624,20 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// Whether the line from one point (raised by <paramref name="hp"/>) to another (raised by <paramref name="hq"/>)
-    /// stays above the floor at each of its sixteen steps (BATTLE.PRG 0x800e44e8 and 0x800e4478,
-    /// <see cref="FieldView.SightFloor"/>).
+    /// stays above the floor at each of its sixteen steps (BATTLE.PRG 0x800e44e8 and 0x800e4478): x is taken unsigned,
+    /// and each step's tile is read from the enemies' floors grid (<see cref="Survey"/>), a filled pit as floor 0 and
+    /// any other tile as its floor with its crates. The two points stand in the room, so every step's tile is on the grid.
     /// </summary>
     private bool Clear(Vector3 p, int hp, Vector3 q, int hq)
     {
-        int px = (int)p.X, py = (int)p.Y - hp, pz = (int)p.Z;
-        int sx = ((int)q.X - px) >> 4, sy = ((int)q.Y - hq - py) >> 4, sz = ((int)q.Z - pz) >> 4;
+        int px = (int)p.X & 0xFFFF, py = (int)p.Y - hp, pz = (short)(int)p.Z;
+        int sx = (((int)q.X & 0xFFFF) - px) >> 4, sy = ((int)q.Y - hq - py) >> 4, sz = ((short)(int)q.Z - pz) >> 4;
         for (int i = 0; i < 16; i++)
         {
             px += sx; py += sy; pz += sz;
-            if (py >= _view.SightFloor(px, pz)) return false;
+            int v = _floors[((pz >> 7) * 32 + (px >> 7)) & 1023];
+            int floor = (v & 0x2000) != 0 ? 0 : ((v << 22 >> 16) - ((v & 0x1C00) >> 3)) << 17 >> 17;
+            if (py >= floor) return false;
         }
         return true;
     }
@@ -749,6 +752,7 @@ public sealed partial class FieldBattle
             }
             crate.Actor.Position = new Vector3(x * 128 + 64, bottom - 64 + 150, z * 128 + 64);
         }
+        CountCrates();
     }
 
     /// <summary>Whether a crate rests where it stands: not carried, breaking or falling (its object's +18 not Ashley and +26 at 0).</summary>
@@ -1019,8 +1023,8 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// The room's special spot nearest an enemy (BATTLE.PRG 0x800dd7cc): of the eight in use (bit 15), the one at the
-    /// least squared distance from its position to the tile's centre at its floor (the sight floor, which BATTLE.PRG
-    /// puts in place for this), the first of equals; with none in use the spot stays.
+    /// least squared distance from its position to the tile's centre at its floor (the enemies' floors grid, which
+    /// BATTLE.PRG puts in place for this, 0x800e42d4: a filled pit at its fill), the first of equals; with none in use the spot stays.
     /// </summary>
     private void NearestSpot(Combatant c)
     {
@@ -1030,7 +1034,7 @@ public sealed partial class FieldBattle
         {
             if ((spot & 0x8000) == 0) continue;
             int x = (spot & 31) * 128 + 64, z = (spot >> 5 & 31) * 128 + 64;
-            uint d = Distance(c.Actor.Position, 0, new Vector3(x, _view.SightFloor(x, z), z), 0);
+            uint d = Distance(c.Actor.Position, 0, new Vector3(x, FloorOf((x >> 7, z >> 7)), z), 0);
             if (d >= least) continue;
             least = d;
             m.Spot = (spot & 31, spot >> 5 & 31);
@@ -1282,9 +1286,9 @@ public sealed partial class FieldBattle
             {
                 if (!Ready(c, e)) goto case 1;
                 var (reach2, margin, flags) = Measure(c, e);
-                var spot = Centre(m.Spot, 0) with { Y = _view.SightFloor(m.Spot.X * 128 + 64, m.Spot.Z * 128 + 64) };
+                var spot = Centre(m.Spot, 0) with { Y = FloorOf(m.Spot) };
                 if ((flags & 2) != 0 && Root(Distance(spot, m.Height, t.Origin, t.Mind!.Height)) < Root(reach2) - margin) goto case 1;
-                var goal = Centre(m.Goal, 0) with { Y = _view.SightFloor(m.Goal.X * 128 + 64, m.Goal.Z * 128 + 64) };
+                var goal = Centre(m.Goal, 0) with { Y = FloorOf(m.Goal) };
                 if (Distance(c.Actor.Position, 0, goal, 0) <= 0xFFFF)
                 {
                     m.FaceTarget = t.Index;

@@ -89,10 +89,13 @@ public sealed partial class FieldBattle
     private const int Cruise = -128, Clearance = -256;
 
     /// <summary>
-    /// Reads the room for the enemies' movement as the battle starts (BATTLE.PRG 0x800e6f9c): each tile's attribute
-    /// word folded into the grid (its zone, bit 27 as 0x10, the pit bit 17 as 0x20, 28 as 0x40, 31 as 0x800, 30 as
-    /// 0x1000, 29 as 0x2000, a trap of kind 0 or 1 as 0x100 or 0x200, 0x8000 for none); each tile's floor in 64-unit
-    /// steps; pits given the floor beside them (0x800e6098); the walled steps, bounds and ceiling.
+    /// Reads the room for the enemies' movement as the room loads (BATTLE.PRG 0x800e6f9c, by 0x80089888): each tile's
+    /// attribute word folded into the grid (its zone, bit 27 as 0x10, the pit bit 17 as 0x20, 28 as 0x40, 31 as 0x800,
+    /// 30 as 0x1000, 29 as 0x2000, the first trap on the tile at level 0, of a type under 16 and kind 0 or 1, as 0x100
+    /// or 0x200, unless scenario variable 32 or 64 has cleared the traps, 0x8008d438); a tile off the room keeps the
+    /// value worked out for the tile before it with 0x8000 added (retail's register, never reset) and floor 0; each
+    /// tile's floor (<see cref="FieldView.TileFloor"/>) in 64-unit steps with its "no floor" flag as bit 9; then the
+    /// pits are filled (0x800e6098); then the walled steps, bounds and ceiling.
     /// </summary>
     private void Survey()
     {
@@ -100,54 +103,43 @@ public sealed partial class FieldBattle
         Array.Clear(_floors);
         (_width, _depth) = _view.Tiles;
         var traps = _view.Document.GetValueOrDefault("traps", new Godot.Collections.Array()).AsGodotArray();
+        int cell = 0;
         for (int i = 0; i < 1024; i++)
         {
             int x = i & 31, z = i >> 5;
-            if (x >= _width || z >= _depth) { _cells[i] = 0x8000; continue; }
+            if ((uint)x >= (uint)_width || (uint)z >= (uint)_depth) { cell |= 0x8000; _cells[i] = (ushort)cell; continue; }
             long t = _view.TileAttributes(x, z);
-            int cell = (int)(t >> 23 & 15) | (int)(t >> 27 & 1) << 4 | (int)(t >> 17 & 1) << 5 | (int)(t >> 28 & 1) << 6
+            cell = (int)(t >> 23 & 15) | (int)(t >> 27 & 1) << 4 | (int)(t >> 17 & 1) << 5 | (int)(t >> 28 & 1) << 6
                 | (int)(t >> 31 & 1) << 11 | (int)(t >> 30 & 1) << 12 | (int)(t >> 29 & 1) << 13;
-            foreach (var entry in traps)
-            {
-                var trap = entry.AsGodotDictionary();
-                var at = trap["tile"].AsGodotArray();
-                if (at[0].AsInt32() != x || at[1].AsInt32() != z || trap["level"].AsInt32() != 0) continue;
-                int kind = trap["value"].AsInt32();
-                if (trap["type"].AsInt32() < 16 && kind is >= 0 and < 2) cell |= 1 << (8 + kind);
-                break;
-            }
+            _floors[i] = (ushort)(_view.TileFloor(x, z) >> 6 & 0x3FF);
+            if (!_view.TrapsCleared)
+                foreach (var entry in traps)
+                {
+                    var trap = entry.AsGodotDictionary();
+                    var at = trap["tile"].AsGodotArray();
+                    if (at[0].AsInt32() != x || at[1].AsInt32() != z || trap["level"].AsInt32() != 0) continue;
+                    int type = trap["type"].AsInt32() & 0xFFFF, kind = trap["value"].AsInt32() & 0xFFFF;
+                    if (type < 16 && kind < 2) cell |= 1 << (8 + kind);
+                    break;
+                }
             _cells[i] = (ushort)cell;
-            // A tile with nothing to stand on keeps the collision map's mark of none.
-            _floors[i] = (ushort)((_view.SightFloor(x * 128, z * 128) >> 6 & 0x1FF) | (_view.Blocked(x, z) ? 0x200 : 0));
         }
-        // A pit takes the floor of the first cardinal neighbour that is neither a pit nor marked 0x10 or 0x40, and gives
-        // it to every pit it adjoins.
+        // 0x800e6098: z rows outer, x inner; a pit not yet filled takes the floor of the first of its cardinal
+        // neighbours (0, 2, 4, 6) on the grid not marked 0x10, 0x20 or 0x40: that tile's centre sample in 64-unit steps,
+        // none (and no more looking) where it is below 0; and gives it to every pit it joins (0x800e5ec0).
         for (int z = 0; z < 32; z++)
             for (int x = 0; x < 32; x++)
             {
                 if ((_cells[z * 32 + x] & 0x20) == 0 || (_floors[z * 32 + x] & 0x2000) != 0) continue;
                 int level = -1;
-                for (int d = 0; d < 8 && level < 0; d += 2)
+                for (int d = 0; d < 8; d += 2)
                 {
                     int nx = x + Directions[d].X, nz = z + Directions[d].Z;
                     if ((uint)nx >= 32 || (uint)nz >= 32 || (_cells[nz * 32 + nx] & 0x70) != 0) continue;
-                    var centre = Centre((nx, nz), 0);
-                    level = _view.Solid(centre) ? -1 : (int)_view.FloorHeight(centre) >> 6 & 0x1FF;
+                    level = _view.Sample(nx * 128 | 64, nz * 128 | 64) >> 6;
                     break;
                 }
-                if (level < 0) continue;
-                var pits = new Stack<(int X, int Z)>();
-                pits.Push((x, z));
-                while (pits.Count > 0)
-                {
-                    var (px, pz) = pits.Pop();
-                    _floors[pz * 32 + px] = (ushort)(_floors[pz * 32 + px] & 0xFC00 | level | 0x2000);
-                    for (int d = 0; d < 8; d += 2)
-                    {
-                        int nx = px + Directions[d].X, nz = pz + Directions[d].Z;
-                        if ((uint)nx < 32 && (uint)nz < 32 && (_cells[nz * 32 + nx] & 0x20) != 0 && (_floors[nz * 32 + nx] & 0x2000) == 0) pits.Push((nx, nz));
-                    }
-                }
+                if (level >= 0) Fill(x, z, level);
             }
         var map = _view.Document.GetValueOrDefault("enemy_map", new Godot.Collections.Dictionary()).AsGodotDictionary();
         var bounds = map.GetValueOrDefault("bounds", new Godot.Collections.Array()).AsGodotArray();
@@ -161,6 +153,30 @@ public sealed partial class FieldBattle
         }
         _ceiling = -map.GetValueOrDefault("ceiling", 0).AsInt32() * 64;
         _claimed = 0;
+    }
+
+    /// <summary>Fills a pit and the pits it joins with a floor (BATTLE.PRG 0x800e5ec0, depth first by the cardinals 0, 2, 4, 6).</summary>
+    private void Fill(int x, int z, int level)
+    {
+        _floors[z * 32 + x] = (ushort)(_floors[z * 32 + x] & 0xFC00 | level & 0x3FF | 0x2000);
+        for (int d = 0; d < 8; d += 2)
+        {
+            int nx = x + Directions[d].X, nz = z + Directions[d].Z;
+            if ((uint)nx < 32 && (uint)nz < 32 && (_cells[nz * 32 + nx] & 0x20) != 0 && (_floors[nz * 32 + nx] & 0x2000) == 0) Fill(nx, nz, level);
+        }
+    }
+
+    /// <summary>
+    /// The crates' count on each tile (bits 10 to 12 of the floors, BATTLE.PRG 0x800e6898 and 0x800e68a0): a crate
+    /// adds one to its tile as it comes to rest there and takes it away as it is lifted, pushed, breaks or goes, so
+    /// the count is the room's resting crates on the tile, and each raises the tile's floor by 128.
+    /// </summary>
+    private void CountCrates()
+    {
+        if (_cells == null) return;
+        for (int i = 0; i < 1024; i++) _floors[i] &= 0xE3FF;
+        foreach (var (_, _, x, z, _, resting) in _view.CrateObjects)
+            if (resting && (uint)x < 32 && (uint)z < 32) _floors[z * 32 + x] = (ushort)(_floors[z * 32 + x] + 0x400);
     }
 
     /// <summary>A tile's attribute in the grid (0x1f8003c0), 0x8000 off it.</summary>
@@ -199,7 +215,6 @@ public sealed partial class FieldBattle
     /// <summary>Starts the frame's tests afresh for an actor (the scratch word cleared, 0x800db080).</summary>
     private void Afresh(Mind m)
     {
-        if (_cells == null) Survey();
         _testing = m;
         _tested = _free = _looked = 0;
     }
@@ -212,7 +227,6 @@ public sealed partial class FieldBattle
     private int TileFree(Combatant c, (int X, int Z) t)
     {
         var m = c.Mind!;
-        if (_cells == null) Survey();
         if (t == m.Memory || (uint)t.X >= (uint)_width || (uint)t.Z >= (uint)_depth || (Cell(t) & (m.Shuns << 8 | 0x80B0)) != 0) return 0;
         int cx = t.X * 128 + 64, cz = t.Z * 128 + 64, cy = FloorOf(t);
         foreach (var k in Combatants.Values)
@@ -392,7 +406,8 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// A leap across a drop ahead (BATTLE.PRG 0x800e49d8), in a room with walls: where the tile ahead is lower than its
-    /// own, the first tile beyond within its reach (one at least; retail's cap of two is lost) higher than that one, if
+    /// own (its 15-bit floor, as the comparisons take it), the first tile beyond within its reach less one (one at least:
+    /// retail tests its constant 2 in place of the cap, so no cap applies) higher than that one, if
     /// it may step there and stand there.
     /// </summary>
     private (int X, int Z)? Across(Combatant c, (int X, int Z) ahead, int d, int n)
@@ -400,7 +415,9 @@ public sealed partial class FieldBattle
         var m = c.Mind!;
         if (_walls == null) return null;
         int low = RawFloor(ahead);
-        if (low < 0 || !(FloorOf(m.Tile) < low) || n == 0) return null;
+        if (low < 0) return null;
+        low = low << 17 >> 17;
+        if (!(FloorOf(m.Tile) < low) || n == 0) return null;
         int last = Math.Max(n - 1, 1);
         for (int k = 1; k <= last; k++)
         {
@@ -893,8 +910,10 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// The speed and command a flyer moves by (BATTLE.PRG 0x800e4764): to run, its first profile that runs (0x20) then
-    /// walks (0x10), each A before B; to walk, one that walks then runs. Retail loops for ever when a runner has none;
-    /// here it has none, and faces.
+    /// walks (0x10), each A before B; to walk, one that walks then runs. Asked to run, retail goes round run, walk, run
+    /// until one is found, which would never end were neither flag set; but only flyers come here, and a flyer is one
+    /// whose two profile flag bytes (fixed as its AI record is made, 0x800e6350) hold 0x30 between them (0x800e6828),
+    /// so one of the four always answers and the null is never returned.
     /// </summary>
     private static (int Speed, int Code)? Pace(Mind m)
     {
@@ -1308,7 +1327,6 @@ public sealed partial class FieldBattle
     {
         var actor = enemy.Actor;
         var m = enemy.Mind!;
-        if (_cells == null) Survey();
         if (enemy.Mover is { Busy: true } falling)
         {
             falling.Step(null, walk: true);
@@ -1610,7 +1628,6 @@ public sealed partial class FieldBattle
     public bool ScriptedWalk(string id, int x, int z)
     {
         if (!Combatants.TryGetValue(id, out var c) || c == Ashley || c.Mind is not { } m || c.Mover == null || c.Dead) return false;
-        if (_cells == null) Survey();
         ReleaseToken(c);
         Show(c, 0);
         m.Script ??= m.Walker();

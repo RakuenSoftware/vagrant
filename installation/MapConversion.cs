@@ -1425,7 +1425,8 @@ public sealed class MapConversion
     /// per tile: the top five bits are a height base and the low eleven bits index a 16-byte block that follows the
     /// layers, one signed byte per 32-unit sub-cell of the tile's 4x4. A sub-cell's height is (base + byte) &amp; 0x7F, its
     /// world height (map base - height * 2) * 8, and the byte's top bit is a flag. Returns the engine walkmesh, walkable
-    /// where the floor lies below the ceiling, and the floor heights by sub-cell for placing actors.
+    /// where the floor lies below the ceiling, the floor heights by sub-cell for placing actors, and by sub-cell whether
+    /// its floor byte has the flag (bit 15 of what BATTLE.PRG's 0x8008dc7c returns for it: "no floor" to the enemies).
     /// </summary>
     private (JsonArray Walkmeshes, JsonObject Floor) Collision(int room)
     {
@@ -1444,11 +1445,13 @@ public sealed class MapConversion
         var vertices = new JsonArray();
         var triangles = new JsonArray();
         var heights = new JsonArray();
+        var marks = new JsonArray();
         for (int z = 0; z < depth * 4; z++)
             for (int x = 0; x < width * 4; x++)
             {
-                int floorY = Height(0, x, z, out _), ceilingY = Height(1, x, z, out _);
+                int floorY = Height(0, x, z, out bool marked), ceilingY = Height(1, x, z, out _);
                 heights.Add(floorY);
+                marks.Add(marked ? 1 : 0);
                 // Retail y is down: a floor is walkable when it lies below its ceiling.
                 if (floorY <= ceilingY) continue;
                 int first = vertices.Count;
@@ -1458,7 +1461,7 @@ public sealed class MapConversion
                 triangles.Add(new JsonObject { ["vertices"] = new JsonArray { first, first + 3, first + 2 } });
             }
         var walkmeshes = new JsonArray { new JsonObject { ["vertices"] = vertices, ["triangles"] = triangles } };
-        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights });
+        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights, ["marks"] = marks });
     }
 
     /// <summary>

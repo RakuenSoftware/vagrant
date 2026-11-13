@@ -3646,41 +3646,48 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var words = Document.GetValueOrDefault("tile_attributes", new GArray()).AsGodotArray();
         _attributes = new long[words.Count];
         for (int i = 0; i < words.Count; i++) _attributes[i] = words[i].AsInt64();
-        _sightFloors = new int[32 * 32];
-        for (int z = 0; z < 32; z++)
-            for (int x = 0; x < 32; x++) _sightFloors[z * 32 + x] = TileFloor(x, z);
+        var marks = floor.Count == 0 ? new GArray() : floor.GetValueOrDefault("marks", new GArray()).AsGodotArray();
+        _marks = new bool[marks.Count];
+        for (int i = 0; i < marks.Count; i++) _marks[i] = marks[i].AsInt32() != 0;
     }
 
-    /// <summary>The floor of each tile as the enemies' sight takes it, 32 tiles a row (<see cref="SightFloor"/>).</summary>
-    private int[] _sightFloors = new int[32 * 32];
+    /// <summary>By 32-unit sub-cell, whether its floor byte has its flag (bit 7 of the collision block byte).</summary>
+    private bool[] _marks = Array.Empty<bool>();
 
     /// <summary>
-    /// A tile's floor as BATTLE.PRG's battle start reckons it for sight (0x800e71dc, kept in 64-unit steps in the grid
-    /// at 0x800f58d0 by 0x800e6f9c): the lowest of its centre and its sixteen 32-unit sub-cells, or its centre alone when
-    /// some sub-cell has no floor and no two-by-two block of them is whole; 0 for a tile outside the room.
+    /// A sub-cell's floor as BATTLE.PRG's enemies read it (0x8008dc7c, at a map position): the height (y down) kept to
+    /// 15 bits, with bit 15 the floor byte's flag, which reads as none; -32768 off the collision map.
     /// </summary>
-    private int TileFloor(int x, int z)
+    public short Sample(int x, int z)
     {
-        if (x * 4 >= _columns || z * 4 >= _rows) return 0;
-        float centre = _heights[(z * 4 + 2) * _columns + x * 4 + 2], lowest = centre;
+        if (_heights.Length == 0 || (uint)(x >> 7) >= (uint)(_columns / 4) || (uint)(z >> 7) >= (uint)(_rows / 4)) return -32768;
+        int i = (z >> 5) * _columns + (x >> 5);
+        return (short)((int)_heights[i] & 0x7FFF | (i < _marks.Length && _marks[i] ? 0x8000 : 0));
+    }
+
+    /// <summary>
+    /// A tile's floor as the enemies' map takes it (BATTLE.PRG 0x800e71dc, in <see cref="Sample"/>'s form): of its centre and the
+    /// sixteen 32-unit points at its sub-cells' corners, the lowest by their 15-bit heights (those marked "no floor"
+    /// as well), which keeps that sample's flag; but where any point reads none and no two-by-two block of them (all
+    /// but the block of points (2, 2) to (3, 3)) is whole, the point (2, 2) alone.
+    /// </summary>
+    public short TileFloor(int x, int z)
+    {
+        int bx = x * 128, bz = z * 128;
+        short best = Sample(bx + 64, bz + 64), centre = 0;
         int missing = 0;
         for (int i = 0; i < 16; i++)
         {
-            var at = new Vector3(x * 128 + (i >> 2) * 32 + 16, 0, z * 128 + (i & 3) * 32 + 16);
-            if (Solid(at)) { missing |= 1 << i; continue; }
-            lowest = Math.Max(lowest, _heights[(z * 4 + (i >> 2)) * _columns + x * 4 + (i & 3)]);
+            short v = Sample(bx + (i >> 2) * 32, bz + (i & 3) * 32);
+            if (i == 10) centre = v;
+            if (v < 0) missing |= 1 << i;
+            if (best << 17 >> 17 < v << 17 >> 17) best = v;
         }
-        bool whole = missing == 0;
-        foreach (int shift in new[] { 0, 1, 2, 4, 5, 6, 8, 9 }) whole |= (missing & 0x33 << shift) == 0;
-        float floor = whole ? lowest : centre;
-        return ((int)floor >> 6) * 64;
+        if (missing == 0) return best;
+        int whole = ~missing;
+        foreach (int k in new[] { 0, 1, 2, 4, 5, 6, 8, 9 }) if ((whole & 0x33 << k) == 0x33 << k) return best;
+        return centre;
     }
-
-    /// <summary>
-    /// The floor height the enemies' sight is tested against at a map position (BATTLE.PRG 0x800e4478): its tile's
-    /// <see cref="TileFloor"/>, 32 tiles a row as the grid has them.
-    /// </summary>
-    public int SightFloor(int x, int z) => _sightFloors[((z >> 7) & 31) * 32 + ((x >> 7) & 31)];
 
     /// <summary>Whether whoever stands on a tile is perceived wherever it is (its attribute bit 29, the grid's 0x2000 at 0x800f58b8).</summary>
     public bool Perceived(int x, int z) => (TileAttributes(x, z) >> 29 & 1) != 0;

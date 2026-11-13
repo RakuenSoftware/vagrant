@@ -474,6 +474,8 @@ public sealed partial class FieldBattle
         _status.AddThemeConstantOverride("outline_size", 4);
         hud.AddChild(_status);
         if (_hud != null) _status.Position = new Vector2(16, 150);
+        // The enemies' map of the room is made as the room loads (BATTLE.PRG 0x80089888 calls 0x800e6f9c).
+        Survey();
     }
 
     /// <summary>
