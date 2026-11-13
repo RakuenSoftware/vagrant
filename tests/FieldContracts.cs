@@ -52,6 +52,11 @@ public partial class FieldContracts : Node
     /// and fails without that in 20000 frames.
     /// </summary>
     private bool _swoop;
+    /// <summary>
+    /// With <c>--movement</c> (a room with a walking enemy, e.g. <c>--room=13,1</c>), once Ashley is the player's the
+    /// enemies' body motion is checked against retail's numbers (<see cref="CheckMovement"/>).
+    /// </summary>
+    private bool _movement;
     private string _swoopTrail = "0";
     private int _swoopAt = -1;
     /// <summary>
@@ -135,6 +140,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
             if (argument == "--swoop") _swoop = true;
+            if (argument == "--movement") _movement = true;
             if (argument == "--reveal-traps") _revealTraps = true;
             if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
@@ -631,6 +637,7 @@ public partial class FieldContracts : Node
             if (_frame - _revealedAt >= 120) Finish(_view.RevealedTraps > 0 ? "" : "no trap was revealed");
             return;
         }
+        if (_movement && _view.Controlled && _view.Battle is { Ashley: not null } bodies) { Finish(CheckMovement(bodies)); return; }
         if (_fight && _view.Controlled && _view.Battle is { Ashley: { } brawler } brawl)
         {
             if (_view.Abilities.Count == 0) { _view.Abilities.Add(22); brawl.Assign(_view.Abilities, _view.ChainButtons, _view.DefenseButtons); }
@@ -1891,6 +1898,138 @@ public partial class FieldContracts : Node
         var waypoint = route.Count > 0 ? route[0] : nearest.Actor.Position;
         float heading = ashley.Actor.FacingToward(waypoint), angle = (heading - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
+    }
+
+    /// <summary>
+    /// The enemies' body motion against retail's numbers, run on the room's first walking enemy set on a tile's centre
+    /// at its floor: a rising (BATTLE.PRG 0x800a2cd4 state 4: 128 up at 8 frames a 128, so 8 frames of 16, aloft, 7
+    /// then 37 queued) and a landing (state 1: 8 frames of 16 down, 9 then 10, grounded); a level jump to the next tile
+    /// (0x800a208c: crouching 6 frames, then 11 in the air at 11 across, landing 121 on, 7 short of the centre, on the
+    /// floor, 0x800ac690); a turn head first (0x800df720: for a body under 128 wide, 128 a frame); and Ashley walking for
+    /// an event by her AI's walk record (opcode 2a, 0x800e5308: 9 a frame, her walk 13, standing by 6 at the point).
+    /// </summary>
+    private string CheckMovement(FieldBattle battle)
+    {
+        var enemy = battle.Combatants.Values.FirstOrDefault(c => c != battle.Ashley && c.Mind != null && c.Mover != null && !c.Dead && c.Gait == FieldBattle.Gait.Walk);
+        if (enemy == null) return "the room has no walking enemy";
+        var m = enemy.Mind!;
+        var actor = enemy.Actor;
+        var home = actor.Position;
+        // A flat tile (its floors grid floor that of its centre) with a level neighbour across to jump to.
+        (int X, int Z) tile = default, to = default;
+        bool found = false;
+        for (int z = 1; z < 31 && !found; z++)
+            for (int x = 1; x < 31 && !found; x++)
+            {
+                int centre = battle.JumpFloor(x * 128 + 64, z * 128 + 64);
+                if (_view.FloorAt(new Vector3(x * 128 + 64, 0, z * 128 + 64)) == null || battle.FloorOf((x, z)) != centre) continue;
+                foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+                    if (_view.FloorAt(new Vector3((x + dx) * 128 + 64, 0, (z + dz) * 128 + 64)) != null && battle.JumpFloor((x + dx) * 128 + 64, (z + dz) * 128 + 64) == centre && battle.FloorOf((x + dx, z + dz)) == centre)
+                    { (tile, to, found) = ((x, z), (x + dx, z + dz), true); break; }
+            }
+        if (!found) return "the room has no flat tile with a level neighbour";
+        int floor = battle.FloorOf(tile);
+        void Place((int X, int Z) t, int y) { actor.Position = new Vector3(t.X * 128 + 64, y, t.Z * 128 + 64); m.Tile = t; }
+        void Frame() => battle.Embody(enemy);
+        // An animation is checked only where the enemy's sets have it (a walker has no flyer's).
+        bool Shows(int number) => !enemy.Actor.HasClip($"{enemy.Set}_{number}") && !enemy.Actor.HasClip($"base_{number}") || FieldBattle.Pose(enemy) == number;
+        // Rising.
+        Place(tile, floor);
+        m.Airborne = false;
+        battle.Issue(enemy, 12);
+        battle.Post(enemy);
+        Frame();
+        if (!m.Airborne || !Shows(7)) return $"rising did not start aloft playing 7 (aloft {m.Airborne}, playing {FieldBattle.Pose(enemy)})";
+        var steps = new List<int>();
+        for (int i = 0; i < 12 && (m.Settling != 0); i++) { float before = actor.Position.Y; Frame(); steps.Add((int)MathF.Round(actor.Position.Y - before)); }
+        if (steps.Count != 8 || steps.Any(d => d != -16)) return $"rising took the steps {string.Join(",", steps)}, not 8 of -16";
+        if ((int)MathF.Round(actor.Position.Y) != floor - 128) return $"rising ended at {actor.Position.Y}, not {floor - 128}";
+        // Landing.
+        Frame();
+        m.LeapTile = tile;
+        battle.Issue(enemy, 11);
+        battle.Post(enemy);
+        Frame();
+        if (!Shows(9)) return $"landing did not start with 9 (playing {FieldBattle.Pose(enemy)})";
+        steps.Clear();
+        for (int i = 0; i < 12 && m.Settling == 2; i++) { float before = actor.Position.Y; Frame(); steps.Add((int)MathF.Round(actor.Position.Y - before)); }
+        if (steps.Count != 8 || steps.Any(d => d != 16)) return $"landing took the steps {string.Join(",", steps)}, not 8 of 16";
+        if (m.Airborne || !Shows(10)) return $"landing did not end grounded playing 10 (aloft {m.Airborne}, playing {FieldBattle.Pose(enemy)})";
+        for (int i = 0; i < 120 && m.Settling != 0; i++) Frame();
+        // A level jump to the next tile across.
+        int ground = battle.JumpFloor(tile.X * 128 + 64, tile.Z * 128 + 64);
+        Place(tile, ground);
+        m.Run = false;
+        m.SpeedA = m.SpeedB = 9;
+        m.FlagsA = 2;
+        m.FlagsB = 0;
+        m.LeapTile = to;
+        battle.Issue(enemy, 14);
+        battle.Post(enemy);
+        var start = actor.Position;
+        int crouch = 0, air = 0;
+        Frame();
+        while (m.Jump == 2 && crouch < 20) { crouch++; Frame(); }
+        while (m.Jump == 3 && air < 40) { air++; Frame(); }
+        var landed = actor.Position;
+        float across = MathF.Round(Math.Abs(landed.X - start.X) + Math.Abs(landed.Z - start.Z));
+        if (crouch != 5 || air != 11) return $"the jump crouched {crouch + 1} frames and flew {air}, not 6 and 11";
+        if (across != 121 || (int)MathF.Round(landed.Y) != ground) return $"the jump landed {across} across at {landed.Y}, not 121 across on {ground}";
+        for (int i = 0; i < 40 && m.Jump != 0; i++) Frame();
+        Frame();
+        // A turn head first by a body under 128 wide: its body 128 a frame once its twist is spent.
+        Place(to, ground);
+        actor.Facing = 0;
+        m.Twist = 0;
+        m.TurnFrames = 0;
+        var yaws = new List<int>();
+        for (int i = 0; i < 40; i++)
+        {
+            m.TurnTo = 2048;
+            m.TurnRate = 128;
+            m.BodyTurn = false;
+            m.Command = FieldBattle.Body.Turn;
+            battle.Post(enemy);
+            Frame();
+            yaws.Add((int)MathF.Round(actor.Facing) & 0xFFF);
+            if (((int)MathF.Round(actor.Facing) + m.Twist & 0xFFF) == 2048 && m.Twist == 0) break;
+        }
+        for (int i = 1; i < yaws.Count; i++)
+        {
+            int step = Math.Abs(((yaws[i] - yaws[i - 1] + 2048) & 0xFFF) - 2048);
+            if (enemy.Girth < 128 && step != 0 && step != 128 && i < yaws.Count - 1) return $"the body turned {step} in a frame, not 128 ({string.Join(",", yaws)})";
+        }
+        if (((int)MathF.Round(actor.Facing) + m.Twist & 0xFFF) != 2048) return $"the turn ended facing {(int)MathF.Round(actor.Facing) + m.Twist & 0xFFF}, not 2048";
+        // Ashley's walk for an event (opcode 2a): by her AI's walk record, 9 a frame, standing (6) at the point.
+        actor.Position = home;
+        var ashley = battle.Ashley!;
+        var from = FieldBattle.TileOf(ashley);
+        (int X, int Z)? goal = null;
+        foreach (var (dx, dz) in new[] { (2, 0), (-2, 0), (0, 2), (0, -2) })
+        {
+            var g = (from.X + dx, from.Z + dz);
+            var half = (from.X + dx / 2, from.Z + dz / 2);
+            if (_view.FloorAt(new Vector3(g.Item1 * 128 + 64, 0, g.Item2 * 128 + 64)) is { } a && _view.FloorAt(new Vector3(half.Item1 * 128 + 64, 0, half.Item2 * 128 + 64)) is { } b
+                && Math.Abs(a - ashley.Actor.Position.Y) < 1 && Math.Abs(b - ashley.Actor.Position.Y) < 1
+                && !battle.Walled(from, FieldBattle.Toward(dx / 2, dz / 2)) && !battle.Walled(half, FieldBattle.Toward(dx / 2, dz / 2))) { goal = g; break; }
+        }
+        if (goal is not { } aim) return "Ashley has no level ground two tiles away to walk to";
+        foreach (var other in battle.Combatants.Values) if (other != ashley && other.Mind != null) other.Mind.Held = true;
+        ashley.Actor.Position = new Vector3(from.X * 128 + 64, ashley.Actor.Position.Y, from.Z * 128 + 64);
+        if (!battle.ScriptedWalk(ashley.Actor.Id, aim.X * 128 + 64, aim.Z * 128 + 64)) return "Ashley did not take an event's walk by her AI";
+        var path = new List<float>();
+        for (int i = 0; i < 120 && ashley.Mind!.Script != null; i++)
+        {
+            var before = ashley.Actor.Position;
+            battle.StepScripted();
+            path.Add(new Vector2(ashley.Actor.Position.X - before.X, ashley.Actor.Position.Z - before.Z).Length());
+        }
+        if (ashley.Mind!.Script != null) return $"Ashley's event walk did not end (from {from} to {aim}, at {ashley.Actor.Position}, steps {string.Join(",", path.Select(d => d.ToString("0.#")))}, posted {ashley.Mind.Script.Command} {ashley.Mind.Script.Code})";
+        battle.StepScripted();
+        if (!path.Any(d => Math.Abs(d - 9) < 0.01f)) return $"Ashley's event walk did not go 9 a frame ({string.Join(",", path.Select(d => d.ToString("0.#")))})";
+        if (FieldBattle.Pose(ashley) != 6) return $"Ashley did not stand at the point by 6 (playing {FieldBattle.Pose(ashley)})";
+        GD.Print($"FIELD: the movement matched retail (rising and landing 8 frames of 16, the jump 6 and 11 frames landing 121 across, the turn {yaws.Count} frames, Ashley's walk {path.Count} frames)");
+        return "";
     }
 
     private void Capture(string name) => Capture(this, _capture, name);

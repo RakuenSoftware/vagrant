@@ -508,7 +508,7 @@ public sealed partial class FieldBattle
             // of the profile with its flag (a hop reaching 128 units a point of it, 0x800e638c).
             var profiles = new List<(int Flags, int Speed)>();
             foreach (var profile in stats.GetValueOrDefault("moves", new Godot.Collections.Array()).AsGodotArray())
-                profiles.Add((profile.AsGodotArray()[0].AsInt32(), profile.AsGodotArray()[1].AsInt32()));
+                profiles.Add((profile.AsGodotArray()[0].AsInt32(), profile.AsGodotArray()[1].AsInt32() * 9 / 10));
             int flags = 0;
             foreach (var (f, _) in profiles) flags |= f;
             combatant.Gait = (flags & 0x30) != 0 ? Gait.Fly : (flags & 0x08) != 0 ? Gait.Hop : Gait.Walk;
@@ -519,7 +519,7 @@ public sealed partial class FieldBattle
                 foreach (var (f, speed) in profiles) if ((f & mask) != 0) { combatant.Speed = combatant.Gait == Gait.Hop ? speed * 128 : speed; combatant.Runs = mask == 0x84; break; }
                 if (combatant.Speed > 0) break;
             }
-            combatant.Mover = new FieldPlayer(actor, _view.FloorAt, _view.Stairs) { Crowded = Crowded, Climbs = false, Animates = false, WalkSpeed = combatant.Gait == Gait.Walk ? combatant.Speed : 0 };
+            combatant.Mover = new FieldPlayer(actor, _view.FloorAt, _view.Stairs) { Crowded = Crowded, Climbs = false, Animates = false, Turns = false, WalkSpeed = combatant.Gait == Gait.Walk ? combatant.Speed : 0 };
             if (_view.FloorAt(actor.Position) is { } under) combatant.Altitude = under - actor.Position.Y;
         }
         combatant.Centre = _view.Content.Character(actor.Character).GetValueOrDefault("centre", -200).AsInt32() * Installation.CharacterConversion.ModelScale;
@@ -560,12 +560,17 @@ public sealed partial class FieldBattle
             combatant.Limbs.Add(limb);
             for (int k = 0; k < 4; k++) limb.Actions[k] = record["actions"].AsGodotArray()[k].AsInt32();
         }
-        // Its side (0x80076d50): Ashley 1, the second actor 2, else by its room record's stance (0 2, 2 4 and drawn,
-        // 3 8, 1 none).
-        combatant.Side = actor.Id == "slot:0" ? 1 : actor.Id == "slot:1" ? 2 : stance switch { 0 => 2, 2 => 4, 3 => 8, _ => 0 };
+        // Its side (0x80076d50): Ashley 1, the second actor 2, else by its room record's stance byte (+0x23), which the
+        // room's setup turns into flags (0x80089444: 0 and 3 to 6, 1 to 0, 2 to 1) and those into a side (flags & 3: 0
+        // 2, 1 4, else 8).
+        combatant.Side = actor.Id == "slot:0" ? 1 : actor.Id == "slot:1" ? 2 : stance switch { 1 => 2, 2 => 4, _ => 8 };
+        // Its actor index is its slot (the room's setup or the event names it; retail allots no other).
+        combatant.Index = actor.Id.StartsWith("slot:", StringComparison.Ordinal) && int.TryParse(actor.Id[5..], out int slot) && slot is >= 0 and < 16 ? slot : 16;
         Combatants[actor.Id] = combatant;
         if (actor.Id == "slot:0") Ashley = combatant;
-        Awaken(combatant, (uint)ai, stats);
+        // Only Ashley and the sides of 4 have an AI record (0x800e6178 makes one where the side has 1 or 4); drawing or
+        // sheathing a weapon later moves a character between 4 and 8 but makes or frees none.
+        if (combatant.Side is 1 or 4) Awaken(combatant, (uint)ai, stats);
         return combatant;
     }
 
@@ -706,6 +711,10 @@ public sealed partial class FieldBattle
                 StepCast();
                 break;
         }
+        // The enemies' bodies carry out what their AI posted at the end of the last frame, as the frame's actor update
+        // does before anything else (BATTLE.PRG 0x80075554, at 0x80079e08).
+        if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing && Ashley is { Dead: false })
+            foreach (var c in Fighters()) if (c != Ashley && c.Mind != null && !c.Dead) Embody(c);
         // The fight is planned anew as a move ends and as the hostile come and go (BATTLE.PRG 0x800dec88).
         bool acting = _phase is Phase.Striking or Phase.Casting || _enemyCast != null || _enemyRelease != null;
         int hostile = 0;
@@ -714,12 +723,13 @@ public sealed partial class FieldBattle
         else if (!acting && hostile != _hostileCount) Replan(null);
         _wasActing = acting;
         if (!acting) _hostileCount = hostile;
-        if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing) { StepEnemies(); StepEnemyCast(); }
-        StepEnemyRelease();
-        // The balloons are put away while the sphere is open (BATTLE.PRG 0x8009627C draws none while its flag is set).
-        StepRange();
+        // The balloons are drawn before the AI's tick (0x8008ac78 at 0x8007a5fc), and put away while the sphere is open
+        // (BATTLE.PRG 0x8009627C draws none while its flag is set).
         if (_phase != Phase.Sphere) StepBalloons();
         else _hud?.Balloons(new(), _ => null);
+        if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing) { StepEnemies(); StepEnemyCast(); }
+        StepEnemyRelease();
+        StepRange();
         ShowWeapons();
         ShowStatus();
         StepActing();
@@ -746,6 +756,7 @@ public sealed partial class FieldBattle
     /// <summary>Whether moving an actor to a position would bring it within <see cref="Spacing"/> of a living fighter it is not already closer to.</summary>
     public bool Crowded(EventActor mover, Vector3 next)
     {
+        foreach (var other in Combatants.Values) if (other.Actor == mover && other.PassingThrough) return false;
         foreach (var other in Combatants.Values)
         {
             if (other.Actor == mover || other.Dead || !other.Actor.Visible) continue;
@@ -2025,7 +2036,7 @@ public sealed partial class FieldBattle
         bool defense = _victim == Ashley && Array.Exists(DefenseSlots, slot => slot != 0);
         if (!chain && !defense) return false;
         int margin = Math.Max(2, 10 - _chain / 3), ticks = (_landAt - _frames) * 2;
-        if (ticks == -2) _hud?.Cue(Ashley.Actor.Position + new Vector3(0, -210, 0), margin, Project);
+        if (ticks == -2) _hud?.Cue(Ashley.Actor.Position - new Vector3(0, Crown(Ashley), 0), margin, Project);
         if (!_attempted)
         {
             var slots = chain ? ChainSlots : DefenseSlots;
@@ -3589,28 +3600,33 @@ public sealed partial class FieldBattle
     /// <see cref="Show"/>, drawn by 0x80095c18): the rounded balloon with one, two then three dots (1 to 3) over a
     /// token's first 24 frames, then the jagged balloon with its mark (4), which also stands while the 90 frames after a
     /// release run; the alarm (6) and the searching mark (7). One won over (bit 7) shows its mark (5) unless a
-    /// telegraph's balloon stands.
+    /// telegraph's balloon stands. Any actor with an icon has its balloon (0x8009627c draws every one of 1 to 15), at its
+    /// head point (body +0x646 above its feet); they are drawn before the AI's tick, so each shows the last frame's icon.
     /// </summary>
     private void StepBalloons()
     {
         if (_hud == null) return;
         var shown = new List<(Vector3 Head, int Kind, int Side)>();
+        var camera = _view.Field?.Camera;
+        if (Ashley == null || camera == null || !camera.IsInsideTree()) { _hud.Balloons(shown, Project); return; }
         foreach (var enemy in Combatants.Values)
         {
-            if (enemy.Dead || !enemy.Hostile || enemy.Mind == null) continue;
+            if (enemy.Dead || enemy == Ashley || enemy.Mind == null || enemy.Index is < 1 or > 15) continue;
             int icon = enemy.Mind.Shown, kind = (icon & 0x80) == 0 ? icon : (icon & 7) is >= 1 and <= 4 ? icon & 7 : 5;
-            if (kind is < 1 or > 7 || Ashley == null) continue;
-            // It turns to the other side of its head once it is 32 units past Ashley across the screen.
-            var camera = _view.Field?.Camera;
-            if (camera == null || !camera.IsInsideTree()) continue;
-            float mine = camera.UnprojectPosition(EventActor.RetailSpace * enemy.Actor.Position).X, hers = camera.UnprojectPosition(EventActor.RetailSpace * Ashley.Actor.Position).X;
+            if (kind is < 1 or > 7) continue;
+            // Its side turns once its head is 32 past Ashley's head across the screen (in the 320-wide screen's units).
+            var head = enemy.Actor.Position - new Vector3(0, Crown(enemy), 0);
+            float mine = camera.UnprojectPosition(EventActor.RetailSpace * head).X, hers = camera.UnprojectPosition(EventActor.RetailSpace * (Ashley.Actor.Position - new Vector3(0, Crown(Ashley), 0))).X;
             float apart = (mine - hers) / Math.Max(1, _view.GetViewport().GetVisibleRect().Size.Y / FieldView.VisibleLines);
             if (apart > 32) enemy.BalloonSide = 0;
             if (apart < -32) enemy.BalloonSide = 1;
-            shown.Add((enemy.Actor.Position + new Vector3(0, -210, 0), kind, enemy.BalloonSide));
+            shown.Add((head, kind, enemy.BalloonSide));
         }
         _hud.Balloons(shown, Project);
     }
+
+    /// <summary>A character's head point above its feet (body +0x646, its model header's u16 at 0x5e).</summary>
+    private int Crown(Combatant c) => _view.Content.Character(c.Actor.Character).GetValueOrDefault("crown", 0).AsInt32();
 
     /// <summary>A map point's place on the window, or null behind the camera.</summary>
     private Vector2? Project(Vector3 point) => _view.Field?.Camera is { } c && c.IsInsideTree() && !c.IsPositionBehind(EventActor.RetailSpace * point) ? c.UnprojectPosition(EventActor.RetailSpace * point) : null;

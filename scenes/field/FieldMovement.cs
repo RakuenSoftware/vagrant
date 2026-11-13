@@ -14,12 +14,26 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// </summary>
 public sealed partial class FieldBattle
 {
+    public sealed partial class Combatant
+    {
+        /// <summary>Whether its body is busy with a jump, fall, hop, landing or rising, so its AI skips its tick (body +8 bits 16-18 and 28-30, the command under way).</summary>
+        public bool BodyBusy => Mover is { Busy: true } || HopState != 0 || Mind is { Settling: not 0 } or { Settled: true } or { Jump: not 0 };
+        /// <summary>Its body passes through other bodies (body +0x5ac bit 11, set by an event's walk, 0x800a0a1c; 0x800a8fd4 lets it by).</summary>
+        public bool PassingThrough;
+        /// <summary>
+        /// Its body's flag 0x10 at +0x5b0 (Guildenstern's final form's swoop, 0x800e76d4): as its body is drawn
+        /// (0x800b02d8) the animation's root x angle is replaced by a quarter turn, pitching the whole model; it touches
+        /// nothing else.
+        /// </summary>
+        public bool Pitched;
+    }
+
     /// <summary>
     /// What an enemy's body does this frame (the actor code a command posts, 0x80075554): stand (2), turn (3, 4, 7),
     /// walk or run (9, 10, after the probe that may nudge it, 13), leap to a tile (11, 14, 18), warp (23), fly (16,
     /// 17) or glide to a point (19). A flyer's landing and rising (21, 22) run their course apart.
     /// </summary>
-    public enum Body { Stand, Turn, Walk, Leap, Warp, Fly, Glide }
+    public enum Body { Stand, Turn, Walk, Leap, Warp, Fly, Glide, Land, Rise }
 
     public sealed partial class Mind
     {
@@ -54,22 +68,79 @@ public sealed partial class FieldBattle
         public (int X, int Z, int Platform)? Dock;
         /// <summary>A flyer: aloft (its body's 0x200000), its frames facing aloft (+0x228), the frames of a landing or rising, and where to.</summary>
         public bool Airborne;
-        public int Aground, Settling, Pose = -1;
+        public int Aground, Pose = -1;
+        /// <summary>
+        /// A flyer's landing or rising (body +8 bits 28-30, 0x800a2cd4): 1 to start a landing, 2 descending, 3 waiting
+        /// out the landing's animation, 4 to start rising, 5 rising, 0 none; its frames left and the way left (body
+        /// +0x5ca, +0x34 to +0x38), the point it is bound for (+0x5ec, +0x5f0) and the facing it turns to (+0x5f2).
+        /// </summary>
+        public int Settling, SettleFrames, SettleFacing;
+        public (int X, int Y, int Z) SettleLeft;
         public Vector3 SettleTo;
-        /// <summary>The upper-body twist (body +0x14) and the look a glance turns its head to (command 16).</summary>
-        public float Twist;
-        public float? Glance;
+        /// <summary>The landing or rising ended this frame: its command is still under way to the AI until the next frame's actor update.</summary>
+        public bool Settled;
+        /// <summary>
+        /// Its jump (body +8 bits 16-18, 0x800ac690): 2 crouching, 3 in the air, 4 recovering, 0 none; the crouch's
+        /// frames and the recovery's wait (+0x11), the step a frame (+0x34 to +0x38), the frames before it looks for
+        /// the floor (+0x1816) and how it does (+0x181a: 2 a jump, 0 after a bounce off the ceiling), the point it jumps
+        /// for (+0x1814, +0x1818), the animation set (+0x5b0 bits 0-1) and its marks of a leaper (bit 6) and flyer (5)
+        /// at body +0xa.
+        /// </summary>
+        public int Jump, JumpWait, JumpFrames, JumpMode, JumpX, JumpZ, JumpSet, JumpMarks;
+        public (int X, int Y, int Z) JumpStep;
+        /// <summary>
+        /// The upper-body twist and its pitch (body +0x14, +0x16) and how they move each frame (+0x17f4 to +0x17fc,
+        /// 0x8009fc60): mode -2 back to none, -3 toward the goal it turns to less its facing, -4 toward a value; the
+        /// pitch's and twist's values and the most they move a frame.
+        /// </summary>
+        public int Twist, Pitch, TwistMode = -2, PitchTarget, TwistTarget, TwistRate = 30;
+        /// <summary>The look a glance turns its upper body to this tick (command 16, 0x800e4180), null for none.</summary>
+        public int? Glance;
+        /// <summary>Whether its model twists at all (a bone of part group 2, 0x800a152c, AI +0x2a); without one the twist stays 0.</summary>
+        public bool Twists;
+        /// <summary>The body's turn under way (body +0x18 frames left, +0x3e angle left), stepped once a frame (0x800b002c).</summary>
+        public int TurnFrames, TurnLeft;
+        /// <summary>A body turn straight to an angle (AI command 3, 0x800df4c8) in place of the turn head first (command 4).</summary>
+        public bool BodyTurn;
+        /// <summary>The actor code posted for its body (node +9) with its value (+12), and whether it waits for the actor update (node +8 = 0x80).</summary>
+        public int Code, CodeValue;
+        public bool Posted;
+        /// <summary>The turn in place set its body still this frame (motion kind 6, 0x800a249c), so it does not settle to idle.</summary>
+        public bool TurningInPlace;
         /// <summary>The scripted walk that holds its AI (+0x18c): the walk's own record, and the point it walks to (+0x160).</summary>
         public Mind? Script;
         public (int X, int Z) ScriptPoint;
 
-        /// <summary>A record for a scripted walk (0x800e51c8): its movement taken from this one.</summary>
-        public Mind Walker() => new()
+        /// <summary>The chase's goal was its own tile once drawn in (+0x0d), and the goal it had before (+0x48, null for none): a hopper's re-aim.</summary>
+        public bool Beside;
+        public (int X, int Z)? Aimed;
+        /// <summary>Its body landed on a platform from the air (+0x1a, 0x800e6764), so its walls toward lower floors are opened as it walks (<see cref="RaisedEdges"/>).</summary>
+        public bool Raised;
+        /// <summary>This frame's walk is a plain walk (actor code 9, set by <see cref="RaisedEdges"/>): no run and no nudge off a wall.</summary>
+        public bool Plain;
+        /// <summary>The point it walks or hops by (+0x17c, +0x180): the same words as a flyer's course across.</summary>
+        public (int X, int Z) GoalPoint { get => ((int)Course.X, (int)Course.Z); set => Course = new Vector3(value.X, Course.Y, value.Z); }
+
+        /// <summary>Whether it routes between zones by the room's links (+0x29, AI word bit 14; a walk record's always).</summary>
+        public bool Routes;
+
+        /// <summary>
+        /// A record for a scripted walk (BATTLE.PRG 0x800e51c8): the whole record copied, then a step height of 320 and a
+        /// reach of 3, routing between zones, no detour; its scripted walk is itself.
+        /// </summary>
+        public Mind Walker()
         {
-            Height = Height, Head = Head, Radius = Radius, Girth = Girth, Moves = Moves, ReachBonus = ReachBonus, DefaultTurn = DefaultTurn, TurnSpeed = TurnSpeed,
-            FlagsA = FlagsA, FlagsB = FlagsB, SpeedA = SpeedA, SpeedB = SpeedB, HopReach = HopReach, StepReach = StepReach, StepHeight = StepHeight,
-            Shuns = Shuns, Airborne = Airborne, Tile = Tile, Goal = Tile,
-        };
+            var r = (Mind)MemberwiseClone();
+            r.Relations = (uint[])Relations.Clone();
+            r.Distances = (uint[])Distances.Clone();
+            r.UnstickDirections = (int[])UnstickDirections.Clone();
+            r.RingX = (byte[])RingX.Clone();
+            r.RingZ = (byte[])RingZ.Clone();
+            r.Looks = ((int, int)[])Looks.Clone();
+            (r.StepHeight, r.StepReach, r.Routes, r.Detour) = (320, 3, true, 0);
+            r.Script = r;
+            return r;
+        }
     }
 
     /// <summary>The tile attribute grid the movement reads (0x800f58b8, 32 a row): zone 0-3, 0x10, 0x20 pit, 0x40, 0x80 taken, traps 0x100 and 0x200, 0x800, 0x1000, 0x2000 seen everywhere, 0x8000 none.</summary>
@@ -190,7 +261,7 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>A tile's floor (BATTLE.PRG 0x800e42e0 and 0x800e42ec), y down.</summary>
-    private int FloorOf((int X, int Z) t) => RawFloor(t) << 17 >> 17;
+    internal int FloorOf((int X, int Z) t) => RawFloor(t) << 17 >> 17;
 
     /// <summary>The steps walled out of a tile (the room's bitmap), bit d the step in direction d.</summary>
     private int WallsOf((int X, int Z) t) => _walls == null || t.Z * _width + t.X is var i && (uint)i >= (uint)_walls.Length ? 0xFF : _walls[i];
@@ -199,7 +270,7 @@ public sealed partial class FieldBattle
     /// Whether a step out of a tile is walled (the bitmap; or, in a room without, 0x800e4690: where the next tile has
     /// no floor, or a floor 64 or more above or below).
     /// </summary>
-    private bool Walled((int X, int Z) t, int d)
+    internal bool Walled((int X, int Z) t, int d)
     {
         if (_walls != null) return (WallsOf(t) >> d & 1) != 0;
         var n = Step(t, d);
@@ -207,10 +278,10 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>The direction of a step of a tile (0x1f8003e0), -1 for none, -1 for one past a neighbour too.</summary>
-    private static int Toward(int dx, int dz) => dx is < -1 or > 1 || dz is < -1 or > 1 ? -1 : new[] { 1, 0, 7, 2, -1, 6, 3, 4, 5 }[(dz + 1) * 3 + dx + 1];
+    internal static int Toward(int dx, int dz) => dx is < -1 or > 1 || dz is < -1 or > 1 ? -1 : new[] { 1, 0, 7, 2, -1, 6, 3, 4, 5 }[(dz + 1) * 3 + dx + 1];
 
     /// <summary>Where another stands for the tile tests (BATTLE.PRG 0x800d954c, 0x800d98e8): bound for a tile mid-leap or warp, else where it is.</summary>
-    private static Vector3 Placed(Combatant k) => k.Index != 0 && (k.Mover is { Busy: true } || k.HopState != 0) && k.Mind != null ? k.Mind.Bound : k.Actor.Position;
+    private static Vector3 Placed(Combatant k) => k.Index != 0 && k.BodyBusy && k.Mind != null ? k.Mind.Bound : k.Actor.Position;
 
     /// <summary>Starts the frame's tests afresh for an actor (the scratch word cleared, 0x800db080).</summary>
     private void Afresh(Mind m)
@@ -299,7 +370,7 @@ public sealed partial class FieldBattle
                 {
                     int a = Cell(n);
                     blocked = (a & 0x10) != 0 && !m.Wades || (a & 0xA0) != 0 || (m.Shuns & a >> 8) != 0;
-                    if (!blocked && c.Routes && !m.CrossesZones && (Cell(m.Tile) & 15) != (a & 15)) blocked = (m.Passage & 15) != (a & 15);
+                    if (!blocked && m.Routes && !m.CrossesZones && (Cell(m.Tile) & 15) != (a & 15)) blocked = (m.Passage & 15) != (a & 15);
                     if (!blocked) blocked = (_floors[(m.Tile.Z & 31) * 32 + (m.Tile.X & 31)] & 0x1C00) < (_floors[(n.Item2 & 31) * 32 + (n.Item1 & 31)] & 0x1C00);
                 }
             }
@@ -488,7 +559,7 @@ public sealed partial class FieldBattle
         var m = c.Mind!;
         if (m.Closing) return false;
         var p = c.Actor.Position;
-        int a = At(m.FaceTarget) is { } face ? Angle(p.X - face.Actor.Position.X, p.Z - face.Actor.Position.Z) : (int)c.Actor.Facing;
+        int a = At(m.FaceTarget) is { } face ? Angle(p.X - face.Actor.Position.X, p.Z - face.Actor.Position.Z) : (int)MathF.Round(c.Actor.Facing);
         int turn = (3072 - a) & 0xFFF;
         return (long)Cos(turn) * (t.X - m.Tile.X) + (long)Sin(turn) * (t.Z - m.Tile.Z) < 0;
     }
@@ -827,24 +898,24 @@ public sealed partial class FieldBattle
     /// Gives an enemy's body a command (BATTLE.PRG 0x800deefc, by its table at 0x800f16f8): 0 stand, 5 step along a
     /// direction, 7 along an angle, 8 to 12 a flyer's glide, flight, landing and rising, 13 warp, 14 leap to a tile.
     /// </summary>
-    private void Issue(Combatant c, int code)
+    internal void Issue(Combatant c, int code)
     {
         var m = c.Mind!;
         m.Command = code switch
         {
-            5 or 7 => Body.Walk, 8 => Body.Glide, 9 or 10 => Body.Fly, 13 => Body.Warp, 14 => Body.Leap, _ => Body.Stand,
+            5 or 7 => Body.Walk, 8 => Body.Glide, 9 or 10 => Body.Fly, 13 => Body.Warp, 14 => Body.Leap, 11 => Body.Land, 12 => Body.Rise, _ => Body.Stand,
         };
         _issued = code;
         if (code == 5) m.Direction = (short)(m.Direction << 9);
         if (code is 11 or 12)
         {
+            // 0x800e4b10 and 0x800e4b18: its tile is where it lands or rises from; a landing takes the tile (0x800df458).
             m.Aground = 0;
             m.LeapTile = m.Tile;
-            StartSettling(c, code == 11);
-            m.Command = Body.Stand;
+            if (code == 11) Reserve(m.LeapTile, true);
+            m.Command = code == 11 ? Body.Land : Body.Rise;
         }
-        // 0x800df5f0: a leap within the height it may step is a step (11); beyond it a hopper warps.
-        if (code == 14 && Math.Abs(FloorOf(m.LeapTile) - FloorOf(m.Tile)) >= m.StepHeight && (m.Moves & 8) != 0) m.Command = Body.Warp;
+        if (code == 14) Aim14(c);
     }
 
     /// <summary>The last command given (0x1f8003c8).</summary>
@@ -864,7 +935,7 @@ public sealed partial class FieldBattle
                 else FlyAlong(c, h);
                 break;
             case Gait.Hop:
-                if (mode == 0) Hop(c, c.Mind!.Goal);
+                if (mode == 0) Hop(c);
                 else HopAlong(c, h);
                 break;
             default:
@@ -875,37 +946,64 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// A walker for its goal tile (BATTLE.PRG 0x800e4b2c): riding a platform, the ride; on its goal it faces; else by
-    /// its waypoint (<see cref="Waypoint"/>, 0x800e19fc) for the goal's centre.
+    /// A walker for its goal tile (BATTLE.PRG 0x800e4b2c): riding a platform, the ride; on its goal it faces; else the
+    /// goal's centre is the point it walks by, and it heads there by its waypoint (<see cref="Head"/>, 0x800e19fc).
     /// </summary>
     private void WalkTo(Combatant c)
     {
         var m = c.Mind!;
         if (m.Riding != 0) { Ride(c); return; }
         if (m.Goal == m.Tile) { Face(c); return; }
+        m.GoalPoint = (m.Goal.X * 128 + 64, m.Goal.Z * 128 + 64);
         Head(c, Centre(m.Goal, c.Actor.Position.Y));
     }
 
-    /// <summary>Walks for a point by the waypoint (0x800e19fc: not away, keeping to steps that near the goal), straight along the angle to it.</summary>
+    /// <summary>Walks for a point by the waypoint (0x800e19fc: not away, keeping to steps that near the goal; on a platform it landed on, by its raised edges), straight along the angle to it.</summary>
     private void Head(Combatant c, Vector3 point)
     {
         var m = c.Mind!;
         m.Away = false;
         m.Nearer = true;
+        if (m.Raised) { RaisedEdges(c); return; }
         var way = Waypoint(c, point);
         if (m.Riding != 0) return;
         m.Direction = (int)c.Actor.FacingToward(way);
         Issue(c, 7);
     }
 
-    /// <summary>A walker along a heading (BATTLE.PRG 0x800e4b70): riding a platform, the ride; else it crosses zones and steers (<see cref="Steer"/>, mode 1).</summary>
+    /// <summary>A walker along a heading (BATTLE.PRG 0x800e4b70): on a platform it landed on, by its raised edges; riding a platform, the ride; else it crosses zones and steers (<see cref="Steer"/>, mode 1).</summary>
     private void WalkAlong(Combatant c, int h)
     {
         var m = c.Mind!;
+        if (m.Raised) { RaisedEdges(c); return; }
         if (m.Riding != 0) { Ride(c); return; }
         m.CrossesZones = true;
         Afresh(m);
         Steer(c, h & 0xFFF, 1);
+    }
+
+    /// <summary>
+    /// Walks off a platform it landed on (BATTLE.PRG 0x800e1908): its own tile's walled steps are opened for the
+    /// frame toward each neighbour whose floor lies below it (0x800e1850); it steers for the point it walks by (mode 0);
+    /// and a step or walk found (5 or 7) is a plain walk at that heading, never run.
+    /// </summary>
+    private void RaisedEdges(Combatant c)
+    {
+        var m = c.Mind!;
+        int index = m.Tile.Z * _width + m.Tile.X;
+        bool walled = _walls != null && (uint)index < (uint)_walls.Length;
+        byte saved = walled ? _walls![index] : (byte)0;
+        if (walled)
+        {
+            int bits = saved, y = (int)c.Actor.Position.Y;
+            for (int d = 0; d < 8; d++)
+                if ((bits >> d & 1) != 0 && y < FloorOf((m.Tile.X + Directions[d].X, m.Tile.Z + Directions[d].Z))) bits &= ~(1 << d);
+            _walls![index] = (byte)bits;
+        }
+        var (gx, gz) = m.GoalPoint;
+        Steer(c, Angle((short)(int)c.Actor.Position.X - gx, (short)(int)c.Actor.Position.Z - gz) & 0xFFF, 0);
+        if (walled) _walls![index] = saved;
+        if (_issued is 5 or 7) { m.Run = false; m.Plain = true; }
     }
 
     /// <summary>
@@ -988,6 +1086,7 @@ public sealed partial class FieldBattle
         var m = c.Mind!;
         if (m.LeapTile.X <= _bounds.MaxX && m.LeapTile.X >= _bounds.MinX && m.LeapTile.Z <= _bounds.MaxZ && m.LeapTile.Z >= _bounds.MinZ) Reserve(m.LeapTile, false);
         if (m.Riding != 0) _claimed &= -(1 << (_claimed & 31));
+        m.Raised = false;
     }
 
     /// <summary>Marks a tile taken (0x80, BATTLE.PRG 0x800e4c1c) or frees it (0x800e4c28).</summary>
@@ -1050,7 +1149,7 @@ public sealed partial class FieldBattle
             if (Math.Abs(t - y) < spd)
             {
                 int ox = m.Tile.X * 128 + 64, oz = m.Tile.Z * 128 + 64, b = (3072 - Angle(x - ox, z - oz)) & 0xFFF;
-                m.Course = new Vector3(Math.Abs(x - ox) < spd ? ox : x + spd * Cos(b) / 4096f, t, Math.Abs(z - oz) < spd ? oz : z + spd * Sin(b) / 4096f);
+                m.Course = new Vector3(Math.Abs(x - ox) < spd ? ox : ((x << 12) + spd * Cos(b)) / 4096, t, Math.Abs(z - oz) < spd ? oz : ((z << 12) + spd * Sin(b)) / 4096);
                 Issue(c, 8);
                 return;
             }
@@ -1100,7 +1199,7 @@ public sealed partial class FieldBattle
         long ahead = spd - reach;
         int arc = (int)(Math.Abs(y - top) * ahead * ahead / (reach * reach)) + top;
         int bearing = (3072 - toward) & 0xFFF;
-        float ax = x + spd * Cos(bearing) / 4096f, az = z + spd * Sin(bearing) / 4096f;
+        int ax = (x << 12) + spd * Cos(bearing), az = (z << 12) + spd * Sin(bearing);
         if (arc < top) arc = top;
         else if (step < arc)
         {
@@ -1109,8 +1208,8 @@ public sealed partial class FieldBattle
         }
         m.Aground = 0;
         int dy = arc - y;
-        if (spd < Math.Abs(dy)) { m.Course = new Vector3(ax - x, dy, az - z); Issue(c, pace.Code); }
-        else { m.Course = new Vector3(ax, arc, az); Issue(c, 8); }
+        if (spd < Math.Abs(dy)) { m.Course = new Vector3((ax >> 12) - x, dy, (az >> 12) - z); Issue(c, pace.Code); }
+        else { m.Course = new Vector3(ax / 4096, arc, az / 4096); Issue(c, 8); }
     }
 
     /// <summary>
@@ -1128,60 +1227,77 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// A hopper along a heading (BATTLE.PRG 0x800e1764): of the points its reach along the heading and the other way,
-    /// the one farther from what it moves by.
+    /// the one farther from the point it moves by (<see cref="Mind.GoalPoint"/>; the second on a tie), then for it.
     /// </summary>
     private void HopAlong(Combatant c, int h)
     {
         var m = c.Mind!;
-        var ahead = PointAt(c, h, m.HopReach);
-        var behind = PointAt(c, h + 2048, m.HopReach);
-        var origin = m.FacePoint ?? (At(m.FaceTarget) is { } t ? t.Actor.Position : c.Actor.Position);
-        m.Goal = ((Centre(behind, 0) - origin) with { Y = 0 }).LengthSquared() < ((Centre(ahead, 0) - origin) with { Y = 0 }).LengthSquared() ? ahead : behind;
-        Hop(c, m.Goal);
+        PointAt(c, m.Tile, h, m.HopReach);
+        var ahead = m.Goal;
+        PointAt(c, m.Tile, (h + 2048) & 0xFFF, m.HopReach);
+        var (px, pz) = m.GoalPoint;
+        static uint Apart2(int dx, int dz) { long a = (short)dx, b = (short)dz; return (uint)(a * a + b * b); }
+        if (Apart2(m.Goal.X * 128 + 64 - px, m.Goal.Z * 128 + 64 - pz) < Apart2(ahead.X * 128 + 64 - px, ahead.Z * 128 + 64 - pz)) m.Goal = ahead;
+        Hop(c);
     }
 
     /// <summary>
-    /// A point its reach along a heading from its tile (BATTLE.PRG 0x800e1388): the first standing tile of eight tries,
-    /// an eighth of the reach nearer each, else the last; kept within the bounds.
+    /// Its goal a distance along a heading from a tile (BATTLE.PRG 0x800e1388): of eight tries, each an eighth of the
+    /// distance (taken unsigned) nearer, the first tile it may stand on, else the last; each try's tile taken as a
+    /// byte, so one past the low edge is 255; then kept within the bounds, low first.
     /// </summary>
-    private (int X, int Z) PointAt(Combatant c, int heading, int reach)
+    private void PointAt(Combatant c, (int X, int Z) from, int heading, int reach)
     {
         var m = c.Mind!;
-        int a = (3072 - heading) & 0xFFF, step = reach >> 3;
-        (int X, int Z) tile = m.Tile;
+        int a = (3072 - heading) & 0xFFF, step = (int)((uint)reach >> 3);
+        (int X, int Z) tile = from;
         for (int i = 0; i < 8; i++, reach -= step)
         {
-            tile = ((m.Tile.X * 128 + (reach * Cos(a) >> 12) + 64) >> 7, (m.Tile.Z * 128 + (reach * Sin(a) >> 12) + 64) >> 7);
-            if (Walkable(c, tile)) break;
+            tile = (((from.X * 128 + 64 + (reach * Cos(a) >> 12)) >> 7) & 0xFF, ((from.Z * 128 + 64 + (reach * Sin(a) >> 12)) >> 7) & 0xFF);
+            if (TileFree(c, tile) > 0) break;
         }
-        return (Math.Clamp(tile.X, _bounds.MinX, Math.Max(_bounds.MinX, _bounds.MaxX)), Math.Clamp(tile.Z, _bounds.MinZ, Math.Max(_bounds.MinZ, _bounds.MaxZ)));
+        int x = tile.X < _bounds.MinX ? _bounds.MinX : _bounds.MaxX < tile.X ? _bounds.MaxX : tile.X;
+        int z = tile.Z < _bounds.MinZ ? _bounds.MinZ : _bounds.MaxZ < tile.Z ? _bounds.MaxZ : tile.Z;
+        m.Goal = (x, z);
     }
 
     /// <summary>
     /// A hopper for its goal tile (BATTLE.PRG 0x800e153c): on it, it faces; beyond its reach the goal comes in to its
-    /// reach (<see cref="PointAt"/>); one that also walks walks once within four tiles; else at most every 6 calls it
-    /// warps (command 13) to the goal or the first free cardinal tile beside it.
+    /// reach (<see cref="PointAt"/>); one that also walks walks (for the goal it had before a chase drew it in, if
+    /// any) when the chase drew it onto its own tile or the goal is within four tiles; else it counts the frames, and
+    /// from the sixth (until it hops) warps (command 13) to the goal, or the first cardinal tile beside it it may stand
+    /// on, else faces.
     /// </summary>
-    private void Hop(Combatant c, (int X, int Z) goal)
+    private void Hop(Combatant c)
     {
         var m = c.Mind!;
         var p = c.Actor.Position;
-        if (goal == m.Tile) { Face(c); return; }
-        var centre = Centre(goal, p.Y);
-        if ((long)m.HopReach * m.HopReach < (long)((centre - p) with { Y = 0 }).LengthSquared())
-            goal = PointAt(c, Angle(p.X - centre.X, p.Z - centre.Z), m.HopReach);
-        m.Goal = goal;
-        if ((m.Moves & 6) != 0 && Apart(goal, m.Tile) < 16) { WalkTo(c); return; }
-        if (++c.HopCount < 6) { Face(c); return; }
-        if (!Walkable(c, goal))
+        if (m.Goal == m.Tile) { Face(c); return; }
+        int x = (int)p.X, z = (int)p.Z, a = Angle(x - m.Goal.X * 128 - 64, z - m.Goal.Z * 128 - 64);
+        long dx = (short)(m.Goal.X * 128 + 64 - x), dz = (short)(m.Goal.Z * 128 + 64 - z);
+        if ((uint)(m.HopReach * m.HopReach) < (uint)(dx * dx + dz * dz)) PointAt(c, m.Tile, a, m.HopReach);
+        if ((m.Moves & 6) != 0 && (m.Beside || (uint)Apart(m.Goal, m.Tile) < 16))
+        {
+            if (m.Aimed is { } aimed) m.Goal = aimed;
+            WalkTo(c);
+            return;
+        }
+        c.HopCount = (ushort)(c.HopCount + 1);
+        if (c.HopCount < 6) { Face(c); return; }
+        var goal = m.Goal;
+        if (TileFree(c, goal) <= 0)
         {
             (int X, int Z)? free = null;
-            for (int d = 0; d < 8 && free == null; d += 2) if (Walkable(c, Step(goal, d))) free = Step(goal, d);
+            for (int d = 0; d < 8 && free == null; d += 2)
+            {
+                var n = ((goal.X + Directions[d].X) & 0xFF, (goal.Z + Directions[d].Z) & 0xFF);
+                if (TileFree(c, n) > 0) free = n;
+            }
             if (free is not { } beside) { Face(c); return; }
-            m.Goal = goal = beside;
+            m.Goal = beside;
         }
+        m.LeapTile = m.Goal;
         c.HopCount = 0;
-        m.LeapTile = goal;
         Issue(c, 13);
     }
 
@@ -1246,7 +1362,7 @@ public sealed partial class FieldBattle
     {
         var m = c.Mind!;
         int p = _view.PlatformUnder(t.Actor.Position);
-        if (p < 0 || !(c.Routes || (m.Moves & 0x38) != 0) || _view.PlatformState(p) is not { } platform) return TileOf(t);
+        if (p < 0 || !(m.Routes || (m.Moves & 0x38) != 0) || _view.PlatformState(p) is not { } platform) return TileOf(t);
         var docks = Docks();
         var bound = ((int)platform.Bound.X >> 7, (int)platform.Bound.Z >> 7);
         if (2 * p + 1 >= docks.Count) return TileOf(t);
@@ -1269,7 +1385,7 @@ public sealed partial class FieldBattle
         int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
         int tx = (int)Mathf.Floor(point.X / 128), tz = (int)Mathf.Floor(point.Z / 128);
         int from = _view.TileZone(x, z), to = _view.TileZone(tx, tz);
-        if (!enemy.Routes || from == to) return point;
+        if (!m.Routes || from == to) return point;
         uint link = _view.ZoneLink(to, from);
         if ((link & 0x1be0) == 0) return point;
         m.Passage = to;
@@ -1318,35 +1434,20 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Carries out an enemy's order with its body: one falling or leaping carries on, a hop runs its course (vanished,
-    /// it stands on its tile facing its target and reappears, 21 then 22, then stands), a flyer's landing or rising
-    /// runs its course; then the AI's order becomes a command: stand, turn, go for its goal (mode 0) or along a heading
-    /// (mode 1) by its kind (<see cref="Move"/>), and its body carries it out (<see cref="Perform"/>).
+    /// The AI's command for an enemy's body (BATTLE.PRG 0x800deefc, by the AI tick at the frame's end): the order
+    /// becomes a command (stand, turn, go for its goal (mode 0) or along a heading (mode 1) by its kind,
+    /// <see cref="Move"/>) and is posted (node +8 = 0x80) for the next frame's actor update (<see cref="Embody"/>).
+    /// A body busy landing, rising, leaping, falling or hopping takes no command.
     /// </summary>
     private void Drive(Combatant enemy)
     {
-        var actor = enemy.Actor;
         var m = enemy.Mind!;
-        if (enemy.Mover is { Busy: true } falling)
-        {
-            falling.Step(null, walk: true);
-            if (!falling.Busy) { Reserve(m.LeapTile, false); Play(enemy, 1, 6); }
-            return;
-        }
-        if (enemy.HopState == 1 && !_view.Materialising(actor))
-        {
-            actor.Position = enemy.HopTo;
-            if (At(m.FaceTarget) is { } faced) actor.Facing = actor.FacingToward(faced.Actor.Position);
-            _view.Materialise(actor, appear: true);
-            if (Play(enemy, 21, 8, once: true) is { } set) actor.Queue($"{set}_22", 8);
-            enemy.HopState = 2;
-        }
-        if (enemy.HopState == 2 && !_view.Materialising(actor)) { Play(enemy, 1, 6); enemy.HopState = 0; Reserve(TileOf(enemy), false); }
-        if (Settle(enemy)) return;
-        if (enemy.HopState != 0 || enemy.Suspended || m.Held || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) return;
+        if (enemy.BodyBusy) return;
+        if (enemy.Suspended || m.Held || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) return;
         Afresh(m);
         m.Zone = m.Passage = Cell(m.Tile) & 15;
         _issued = -1;
+        m.BodyTurn = m.Plain = false;
         switch (m.Order)
         {
             case Order.Stand:
@@ -1369,76 +1470,294 @@ public sealed partial class FieldBattle
                 m.Command = Body.Glide;
                 break;
         }
-        Perform(enemy);
+        Post(enemy);
     }
 
     /// <summary>
-    /// Carries out a command for the frame (the actor side, 0x80075554): stands (idle), turns (<see cref="Turn(Combatant)"/>),
-    /// walks or runs a frame (<see cref="Stride"/>), leaps to a tile, warps, or flies.
+    /// Posts the command (node +8 = 0x80, +9 the actor code, +12 its value): a stand (2), or with a glance asked for
+    /// the glance (6, its angle); a turn straight to an angle (AI command 3: actor code 3, the angle); the turn head
+    /// first (AI command 4, 0x800df720), worked out from the facing and twist now: within a step of its goal (or on it)
+    /// the last step (4, the goal), else a step of the twist (7, the twist a step on) while one with a twist has it
+    /// short of 800 that way, else a step of the body (3, its facing a step on); the rest as they are.
     /// </summary>
-    private void Perform(Combatant enemy)
+    internal void Post(Combatant enemy)
     {
         var m = enemy.Mind!;
-        var actor = enemy.Actor;
-        if (m.Command != Body.Turn && m.Glance is not { } && m.Twist != 0) m.Twist = Mathf.MoveToward(m.Twist, 0, 30);
+        int yaw = (int)MathF.Round(enemy.Actor.Facing) & 0xFFF;
         switch (m.Command)
         {
+            case Body.Stand when m.Glance is { } glance:
+                (m.Code, m.CodeValue) = (6, glance);
+                break;
             case Body.Stand:
-                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); if (!m.Airborne) Play(enemy, 1, 6); }
-                if (m.Glance is { } glance && actor.Head != null) m.Twist = Mathf.MoveToward(m.Twist, glance, 64);
+                m.Code = 2;
+                break;
+            case Body.Turn when m.BodyTurn:
+                (m.Code, m.CodeValue) = (3, (int)m.TurnTo & 0xFFF);
                 break;
             case Body.Turn:
-                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); if (!m.Airborne) Play(enemy, 1, 6); }
-                Turn(enemy);
-                break;
-            case Body.Walk:
-                Stride(enemy, m.Direction);
-                break;
-            case Body.Leap:
-                Leap(enemy);
-                break;
-            case Body.Warp:
-                Warp(enemy);
-                break;
-            case Body.Fly:
-                Fly(enemy);
-                break;
-            case Body.Glide:
             {
-                // Actor code 19 (0x800b6530 with 0x800a291c): there in the frame, with no change of animation, turning a
-                // twelfth of the way a frame toward whom it faces, else along its flight.
-                float? want = At(m.FaceTarget) is { } faced ? actor.FacingToward(faced.Actor.Position)
-                    : ((m.Course - actor.Position) with { Y = 0 }).LengthSquared() > 0 ? actor.FacingToward(m.Course) : null;
-                actor.Position = m.Course;
-                if (want is { } turn) actor.Facing = Mathf.PosMod(actor.Facing + Mathf.Wrap(turn - actor.Facing, -2048, 2048) / 12, 4096);
+                int facing = (short)yaw + (short)m.Twist, goal = (int)m.TurnTo & 0xFFF, spd = (int)m.TurnRate & 0xFFFF;
+                int diff = (goal - facing) & 0xFFF, dir = diff < 2048 ? 1 : -1;
+                bool can = dir > 0 ? m.Twist < 800 : m.Twist > -800;
+                if (diff < 1 || diff < spd || 4096 - diff < spd) (m.Code, m.CodeValue) = (4, goal);
+                else if (m.Twists && can) (m.Code, m.CodeValue) = (7, (dir * spd + m.Twist) & 0xFFFF);
+                else (m.Code, m.CodeValue) = (3, (dir * spd + yaw) & 0xFFFF);
                 break;
             }
+            case Body.Leap:
+                break;
+            default:
+                m.Code = _issued;
+                break;
         }
         m.Glance = null;
-        if (actor.Head != null) actor.HeldYaw = m.Twist == 0 ? null : m.Twist;
+        m.Posted = true;
     }
 
     /// <summary>
-    /// Turns (BATTLE.PRG's command 4, 0x800df720), its view the body's facing and its upper body's twist: within a turn
-    /// step of its facing, the whole body to it (the twist easing back); else one with an upper body twists it a step,
-    /// to 800 either way, then turns the body a step.
+    /// An enemy's body for a frame, before the AI's tick (BATTLE.PRG's frame: the actor update 0x80075554 carries out a
+    /// posted command, then the motion pass 0x800a4d8c, then the animation pass 0x800aef94 with the turn under way and
+    /// the twist, 0x800b002c): one falling or leaping carries on; a hop runs its course (vanished, it stands on its tile
+    /// facing its target and reappears, 21 then 22, then stands); a flyer's landing or rising runs its course; else a
+    /// posted command is carried out (<see cref="Dispatch"/>) and, with no walk this frame and no turn in place, a body
+    /// coming out of a turn or a walk settles to idle (0x800a6aa0 at speed 0). Then the turn steps and the twist moves.
     /// </summary>
-    private void Turn(Combatant enemy)
+    internal void Embody(Combatant enemy)
+    {
+        var actor = enemy.Actor;
+        var m = enemy.Mind!;
+        bool walked = false;
+        m.TurningInPlace = false;
+        m.Settled = false;
+        if (m.Raised && m.Jump == 0 && _view.PlatformUnder(actor.Position) < 0) m.Raised = false;
+        if (m.Jump != 0) StepJump(enemy);
+        else if (enemy.Mover is { Busy: true } falling)
+        {
+            falling.Step(null, walk: true);
+            if (!falling.Busy) { Reserve(m.LeapTile, false); Play(enemy, 1, 6); }
+        }
+        else if (enemy.HopState != 0)
+        {
+            if (enemy.HopState == 1 && !_view.Materialising(actor))
+            {
+                actor.Position = enemy.HopTo;
+                if (At(m.FaceTarget) is { } faced) actor.Facing = actor.FacingToward(faced.Actor.Position);
+                _view.Materialise(actor, appear: true);
+                if (Play(enemy, 21, 8, once: true) is { } set) actor.Queue($"{set}_22", 8);
+                enemy.HopState = 2;
+            }
+            if (enemy.HopState == 2 && !_view.Materialising(actor)) { Play(enemy, 1, 6); enemy.HopState = 0; Reserve(TileOf(enemy), false); }
+        }
+        else if (!Settle(enemy) && m.Posted)
+        {
+            m.Posted = false;
+            Gaze(enemy);
+            walked = Dispatch(enemy);
+        }
+        if (!walked && _walking.Contains(enemy) && enemy.Mover is { Busy: false } && !m.Airborne && m.Command is Body.Walk or Body.Stand or Body.Turn)
+        {
+            _walking.Remove(enemy);
+            enemy.Mover?.Halt();
+        }
+        if (!walked && !m.TurningInPlace && !m.Airborne && !enemy.BodyBusy)
+        {
+            // 0x800a6aa0 at speed 0: out of a walk or run (13 to 16) to 6, then idle, each blend 10; out of a turn (17,
+            // 18) to idle 1, blend 10. (Its other animations, an action's or a reaction's, are the battle's to end.)
+            int now = Pose(enemy);
+            if (now is >= 13 and <= 16) { Pose(enemy, 6, 10); Queue(enemy, 1, 10); }
+            else if (now is 17 or 18) Pose(enemy, 1, 10);
+        }
+        StepTurn(enemy);
+        StepTwist(enemy);
+    }
+
+    /// <summary>
+    /// Carries out a posted command (the actor update, BATTLE.PRG 0x80075554, table 0x80068918): stand (2: idle 1, or
+    /// 6 with no one to face, blend 16, and any turn under way stops, 0x8009e700); a body step (3: the twist held, a
+    /// turn to the value at R frames a turn, R 32 for a body under 128 wide, else 128, 0x800b6634); the last step (4:
+    /// the twist toward the goal, a turn to it at the turn speed a frame, 0x800b668c); a glance (6: still, the twist
+    /// toward the angle at 64 a frame); a step of the twist (7: still, the twist to the value at once); a walk or run
+    /// (the twist back to none, <see cref="Stride"/>); a leap, warp, flight or glide. Returns whether it walked.
+    /// </summary>
+    private bool Dispatch(Combatant enemy)
     {
         var m = enemy.Mind!;
         var actor = enemy.Actor;
-        float view = actor.Facing + m.Twist;
-        int diff = (int)Mathf.PosMod(m.TurnTo - view, 4096), dir = diff < 2048 ? 1 : -1;
-        float rate = m.TurnRate;
-        if (diff < 1 || diff < rate || 4096 - diff < rate)
+        int easing = enemy.Girth > 128 ? 20 : 30;
+        switch (m.Command)
         {
-            float turn = Mathf.Wrap(m.TurnTo - actor.Facing, -2048, 2048);
-            actor.Facing = Mathf.PosMod(Math.Abs(turn) <= rate ? m.TurnTo : actor.Facing + Math.Sign(turn) * rate, 4096);
-            m.Twist = Mathf.MoveToward(m.Twist, 0, rate);
-            return;
+            case Body.Stand or Body.Turn when m.Code == 2:
+                if (_walking.Remove(enemy)) enemy.Mover?.Halt();
+                if (Pose(enemy) is not (99 or 199)) Pose(enemy, m.FaceTarget < 16 ? 1 : 6, 16);
+                m.TurnFrames = 0;
+                return false;
+            case Body.Stand when m.Code == 6:
+                Twist(m, -4, 0, m.CodeValue, 64);
+                return false;
+            case Body.Turn when m.Code == 7:
+                Twist(m, -4, 0, (short)m.CodeValue, 4096);
+                return false;
+            case Body.Turn when m.Code == 3:
+                if (m.Twists) { m.TwistMode = -4; m.PitchTarget = m.Pitch; m.TwistTarget = m.Twist; m.TwistRate = 0; }
+                AimTurn(enemy, Wrap((short)m.CodeValue - (int)MathF.Round(actor.Facing)), -1, enemy.Girth < 128 ? 32 : 128);
+                TurnPose(enemy, (short)m.CodeValue);
+                return false;
+            case Body.Turn when m.Code == 4:
+            {
+                Twist(m, -3, 0, m.CodeValue, easing);
+                int d = Wrap(m.CodeValue - (int)MathF.Round(actor.Facing)), spd = Math.Max(1, (int)m.TurnRate);
+                AimTurn(enemy, d, Math.Abs(d) / spd + (Math.Abs(d) % spd != 0 ? 1 : 0), 0);
+                TurnPose(enemy, m.CodeValue);
+                return false;
+            }
+            case Body.Walk:
+                Twist(m, -2, 0, 0, easing);
+                return Stride(enemy, m.Direction);
+            case Body.Leap:
+                Leap(enemy);
+                return false;
+            case Body.Warp:
+                Warp(enemy);
+                return false;
+            case Body.Fly:
+                Fly(enemy);
+                return false;
+            case Body.Land or Body.Rise:
+                StartSettling(enemy, m.Command == Body.Land);
+                return false;
+            case Body.Glide:
+            {
+                // Actor code 19 (0x80075ca0 with 0x800b6530 and motion kind 4, 0x800a291c): there in the frame by the
+                // whole of the step to the point, with no change of animation; facing its target, else along the step
+                // (2048 with none across), its turn aimed afresh over 12 frames.
+                int x = (int)MathF.Round(actor.Position.X), y = (int)MathF.Round(actor.Position.Y), z = (int)MathF.Round(actor.Position.Z);
+                int vx = (short)((int)m.Course.X - x), vy = (short)((int)m.Course.Y - y), vz = (short)((int)m.Course.Z - z);
+                int facing = At(m.FaceTarget) is { } faced ? Angle((int)faced.Actor.Position.X - x, (int)faced.Actor.Position.Z - z) + 2048 : Angle(vx, vz) + 2048;
+                actor.Position = new Vector3((short)(x + vx), (short)(y + vy), (short)(z + vz));
+                AimTurn(enemy, Wrap((facing & 0xFFF) - ((int)MathF.Round(actor.Facing) & 0xFFF)), 12, 0);
+                return false;
+            }
         }
-        if (actor.Head != null && (dir > 0 ? m.Twist < 800 : m.Twist > -800)) m.Twist = Math.Clamp(m.Twist + dir * rate, -800, 800);
-        else actor.Facing = Mathf.PosMod(actor.Facing + dir * rate, 4096);
+        return false;
+    }
+
+    /// <summary>The upper body's mode, values and rate set (BATTLE.PRG 0x8009fc60), which does nothing for a model without a twist; a rate of 0 or below keeps 30 (20 for one over 128 wide) only where retail passes -1.</summary>
+    private static void Twist(Mind m, int mode, int pitch, int twist, int rate)
+    {
+        if (!m.Twists) return;
+        (m.TwistMode, m.PitchTarget, m.TwistTarget, m.TwistRate) = (mode, pitch, twist, rate);
+    }
+
+    /// <summary>An angle difference wrapped as BATTLE.PRG's turns take it (0x800a9eb4, 0x800aa850): from -2048 to 2048.</summary>
+    private static int Wrap(int d)
+    {
+        d = (short)d;
+        if (d > 2048) d -= 4096;
+        if (d < -2048) d += 4096;
+        return d;
+    }
+
+    /// <summary>
+    /// Arms the body's turn (BATTLE.PRG 0x800aa984): the angle left, and over the frames given, or with -1 over
+    /// ceil(|angle| * rate / 4096) frames (the rate R of 0x800a9eb4); 0 frames turns it at once.
+    /// </summary>
+    private static void AimTurn(Combatant enemy, int delta, int frames, int rate)
+    {
+        var m = enemy.Mind!;
+        m.TurnLeft = delta;
+        if (frames == -1)
+        {
+            long p = (long)Math.Abs(delta) * rate;
+            frames = (int)(p >> 12) + ((p & 0xFFF) != 0 ? 1 : 0);
+        }
+        m.TurnFrames = frames;
+        if (frames != 0) return;
+        int v = (short)((int)MathF.Round(enemy.Actor.Facing) + delta);
+        enemy.Actor.Facing = Mathf.PosMod(v - v / 4096 * 4096, 4096);
+    }
+
+    /// <summary>A frame of the body's turn (BATTLE.PRG 0x800b002c): a share of the angle left, truncated, so the last frame takes the rest.</summary>
+    private static void StepTurn(Combatant enemy)
+    {
+        var m = enemy.Mind!;
+        if (m.TurnFrames == 0) return;
+        int step = (short)m.TurnLeft / m.TurnFrames;
+        enemy.Actor.Facing = ((int)MathF.Round(enemy.Actor.Facing) + step) & 0xFFF;
+        m.TurnLeft -= step;
+        m.TurnFrames--;
+    }
+
+    /// <summary>
+    /// The turn in place's animation (BATTLE.PRG 0x800a249c), not aloft and not when already facing the angle: the
+    /// body is held still this frame, and unless it plays 117 or 118, 17 turning one way or 18 the other (blend 10).
+    /// </summary>
+    private void TurnPose(Combatant enemy, int angle)
+    {
+        var m = enemy.Mind!;
+        if (m.Airborne) return;
+        int d = Wrap(angle - (short)(int)MathF.Round(enemy.Actor.Facing));
+        if (d == 0) return;
+        m.TurningInPlace = true;
+        if (Pose(enemy) is 117 or 118) return;
+        Pose(enemy, d >= 0 ? 17 : 18, 10);
+    }
+
+    /// <summary>
+    /// The twist and pitch for a frame (BATTLE.PRG 0x800b002c from 0x800b04a4, after the turn): back toward none in
+    /// mode -2; otherwise toward the values (mode -4) or the goal less the facing (mode -3), wrapped and kept within
+    /// 800 either way, while the body plays an animation the twist is drawn with (idle 0, 1, 6, walking 13, 14, turning
+    /// 17, 18; 8 to 34 aloft), else toward none; never more than the rate a frame. It is drawn on the upper body.
+    /// </summary>
+    private void StepTwist(Combatant enemy)
+    {
+        var m = enemy.Mind!;
+        if (!m.Twists) return;
+        int ty = 0, tp = 0;
+        if (m.TwistMode == -2 && m.Twist == 0 && m.Pitch == 0) { enemy.Actor.HeldYaw = null; return; }
+        if (m.TwistMode != -2)
+        {
+            int a = Pose(enemy);
+            if (a >= 100) a -= 100;
+            bool shown = m.Airborne ? a is >= 8 and <= 34 : a is 0 or 1 or 6 or 13 or 14 or 17 or 18;
+            if (shown)
+            {
+                (tp, ty) = m.TwistMode == -3 ? (m.PitchTarget, m.TwistTarget - ((int)MathF.Round(enemy.Actor.Facing) & 0xFFF)) : (m.PitchTarget, m.TwistTarget);
+                static int Within(int v) { v = (short)v; v = v >= 2048 ? v - 4096 : v < -2048 ? v + 4096 : v; return Math.Clamp(v, -800, 800); }
+                ty = Within(ty);
+                tp = Within(tp);
+            }
+        }
+        int r = m.TwistRate;
+        m.Twist += Math.Clamp(ty - m.Twist, -r, r);
+        m.Pitch += Math.Clamp(tp - m.Pitch, -r, r);
+        enemy.Actor.HeldYaw = m.Twist == 0 ? null : m.Twist;
+    }
+
+    /// <summary>The animation an enemy's body plays now (body +0x5b8), -1 for none.</summary>
+    internal static int Pose(Combatant enemy)
+    {
+        string clip = enemy.Actor.Player?.CurrentAnimation ?? "";
+        int split = clip.LastIndexOf('_');
+        return split >= 0 && int.TryParse(clip[(split + 1)..], out int number) ? number : -1;
+    }
+
+    /// <summary>
+    /// Sets an enemy body's animation (BATTLE.PRG 0x800a0204): aloft, idle 1 or 6 is the airborne idle 8; one already
+    /// playing is not started again; the blend doubles for a body 128 or more wide. Returns whether it plays.
+    /// </summary>
+    private static bool Pose(Combatant enemy, int number, int blend)
+    {
+        if (enemy.Mind is { Airborne: true } && number is 1 or 6) number = 8;
+        if (Pose(enemy) == number) return true;
+        return Play(enemy, number, enemy.Girth >= 128 ? blend * 2 : blend) != null;
+    }
+
+    /// <summary>Queues an enemy body's next animation for when this one ends (BATTLE.PRG 0x800a01c8).</summary>
+    private static void Queue(Combatant enemy, int number, int blend)
+    {
+        foreach (string set in enemy.Set != "base" ? new[] { enemy.Set, "base" } : new[] { "base" })
+            if (enemy.Actor.HasClip($"{set}_{number}")) { enemy.Actor.Queue($"{set}_{number}", blend); return; }
     }
 
     /// <summary>
@@ -1447,24 +1766,21 @@ public sealed partial class FieldBattle
     /// profile's speed byte for the second, kept); with neither it stands. Its corners a probe's step ahead (at that
     /// profile's speed) are tested for walls and rises; one walled nudges it off the wall once a tile, to its girth
     /// within the tile, at most 8 a frame. It moves at its record's speed, the second's where that profile's flags are
-    /// exactly walking (2, 64) or running (4, 128), facing its target as it goes, else its heading.
+    /// exactly walking (2, 64) or running (4, 128); walking it faces its target as it goes, else (and running) its
+    /// heading, its turn aimed afresh each frame. Returns whether it moved.
     /// </summary>
-    private void Stride(Combatant enemy, int heading)
+    private bool Stride(Combatant enemy, int heading)
     {
         var actor = enemy.Actor;
         var m = enemy.Mind!;
-        if (enemy.Mover is not { } mover) return;
+        if (enemy.Mover is not { } mover) return false;
         bool run;
         int probe;
         if (m.Run && (m.FlagsA & 0x84) != 0) (run, probe) = (true, m.SpeedA);
         else if (m.Run && (m.FlagsB & 0x84) != 0) (run, probe) = (true, m.SpeedB);
         else if ((m.FlagsA & 0x42) != 0) (run, probe) = (false, m.SpeedA);
         else if ((m.SpeedA & 0x42) != 0) (run, probe) = (false, m.SpeedB);
-        else
-        {
-            if (_walking.Remove(enemy)) { mover.Halt(); Play(enemy, 1, 6); }
-            return;
-        }
+        else return false;
         var p = actor.Position;
         int a = (3072 - heading) & 0xFFF, x = (int)p.X, z = (int)p.Z;
         int px = x + (Cos(a) * probe >> 12), pz = z + (Sin(a) * probe >> 12), r = m.Radius, tx = m.Tile.X, tz = m.Tile.Z;
@@ -1477,7 +1793,7 @@ public sealed partial class FieldBattle
             if (_walls != null) walled |= (WallsOf(m.Tile) >> d & 1) != 0 || (_floors[((tz + row) & 31) * 32 + ((tx + col) & 31)] >> 10 & 7) > (_floors[(tz & 31) * 32 + (tx & 31)] >> 10 & 7);
             else walled |= Walled(m.Tile, d);
         }
-        if (walled)
+        if (walled && !m.Plain)
         {
             int cx = tx * 128 + 64, cz = tz * 128 + 64;
             int nx = (px < cx ? cx - 64 + r : cx + 63 - r) - x, nz = (pz < cz ? cz - 64 + r : cz + 63 - r) - z;
@@ -1485,24 +1801,36 @@ public sealed partial class FieldBattle
             {
                 m.Nudged = m.Tile;
                 Nudge(enemy, Math.Clamp(nx, -8, 8), Math.Clamp(nz, -8, 8));
-                return;
+                return true;
             }
         }
         int speed = run ? (m.FlagsB is 4 or 128 ? m.SpeedB : m.SpeedA) : (m.FlagsB is 2 or 64 ? m.SpeedB : m.SpeedA);
-        if (speed <= 0)
-        {
-            if (_walking.Remove(enemy)) { mover.Halt(); Play(enemy, 1, 6); }
-            return;
-        }
+        if (speed <= 0) return false;
         mover.WalkSpeed = speed;
-        float facing = At(m.FaceTarget) is { } t ? actor.FacingToward(t.Actor.Position) : heading & 0xFFF;
-        mover.Step(heading & 0xFFF, walk: true, facing: facing);
+        // Walking (9) faces whom it faces, else its way; running (10) always its way (0x8007589c, 0x80075944).
+        int facing = !run && At(m.FaceTarget) is { } t ? (int)actor.FacingToward(t.Actor.Position) & 0xFFF : heading & 0xFFF;
+        // 0x800a6660, before the step: the turn is aimed afresh every frame it walks, the angle left to its facing over
+        // 12 frames (or one frame a 32 of it for a body over 128 wide, if more), so it closes a twelfth a frame.
+        int yaw = (int)MathF.Round(actor.Facing) & 0xFFF;
+        if (facing != yaw)
+        {
+            if (m.TurnFrames == 0) AimTurn(enemy, Wrap(facing - yaw), 12, 0);
+            else
+            {
+                int left = (short)(facing - yaw);
+                m.TurnLeft = left >= 2048 ? left - 4096 : left < -2048 ? left + 4096 : left;
+                m.TurnFrames = 12;
+            }
+            if (enemy.Girth >= 129 && Math.Abs((short)m.TurnLeft / 32) is var n && m.TurnFrames < n) m.TurnFrames = n;
+        }
+        mover.Step(heading & 0xFFF, walk: true);
         if (!_walking.Contains(enemy) || enemy.Runs != run)
         {
             if (!run || Play(enemy, FieldPlayer.Run, 4) == null) Play(enemy, FieldPlayer.Walk, 4);
             enemy.Runs = run;
             _walking.Add(enemy);
         }
+        return true;
     }
 
     /// <summary>
@@ -1518,30 +1846,224 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Leaps to a tile (BATTLE.PRG's command 14, 0x800df5f0, by the jump 0x800a208c): within the height it may step it
-    /// steps (11), else a hopper warps (23), a flyer flies (18), else it leaps (14); its goal's centre on the floor is
-    /// where it is bound (+0x174), that tile taken until it lands. The leap's speed is its profile's (run, then walk).
+    /// A leap to a tile asked of the body (BATTLE.PRG's command 14, 0x800df5f0): within the height it may step it is
+    /// the short jump (actor code 11); beyond it a hopper warps (23), a flyer leaps as one (18), a leaper (0xc0) as one
+    /// (14), else the short jump. Its speed is its profile's (running, the first that runs, 0x84, else the first that
+    /// walks, 0x42); with none it stands. Where it is bound (+0x174, +0x178) is the tile's centre at the floors grid's
+    /// floor, and that tile is taken (by any but Ashley).
+    /// </summary>
+    private void Aim14(Combatant c)
+    {
+        var m = c.Mind!;
+        int code = Math.Abs(FloorOf(m.LeapTile) - FloorOf(m.Tile)) < m.StepHeight ? 11 : (m.Moves & 8) != 0 ? 23 : (m.Moves & 0x30) != 0 ? 18 : (m.Moves & 0xC0) != 0 ? 14 : 11;
+        if (code == 23) { m.Command = Body.Warp; return; }
+        int speed = m.Run && (m.FlagsA & 0x84) != 0 ? m.SpeedA : m.Run && (m.FlagsB & 0x84) != 0 ? m.SpeedB
+            : (m.FlagsA & 0x42) != 0 ? m.SpeedA : (m.FlagsB & 0x42) != 0 ? m.SpeedB : -1;
+        if (speed < 0) { m.Command = Body.Stand; return; }
+        m.Bound = new Vector3(m.LeapTile.X * 128 + 64, FloorOf(m.LeapTile), m.LeapTile.Z * 128 + 64);
+        if (c.Index != 0) Reserve(m.LeapTile, true);
+        m.Code = code;
+        m.CodeValue = speed;
+    }
+
+    /// <summary>
+    /// The body takes up a leap (actor codes 11, 14 and 18, 0x800759cc): the twist back to none, facing the tile's
+    /// centre always; a short jump by a leaper or a flyer goes as theirs; a leaper is marked one, a flyer marked and
+    /// shown aloft (31) first; a short jump takes the first animation set. Then the jump (<see cref="Launch"/>).
     /// </summary>
     private void Leap(Combatant enemy)
     {
         var m = enemy.Mind!;
         var actor = enemy.Actor;
-        if (enemy.Mover is not { } mover) return;
-        int speed = m.Run && (m.FlagsA & 0x84) != 0 ? m.SpeedA : m.Run && (m.FlagsB & 0x84) != 0 ? m.SpeedB
-            : (m.FlagsA & 0x42) != 0 ? m.SpeedA : (m.FlagsB & 0x42) != 0 ? m.SpeedB : 0;
-        if (speed <= 0)
-        {
-            if (_walking.Remove(enemy)) { mover.Halt(); Play(enemy, 1, 6); }
-            return;
-        }
-        var centre = Centre(m.LeapTile, 0);
-        float floor = _view.FloorAt(centre) ?? FloorOf(m.LeapTile);
-        m.Bound = centre with { Y = floor };
-        Reserve(m.LeapTile, true);
         _walking.Remove(enemy);
-        float facing = At(m.FaceTarget) is { } t ? actor.FacingToward(t.Actor.Position) : actor.FacingToward(centre);
-        mover.Leap(m.Bound, speed, facing);
-        Play(enemy, 47, 4, once: true);
+        Twist(m, -2, 0, 0, enemy.Girth > 128 ? 20 : 30);
+        int x = (int)MathF.Round(actor.Position.X), z = (int)MathF.Round(actor.Position.Z), cx = m.LeapTile.X * 128 + 64, cz = m.LeapTile.Z * 128 + 64;
+        int facing = Angle(cx - x, cz - z) + 2048;
+        int code = m.Code;
+        if (code == 11) code = (m.JumpMarks & 0x40) != 0 ? 14 : (m.JumpMarks & 0x20) != 0 ? 18 : 11;
+        if (code == 11) m.JumpSet = 1;
+        else if (code == 14) m.JumpMarks = m.JumpMarks & 0x9F | 0x40;
+        else { m.JumpMarks |= 0x60; Pose(enemy, 31, 8); }
+        Launch(enemy, m.CodeValue, facing);
+        StepJump(enemy);
+    }
+
+    /// <summary>The floor a jump lands on at a point (BATTLE.PRG 0x800a3500): the collision floor, or a crate's top on the tile where higher.</summary>
+    internal int JumpFloor(int x, int z)
+    {
+        int h = _view.Sample(x, z) << 17 >> 17;
+        foreach (var (_, _, tx, tz, bottom, resting) in _view.CrateObjects)
+            if (resting && tx == x >> 7 && tz == z >> 7 && (int)bottom - 128 < h) h = (int)bottom - 128;
+        return h;
+    }
+
+    /// <summary>
+    /// The floor under a point in the air for a jump (BATTLE.PRG 0x800a6ee8, its first way): the collision floor
+    /// (-3000 off it), a crate's top on the tile, 3000 over a pit, or a platform's top within 64 across and no more
+    /// than 256 above the body, whichever is highest.
+    /// </summary>
+    private int AirFloor(int x, int y, int z)
+    {
+        short sample = _view.Sample(x, z);
+        if (sample < 0) return -3000;
+        int h = JumpFloor(x, z);
+        if ((_view.TileAttributes(x >> 7, z >> 7) >> 17 & 1) != 0 && h >= 0) h = 3000;
+        for (int i = _view.PlatformCount - 1; i >= 0; i--)
+        {
+            if (_view.PlatformState(i) is not { Off: false } platform) continue;
+            int ex = (int)platform.Now.X, ez = (int)platform.Now.Z, top = (int)platform.Now.Y;
+            if (ex - 64 <= x && x < ex + 64 && ez - 64 <= z && z < ez + 64 && top >= y - 256) { if (top < h) h = top; break; }
+        }
+        return h;
+    }
+
+    // BATTLE.PRG's jump tables (0x800e90ac, 0x800e90b4): frames held at the top and the lift over the higher end, by
+    // the kind of jump (a drop 2, a small rise or level 1, a big rise 0; a floating body's 5, 4, 3); and the jump's
+    // animations by its set (0x800e92e8 the crouch's end, 0x800e92f0 near the top, 0x800e92f8 falling, 0x800e9300 the
+    // landing).
+    private static readonly int[] HoldFrames = { 5, 5, 5, 10, 12, 12 }, Lifts = { 63, 63, 63, 30, 42, 42 };
+    private static readonly int[] CrouchEnds = { 44, 48, 53, 0, 35, 32, 92 }, Tops = { 49, 49, 54, 0, 36, 33, 92 }, Falls = { 45, 50, 55, 0, 38, 34, 92 }, Landings = { 46, 51, 56, 0, 31, 36, 93 };
+
+    /// <summary>
+    /// Launches a jump to the tile it is bound for (BATTLE.PRG 0x800a208c): it crouches 2 frames when its speed is its
+    /// run's (the second profile's when faster than the first) or more, else 6; its speed is at least 18; the point is
+    /// the tile's centre at its floor (<see cref="JumpFloor"/>). Dropping, the arc's frames are those gravity (6 a frame,
+    /// halved into the fall) takes to cover the drop and the lift, plus those held, no fewer than its speed across
+    /// needs (the hold growing by half the lack); rising or level, those of the climb to the lift above the higher end,
+    /// plus those held, growing the hold until the step across is within its speed (and it cries out, its sound 12).
+    /// Each frame's step across is the distance over the frames, truncated. It plays 47 (blend 4) and turns to face the
+    /// centre at 8 frames a turn.
+    /// </summary>
+    private void Launch(Combatant enemy, int speed, int facing)
+    {
+        var m = enemy.Mind!;
+        var actor = enemy.Actor;
+        if (m.Jump != 0) return;
+        int quick = m.SpeedB > m.SpeedA ? m.SpeedB : 255;
+        m.JumpWait = speed >= quick ? 2 : 6;
+        if (speed < 18) speed = 18;
+        int x = (short)(int)MathF.Round(actor.Position.X), y = (short)(int)MathF.Round(actor.Position.Y), z = (short)(int)MathF.Round(actor.Position.Z);
+        int tx = m.LeapTile.X * 128 + 64, tz = m.LeapTile.Z * 128 + 64, ty = JumpFloor(tx, tz);
+        (m.JumpX, m.JumpZ) = (tx, tz);
+        int dx = tx - x, dz = tz - z, dy = ty - y, t0 = Math.Max(Math.Abs(dx), Math.Abs(dz)) / speed;
+        const int g = 6;
+        int frames, vx, vy, vz;
+        if (dy > 0)
+        {
+            int hold = HoldFrames[2];
+            dy += Lifts[2];
+            int vel = 0, fall = 0;
+            frames = 0;
+            if (dy > 0) do { vel += g; fall += vel >> 1; frames++; } while (fall < dy);
+            frames += hold;
+            if (frames < t0) { hold = hold + 1 + ((t0 - frames) >> 1); frames = t0; }
+            (vx, vz, vy) = (dx / frames, dz / frames, -(hold + 1) * g / 2);
+        }
+        else
+        {
+            if (enemy.Index != 0 && actor.Position.Y < 3000) _view.PlayActorSound(actor, $"c{actor.Character:X2}_12_p128");
+            int k = dy >= -64 ? 1 : 0, hold = HoldFrames[k], h = dy - Lifts[k];
+            while (true)
+            {
+                int vel = 0, rise = 0;
+                frames = 0;
+                if (h < 0) do { vel += g; rise -= vel >> 1; frames++; } while (h < rise);
+                frames += hold;
+                (vx, vz, vy) = (dx / frames, dz / frames, -vel / 2);
+                if (Math.Abs(vx) <= speed && Math.Abs(vz) <= speed) break;
+                hold++;
+                h -= (hold + 1) * g / 2;
+            }
+        }
+        m.JumpStep = (vx, vy, vz);
+        m.JumpFrames = frames;
+        m.JumpMode = 2;
+        Pose(enemy, 47, 4);
+        m.Jump = 2;
+        AimTurn(enemy, Wrap((facing & 0xFFF) - ((int)MathF.Round(actor.Facing) & 0xFFF)), -1, 8);
+    }
+
+    /// <summary>
+    /// A frame of a jump (BATTLE.PRG 0x800ac690). Crouching, its frames run down and at the last but one it plays the
+    /// crouch's end (blend 8); the next frame it is in the air. In the air, gravity adds 3 to its fall first; rising
+    /// into the ceiling (192 above it) it bounces down, and stops across and lets its tile go; it plays the falling
+    /// animation (blend 8) once falling faster than 9, or the top's (blend 16) between 9 either way; it does not look
+    /// for the floor while rising or before its frames are out, and then each frame keeps short of the centre across
+    /// and lands where the next step would meet the floor (<see cref="AirFloor"/>): on it there, as far across as it
+    /// came, playing the landing (blend 8), grounded. Recovering, it waits out the landing's blend (7 frames, 15 for a
+    /// body 128 or more wide), then idles (blend 8), lets the tile it stands on go and is done.
+    /// </summary>
+    private void StepJump(Combatant enemy)
+    {
+        var m = enemy.Mind!;
+        var actor = enemy.Actor;
+        // The animation set (0x800ac690): 5 aloft (a flyer's leap), else the jump's own.
+        int set = m.Airborne ? 5 : m.JumpSet;
+        switch (m.Jump)
+        {
+            case 2:
+                if (m.JumpWait > 0)
+                {
+                    m.JumpWait--;
+                    if (m.JumpWait < 2) { Pose(enemy, CrouchEnds[set], 8); m.JumpWait = 0; }
+                    return;
+                }
+                m.Jump = 3;
+                return;
+            case 3:
+            {
+                int x = (short)(int)MathF.Round(actor.Position.X), y = (short)(int)MathF.Round(actor.Position.Y), z = (short)(int)MathF.Round(actor.Position.Z);
+                var (vx, vy, vz) = m.JumpStep;
+                vy += 3;
+                if (vy < 0 && y + vy - 192 < _view.CeilingAt(x, z))
+                {
+                    vy = -vy;
+                    if (enemy.Index != 0) { vx = vz = 0; m.JumpMode = 0; Reserve(m.LeapTile, false); }
+                }
+                if (vy > 9) Pose(enemy, Falls[set], 8);
+                else if (vy >= -9) Pose(enemy, Tops[set], 16);
+                m.JumpStep = (vx, vy, vz);
+                int? onto = null;
+                if (m.JumpMode == 2)
+                {
+                    --m.JumpFrames;
+                    // Coming down onto a platform it is not on (0x800a9378's second way, 128 below to just under it):
+                    // it lands on its top, and is marked as landed there (0x800e6764), its tile let go.
+                    int nx = x + vx, ny = y + vy, nz = z + vz, under = _view.PlatformUnder(actor.Position);
+                    for (int i = _view.PlatformCount - 1; i >= 0 && vy >= 0 && onto == null; i--)
+                    {
+                        if (i == under || _view.PlatformState(i) is not { Off: false } platform) continue;
+                        int ex = (int)platform.Now.X, ez = (int)platform.Now.Z, top = (int)platform.Now.Y;
+                        if (ex - 64 <= nx && nx < ex + 64 && ez - 64 <= nz && nz < ez + 64 && ny - 128 <= top && top < ny) onto = top;
+                    }
+                    if (onto != null) { m.Raised = true; Reserve(m.LeapTile, false); }
+                }
+                bool look = onto != null || (m.JumpMode switch { 2 => m.JumpFrames <= 0 && vy >= 0, _ => vy >= 0 });
+                if (!look) { actor.Position = new Vector3((short)(x + vx), (short)(y + vy), (short)(z + vz)); return; }
+                if (m.JumpMode == 2)
+                {
+                    if (vx > 0 && m.JumpX < x + vx || vx < 0 && x + vx < m.JumpX) vx = 0;
+                    if (vz > 0 && m.JumpZ < z + vz || vz < 0 && z + vz < m.JumpZ) vz = 0;
+                    m.JumpStep = (vx, vy, vz);
+                }
+                int floor = onto ?? AirFloor(x + vx, y, z + vz);
+                if (y + vy < floor) { actor.Position = new Vector3((short)(x + vx), (short)(y + vy), (short)(z + vz)); return; }
+                actor.Position = new Vector3((short)(x + vx), floor, (short)(z + vz));
+                m.JumpMode = 0;
+                Pose(enemy, Landings[set], 8);
+                m.Airborne = false;
+                m.JumpWait = (enemy.Girth >= 128 ? 16 : 8) - 1;
+                m.Jump = 4;
+                return;
+            }
+            case 4:
+                if (--m.JumpWait > 0) return;
+                Pose(enemy, 1, 8);
+                Reserve(TileOf(enemy), false);
+                m.Jump = 0;
+                m.Settled = true;
+                return;
+        }
     }
 
     /// <summary>A warp (command 13, actor code 23, 0x800df4ec and 0x800a29e8): it fades out (19 then 20) to reappear on the tile, taking it until it lands.</summary>
@@ -1559,147 +2081,283 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Flies a frame (actor codes 16 and 17, motion kind 3, 0x800a2790): along the flight vector at its record's speed
-    /// (the second's where that profile's flags are exactly 16 walking or 32 running), through anything; it faces its
-    /// target, else its way; rising (38), level (37) or sinking (40).
+    /// Flies a frame (AI commands 9 and 10: actor codes 16 and 17, 0x80075b70 and 0x80075c2c, then motion kind 3,
+    /// 0x800a2790): the twist back to none; the flight vector made 4096 long in all three axes (the GTE's normalise),
+    /// moved along at its record's speed (the second profile's where its flags are exactly 16 walking or 32 running),
+    /// each axis's step truncated, through anything, and aloft; it faces its target, else its way (2048 straight up or
+    /// down), its turn aimed afresh over 12 frames; it plays its airborne idle with no speed, else rising (38), level
+    /// (37) or sinking (40) by its step down, blend 4, set again whenever another has taken over.
     /// </summary>
     private void Fly(Combatant enemy)
     {
         var m = enemy.Mind!;
         var actor = enemy.Actor;
-        bool run = _issued == 10;
-        int speed = run ? (m.FlagsB == 32 ? m.SpeedB : m.SpeedA) : (m.FlagsB == 16 ? m.SpeedB : m.SpeedA);
-        var v = m.Course.LengthSquared() > 0 ? m.Course.Normalized() * speed : Vector3.Zero;
-        actor.Position += v;
+        Twist(m, -2, 0, 0, enemy.Girth > 128 ? 20 : 30);
+        int speed = m.Code == 10 ? (m.FlagsB == 32 ? m.SpeedB : m.SpeedA) : (m.FlagsB == 16 ? m.SpeedB : m.SpeedA);
+        var (nx, ny, nz) = Normalise((int)m.Course.X, (int)m.Course.Y, (int)m.Course.Z);
+        int x = (int)MathF.Round(actor.Position.X), y = (int)MathF.Round(actor.Position.Y), z = (int)MathF.Round(actor.Position.Z);
+        int facing = At(m.FaceTarget) is { } t ? Angle((int)t.Actor.Position.X - x, (int)t.Actor.Position.Z - z) + 2048 : Angle(nx, nz) + 2048;
+        long s = (long)speed << 12;
+        int dx = (int)(nx * s / (1 << 24)), dy = (int)(ny * s / (1 << 24)), dz = (int)(nz * s / (1 << 24));
+        actor.Position = new Vector3((short)(x + dx), (short)(y + dy), (short)(z + dz));
         m.Airborne = true;
-        if (At(m.FaceTarget) is { } t) TurnToward(actor, actor.FacingToward(t.Actor.Position));
-        else if (v.X != 0 || v.Z != 0) TurnToward(actor, actor.FacingToward(actor.Position + v));
-        int pose = speed <= 0 ? 1 : v.Y < -2 ? 38 : v.Y < 3 ? 37 : 40;
-        if (pose != m.Pose && Play(enemy, pose, 4) != null) m.Pose = pose;
+        m.JumpMarks |= 0x20;
+        AimTurn(enemy, Wrap((facing & 0xFFF) - ((int)MathF.Round(actor.Facing) & 0xFFF)), 12, 0);
+        int pose = s <= 0 ? 8 : dy < -2 ? 38 : dy < 3 ? 37 : 40;
+        if (Pose(enemy) != pose) Pose(enemy, pose, 4);
         _walking.Add(enemy);
     }
 
-    /// <summary>A body's turn while it flies: the shortest way, a twelfth of what is left a frame.</summary>
-    private static void TurnToward(EventActor actor, float facing) =>
-        actor.Facing = Mathf.PosMod(actor.Facing + Mathf.Wrap(facing - actor.Facing, -2048, 2048) / 12, 4096);
-
     /// <summary>
-    /// Starts a flyer's landing (actor code 21: 9 to the floor at its tile's centre, then 10) or rising (22: 7, then 37,
-    /// to its cruising height there), at its flying speed.
+    /// Starts a flyer's landing (actor code 21, 0x800b65e8: state 1) or rising (22, 0x800b65f4: state 4) and runs its
+    /// first frame (0x800a2cd4). It turns to face its target, else (retail's slip, the point being divided away) the
+    /// map's corner, at 8 frames a turn (0x800a9eb4). Landing it plays 9 (blend 8) and is bound for its tile's centre
+    /// at the ground there; rising it plays 7 (blend 8) with 37 queued, is aloft, and is bound for the centre at its
+    /// cruising height. The way is covered at 8 frames per 128 units (body +0x5c2, 8 for every body: 0x8009bab0), the
+    /// frames ceil(root of the way squared * 8 / 128) (0x800aa290, 0x800aa698); with none it is there at once and done.
     /// </summary>
     private void StartSettling(Combatant enemy, bool landing)
     {
         var m = enemy.Mind!;
-        if (m.Settling != 0) return;
-        var centre = Centre(m.LeapTile, 0);
-        float ground = _view.FloorAt(centre) ?? FloorOf(m.LeapTile);
-        if (landing) Reserve(m.LeapTile, true);
-        m.SettleTo = centre with { Y = landing ? ground : FloorOf(m.LeapTile) + Cruise };
-        int speed = Math.Max(1, Pace(m)?.Speed ?? 8);
-        m.Settling = Math.Max(1, (int)Math.Ceiling((m.SettleTo - enemy.Actor.Position).Length() / speed)) * (landing ? 1 : -1);
-        if (landing) Play(enemy, 9, 8, once: true);
-        else { m.Airborne = true; if (Play(enemy, 7, 8, once: true) is { } set) enemy.Actor.Queue($"{set}_37", 8); }
+        var actor = enemy.Actor;
+        int x = (short)(int)MathF.Round(actor.Position.X), y = (short)(int)MathF.Round(actor.Position.Y), z = (short)(int)MathF.Round(actor.Position.Z);
+        int cx = m.LeapTile.X * 128 + 64, cz = m.LeapTile.Z * 128 + 64;
+        int ty = landing ? Ground(cx, cz) : FloorOf(m.LeapTile) + Cruise;
+        m.SettleTo = new Vector3(cx, ty, cz);
+        m.SettleFacing = At(m.FaceTarget) is { } t ? Angle((int)t.Actor.Position.X - x, (int)t.Actor.Position.Z - z) + 2048
+            : landing ? Angle(-m.LeapTile.X, -m.LeapTile.Z) + 2048 : Angle(-x, -z) + 2048;
+        if (landing) Pose(enemy, 9, 8);
+        else { Pose(enemy, 7, 8); Queue(enemy, 37, 8); }
+        int dx = (short)(cx - x), dy = (short)(ty - y), dz = (short)(cz - z);
+        int frames = 0;
+        {
+            long p = (long)Root((long)Math.Abs((long)dx * dx) + Math.Abs((long)dz * dz) + Math.Abs((long)dy * dy)) * 8;
+            frames = (int)(p >> 7) + ((p & 0x7F) != 0 ? 1 : 0);
+        }
+        AimTurn(enemy, Wrap((m.SettleFacing & 0xFFF) - ((int)MathF.Round(actor.Facing) & 0xFFF)), -1, 8);
+        m.SettleLeft = (dx, dy, dz);
+        m.SettleFrames = frames;
+        if (!landing) m.Airborne = true;
+        if (frames == 0)
+        {
+            actor.Position = new Vector3((short)(x + dx), (short)(y + dy), (short)(z + dz));
+            if (landing) Landed(enemy);
+            else Pose(enemy, 1, 8);
+            m.Settled = true;
+            return;
+        }
+        m.Settling = landing ? 2 : 5;
     }
 
-    /// <summary>A landing or rising under way: the body moves evenly to where it settles; a landing ends grounded (10, then idle) with its tile freed.</summary>
+    /// <summary>
+    /// The ground under a tile's centre as a landing takes it (BATTLE.PRG 0x800a6ee8, its fourth way): the collision
+    /// floor there, a crate on the tile its top instead, 3000 over a pit, -3000 off the map.
+    /// </summary>
+    private int Ground(int x, int z)
+    {
+        short sample = _view.Sample(x, z);
+        if (sample == -32768) return -3000;
+        int h = (sample & 0x7FFF) << 17 >> 17;
+        foreach (var (_, _, tx, tz, bottom, resting) in _view.CrateObjects)
+            if (resting && tx == x >> 7 && tz == z >> 7 && (int)bottom - 128 < h) h = (int)bottom - 128;
+        if ((_view.TileAttributes(x >> 7, z >> 7) >> 17 & 1) != 0 && h >= 0) h = 3000;
+        return h;
+    }
+
+    /// <summary>A landing's end (state 3's finish): grounded, its ground bookkeeping, the tile it stands on freed, idle (blend 8).</summary>
+    private void Landed(Combatant enemy)
+    {
+        var m = enemy.Mind!;
+        m.Airborne = false;
+        Reserve(TileOf(enemy), false);
+        Pose(enemy, 1, 8);
+        m.Settling = 0;
+    }
+
+    /// <summary>
+    /// A landing or rising under way (BATTLE.PRG 0x800a2cd4 states 2, 3 and 5): each frame it moves by its way left over
+    /// its frames left, truncated (0x800a2fbc), so the last frame takes the rest. Descending, a platform's top just
+    /// under it (within 128, and 64 across) stops the landing where it is, aloft, playing its airborne idle, its tile
+    /// left taken (0x800a9378); at the end it plays 10 (blend 8), is grounded, and waits out that animation, then lands
+    /// (<see cref="Landed"/>). Rising, at the end it plays its airborne idle (blend 8), which drops the queued 37.
+    /// Returns whether it was under way this frame.
+    /// </summary>
     private bool Settle(Combatant enemy)
     {
         var m = enemy.Mind!;
-        if (m.Settling == 0) return false;
-        int left = Math.Abs(m.Settling);
         var actor = enemy.Actor;
-        actor.Position += (m.SettleTo - actor.Position) / left;
-        m.Settling -= Math.Sign(m.Settling);
-        if (m.Settling == 0 && m.SettleTo.Y >= (_view.FloorAt(m.SettleTo) ?? m.SettleTo.Y))
+        switch (m.Settling)
         {
-            m.Airborne = false;
-            Reserve(TileOf(enemy), false);
-            if (Play(enemy, 10, 8, once: true) is { } set) actor.Queue($"{set}_1", 8);
-            m.Pose = -1;
+            case 2 or 5:
+            {
+                int f = m.SettleFrames;
+                var (lx, ly, lz) = m.SettleLeft;
+                int sx = (short)lx / f, sy = (short)ly / f, sz = (short)lz / f;
+                m.SettleFrames = f - 1;
+                m.SettleLeft = ((short)(lx - sx), (short)(ly - sy), (short)(lz - sz));
+                actor.Position = new Vector3((short)((int)MathF.Round(actor.Position.X) + sx), (short)((int)MathF.Round(actor.Position.Y) + sy), (short)((int)MathF.Round(actor.Position.Z) + sz));
+                if (m.Settling == 2)
+                {
+                    int x = (int)MathF.Round(actor.Position.X), y = (int)MathF.Round(actor.Position.Y), z = (int)MathF.Round(actor.Position.Z);
+                    for (int i = _view.PlatformCount - 1; i >= 0; i--)
+                    {
+                        if (_view.PlatformState(i) is not { Off: false } platform) continue;
+                        int ex = (int)platform.Now.X, ez = (int)platform.Now.Z, top = (int)platform.Now.Y;
+                        if (ex - 64 <= x && x < ex + 64 && ez - 64 <= z && z < ez + 64 && y - 128 <= top && top < y)
+                        {
+                            m.Airborne = true;
+                            Pose(enemy, 8, 8);
+                            m.Settling = 0;
+                            m.Settled = true;
+                            return true;
+                        }
+                    }
+                    if (m.SettleFrames == 0) { Pose(enemy, 10, 8); m.Airborne = false; m.Settling = 3; }
+                }
+                else if (m.SettleFrames == 0)
+                {
+                    Pose(enemy, 1, 8);
+                    m.Settling = 0;
+                    m.Settled = true;
+                }
+                return true;
+            }
+            case 3:
+                // The finish comes the frame after the animation pass that first found 10 at its end.
+                if (!Ended(enemy, 10)) return true;
+                Landed(enemy);
+                m.Settled = true;
+                return true;
         }
-        return m.Settling != 0;
+        return false;
+    }
+
+    /// <summary>Whether a body's animation has reached its last frame and holds there (body +0x119c bit 0x20000).</summary>
+    private static bool Ended(Combatant enemy, int number)
+    {
+        if (Pose(enemy) != number || enemy.Actor.Player is not { } player) return Pose(enemy) != number;
+        return player.CurrentAnimationPosition >= player.CurrentAnimationLength;
     }
 
     /// <summary>
-    /// Sets an enemy walking to a map point for an event (BATTLE.PRG 0x800e527c, by event opcodes 21 and 2a through
-    /// 0x8007cff8): it lets its token and icons go, and its AI is held by a walk of its own (<see cref="StepScripted"/>);
-    /// false for one without an AI (it walks as the event's own route).
+    /// Sets an actor walking to a map point for an event (event opcodes 21 and 2a through 0x8007cff8 and
+    /// BATTLE.PRG 0x800e527c): only an actor with an AI record walks so (Ashley, and those of side 4); any other does
+    /// not move at all, and false is returned. It lets its token and icons go (0x800d82cc, 0x800d821c, 0x800dbf00) and
+    /// its AI is held by a walk record of its own (<see cref="Mind.Walker"/>, <see cref="StepScripted"/>). A second
+    /// walk while one runs does not turn it (retail's delay slot writes the new record's settings and point into the
+    /// AI's own record instead).
     /// </summary>
     public bool ScriptedWalk(string id, int x, int z)
     {
-        if (!Combatants.TryGetValue(id, out var c) || c == Ashley || c.Mind is not { } m || c.Mover == null || c.Dead) return false;
+        if (!Combatants.TryGetValue(id, out var c)) return false;
+        // 0x800a0a1c(idx, 2): it passes through other bodies until a wait sees it on its walk's goal tile.
+        c.PassingThrough = true;
+        if (c.Mind is not { } m) return false;
         ReleaseToken(c);
         Show(c, 0);
-        m.Script ??= m.Walker();
-        m.Script.ScriptPoint = (x, z);
-        m.Held = true;
+        Show(c, 0x40);
+        if (m.Script == null)
+        {
+            if (c.Mover == null) c.Mover = new FieldPlayer(c.Actor, _view.FloorAt, _view.Stairs) { Crowded = Crowded, Climbs = false, Animates = false, Turns = false };
+            m.Script = m.Walker();
+            m.Script.ScriptPoint = (x, z);
+            m.Held = true;
+        }
+        else
+        {
+            (m.StepHeight, m.StepReach, m.Routes, m.Detour) = (320, 3, true, 0);
+            m.ScriptPoint = (x, z);
+        }
         return true;
     }
 
-    /// <summary>Whether an actor still walks for an event (its record at +0x18c).</summary>
-    public bool Scripted(string id) => Combatants.TryGetValue(id, out var c) && c.Mind?.Script != null;
+    /// <summary>
+    /// Whether an event's wait on an actor's walk holds (BATTLE.PRG 0x8007d03c by 0x800e5154): while its walk record
+    /// has it on another tile than the record's goal; with no walk record (or no AI record) it is done.
+    /// </summary>
+    public bool Scripted(string id)
+    {
+        if (!Combatants.TryGetValue(id, out var c) || c.Mind?.Script is not { } walk) return false;
+        if (TileOf(c) != walk.Goal) return true;
+        c.PassingThrough = false;
+        return false;
+    }
 
     /// <summary>
-    /// The event's frame of the scripted walks (BATTLE.PRG 0x800e5308, battle mode 3): each held enemy walks (never
-    /// runs, facing no one, its marks waded) by its own record from where it stands: a walker by its waypoint for the
-    /// point until within 32 of it, a flyer or hopper for the point's tile until on it; then it stands and its walk
-    /// ends (0x800e5240).
+    /// The event's frame of the scripted walks (BATTLE.PRG battle mode 3: the actor update, then 0x800e5308): each
+    /// actor's body first carries out what was posted (<see cref="Embody"/>); then each with a walk record and no
+    /// command waiting or under way walks by it, from where its body stands, never running and facing no one: a walker
+    /// within 32 of its point stands and its walk ends (0x800e5240), else heads for it by its waypoint; a flyer or
+    /// hopper on the tile it made for last frame stands and its walk ends, else makes for the point's tile.
     /// </summary>
     public void StepScripted()
     {
-        foreach (var c in Combatants.Values)
+        foreach (var c in Fighters())
+        {
+            if (c.Dead || c.Mind is not { } own) continue;
+            if (own.Script is { } walk) c.Mind = walk;
+            try { if (c.Mind.Posted || c.BodyBusy || own.Script != null) Embody(c); }
+            finally { c.Mind = own; }
+        }
+        foreach (var c in Fighters())
         {
             if (c.Dead || c.Mind is not { Script: { } walk } own) continue;
+            if (walk.Posted || c.BodyBusy) continue;
             c.Mind = walk;
             try
             {
-                walk.Pause = 0;
                 if (walk.LeapHold != 0) walk.LeapHold--;
                 if ((walk.Detour >> 5 & 0x7F) != 0) walk.Detour -= 1u << 5;
+                walk.Pause = 0;
                 walk.Wades = true;
                 walk.Run = walk.CrossesZones = walk.Wary = false;
                 walk.FaceTarget = 16;
                 walk.Tile = TileOf(c);
                 walk.Zone = walk.Passage = Cell(walk.Tile) & 15;
                 Afresh(walk);
-                _issued = -1;
-                if (Settle(c) || c.Mover is { Busy: true } || c.HopState != 0)
-                {
-                    if (c.Mover is { Busy: true } leaping) leaping.Step(null, walk: true);
-                    continue;
-                }
                 var (gx, gz) = walk.ScriptPoint;
-                var p = c.Actor.Position;
+                int x = (ushort)(int)c.Actor.Position.X, z = (ushort)(int)c.Actor.Position.Z;
                 bool done;
                 walk.Command = Body.Stand;
-                if (c.Gait == Gait.Walk)
+                walk.BodyTurn = false;
+                if (c.Gait == Gait.Walk || c == Ashley)
                 {
-                    done = (gx - p.X) * (gx - p.X) + (gz - p.Z) * (gz - p.Z) < 1024;
+                    long dx = (short)(gx - x), dz = (short)(gz - z);
+                    done = dx * dx + dz * dz < 1024;
                     if (!done && walk.Riding != 0) Ride(c);
                     else if (!done)
                     {
                         walk.Goal = (gx >> 7, gz >> 7);
-                        Head(c, new Vector3(gx, p.Y, gz));
+                        Head(c, new Vector3(gx, c.Actor.Position.Y, gz));
                     }
                 }
                 else
                 {
-                    done = walk.Goal == walk.Tile && walk.Goal == (gx >> 7, gz >> 7);
+                    done = walk.Goal == walk.Tile;
                     if (!done)
                     {
                         walk.Goal = (gx >> 7, gz >> 7);
                         Move(c, 0, 0);
                     }
                 }
-                Perform(c);
+                Post(c);
                 if (done)
                 {
-                    if (_walking.Remove(c)) { c.Mover?.Halt(); Play(c, 1, 6); }
                     own.Script = null;
                     own.Held = false;
+                    CopyBody(walk, own);
                 }
             }
             finally { c.Mind = own; }
         }
+    }
+
+    /// <summary>The body's state the walk record carried while it walked (BATTLE.PRG keeps it on the body), given back to the AI's own record as the walk ends.</summary>
+    private static void CopyBody(Mind from, Mind to)
+    {
+        (to.Airborne, to.Aground, to.Settling, to.SettleFrames, to.SettleLeft, to.SettleFacing, to.SettleTo, to.Settled) = (from.Airborne, from.Aground, from.Settling, from.SettleFrames, from.SettleLeft, from.SettleFacing, from.SettleTo, from.Settled);
+        (to.Twist, to.Pitch, to.TwistMode, to.PitchTarget, to.TwistTarget, to.TwistRate) = (from.Twist, from.Pitch, from.TwistMode, from.PitchTarget, from.TwistTarget, from.TwistRate);
+        (to.TurnFrames, to.TurnLeft, to.Code, to.CodeValue, to.Posted, to.Command, to.Direction) = (from.TurnFrames, from.TurnLeft, from.Code, from.CodeValue, from.Posted, from.Command, from.Direction);
+        (to.LeapTile, to.Bound, to.Course) = (from.LeapTile, from.Bound, from.Course);
     }
 }

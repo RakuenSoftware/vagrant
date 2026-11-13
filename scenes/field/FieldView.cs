@@ -1918,12 +1918,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 if (Actor(args) is not { } walker) return Error.Ok;
                 var point = args["position"].AsGodotArray();
-                // An enemy walks by its AI's scripted walk (BATTLE.PRG 0x8007cff8).
-                if (Battle?.ScriptedWalk(walker.Id, point[0].AsInt32(), point[1].AsInt32()) == true) return Error.Ok;
-                var goal = new Vector3(point[0].AsSingle(), 0, point[1].AsSingle());
-                goal.Y = FloorHeight(goal);
-                var route = Path(walker.Position, goal);
-                walker.Follow(route.Count > 0 ? route : new List<Vector3> { goal });
+                // Being skipped (BATTLE.PRG [0x800f4c2c] = 2), the actor is put on the point at once, at height 0
+                // (0x800a9d90); otherwise only an actor with an AI record walks there, by its AI's scripted walk
+                // (0x8007cff8), and any other does not move.
+                if (_skipRequested) walker.Position = new Vector3(point[0].AsInt32(), 0, point[1].AsInt32());
+                else Battle?.ScriptedWalk(walker.Id, point[0].AsInt32(), point[1].AsInt32());
                 return Error.Ok;
             }
             case "actor.face_tile":
@@ -2105,7 +2104,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (targets.Count == 0 && type == "camera.anchor") return Field.SetCameraAnchor("");
         foreach (var actor in targets)
         {
-            // A wait on the route of an enemy walking by its AI lasts until its walk ends.
+            // A wait on an actor's scripted walk lasts while its walk record has it off the record's goal tile
+            // (BATTLE.PRG 0x8007d03c).
             if (type == "actor.wait" && (args["activity"].AsInt32() & 32) != 0 && Battle?.Scripted(actor.Id) == true)
             {
                 var walker = actor;
@@ -2578,6 +2578,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         _enemyMemory.Add((Zone, Map, remembered));
         if (_enemyMemory.Count > 4) _enemyMemory.RemoveAt(0);
         var records = Document.GetValueOrDefault("room_actors", new GArray()).AsGodotArray();
+        // BATTLE.PRG 0x8008911c first reserves every slot a record names, whether or not its character comes.
+        var reserved = new HashSet<int>();
+        foreach (var record in records) if (record.AsGodotDictionary()["slot"].AsInt32() is var named and not 0) reserved.Add(named);
         for (int index = 0; index < records.Count; index++)
         {
             var entry = records[index].AsGodotDictionary();
@@ -2590,10 +2593,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 || flagTest switch { 1 => Flag(0x82) != flagValue, 2 => Flag(0x82) > flagValue, 3 => Flag(0x82) < flagValue, _ => false }
                 || statTest switch { 3 => Flag(stat & 0x3FF) != stat >> 10, 4 => Flag(stat & 0x3FF) > stat >> 10, 5 => Flag(stat & 0x3FF) < stat >> 10, _ => false };
             if (absent) continue;
-            // Slot 0 asks for the first free one from 2 to 9.
+            // Slot 0 asks for the first from 2 to 9 neither held nor named by another record; with none, the room's setup
+            // stops there (retail's error 134).
             int slot = entry["slot"].AsInt32();
-            if (slot == 0) for (slot = 2; slot < 10 && Actors.ContainsKey("slot:" + slot); slot++) { }
-            if (slot >= 10) continue;
+            if (slot == 0) for (slot = 2; slot < 10 && (Actors.ContainsKey("slot:" + slot) || reserved.Contains(slot)); slot++) { }
+            if (slot >= 10) break;
             string reference = "slot:" + slot;
             var result = Spawn(new GDictionary { ["actor"] = reference, ["character"] = entry["character"], ["tile"] = entry["tile"] });
             if (result != Error.Ok) return result;
@@ -3649,6 +3653,19 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var marks = floor.Count == 0 ? new GArray() : floor.GetValueOrDefault("marks", new GArray()).AsGodotArray();
         _marks = new bool[marks.Count];
         for (int i = 0; i < marks.Count; i++) _marks[i] = marks[i].AsInt32() != 0;
+        var ceilings = floor.Count == 0 ? new GArray() : floor.GetValueOrDefault("ceilings", new GArray()).AsGodotArray();
+        _ceilings = new int[ceilings.Count];
+        for (int i = 0; i < ceilings.Count; i++) _ceilings[i] = ceilings[i].AsInt32();
+    }
+
+    /// <summary>By 32-unit sub-cell, the collision map's ceiling layer (y down).</summary>
+    private int[] _ceilings = Array.Empty<int>();
+
+    /// <summary>The ceiling over a map position (BATTLE.PRG 0x8008dd0c, its 15 bits taken signed), 0 off the collision map.</summary>
+    public int CeilingAt(int x, int z)
+    {
+        if (_ceilings.Length == 0 || (uint)(x >> 7) >= (uint)(_columns / 4) || (uint)(z >> 7) >= (uint)(_rows / 4)) return 0;
+        return _ceilings[(z >> 5) * _columns + (x >> 5)] << 17 >> 17;
     }
 
     /// <summary>By 32-unit sub-cell, whether its floor byte has its flag (bit 7 of the collision block byte).</summary>
@@ -3710,39 +3727,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public bool Stairs(Vector3 position) => (TileAttributes((int)Mathf.Floor(position.X / 128), (int)Mathf.Floor(position.Z / 128)) & 1 << 5) != 0;
 
     /// <summary>
-    /// Whether a position is solid by its tile's blocking class (bits 10 to 12): 5 the whole tile, and 1 to 4 the
-    /// half beyond a diagonal or an edge, by the position within the tile (fx, fz from 0 to 127): 1 where fx + fz is
-    /// over 128, 2 where fx is over fz, 3 where fx + fz is under 128, 4 where fx is under fz.
-    /// </summary>
-    public bool Solid(Vector3 position)
-    {
-        int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
-        float fx = position.X - x * 128, fz = position.Z - z * 128;
-        return (TileAttributes(x, z) >> 10 & 7) switch
-        {
-            5 => true, 1 => fx + fz > 128, 2 => fx > fz, 3 => fx + fz < 128, 4 => fx < fz, _ => false,
-        };
-    }
-
-    /// <summary>Whether a collision tile's blocking class (bits 10 to 12 of its attributes) is 5.</summary>
-    public bool Blocked(int x, int z) => (TileAttributes(x, z) >> 10 & 7) == 5;
-
-    /// <summary>The zone a tile is in (its attribute bits 23 to 26), which enemies route between.</summary>
-    public int TileZone(int x, int z) => (int)(TileAttributes(x, z) >> 23 & 15);
-
-    /// <summary>The room's link from one zone to another (<see cref="Installation.MapConversion"/>'s "zone_links"), 0 for none.</summary>
-    public uint ZoneLink(int to, int from)
-    {
-        var links = Document.GetValueOrDefault("zone_links", new GArray()).AsGodotArray();
-        int index = to * 16 + from;
-        return index < links.Count ? (uint)links[index].AsInt64() : 0;
-    }
-
-    /// <summary>
     /// A walking route across the room's collision map from one map position to another, as the centres of the
     /// 32-unit sub-cells it passes, ending at the destination; empty when there is none. A step may climb at most
     /// 96 units (ground any higher is a wall), and no sub-cell within one of a wall is used, so a body of Ashley's
-    /// radius clears it. The search is A* over the eight neighbours, and the route keeps only its turning points.
+    /// radius clears it. The search is A* over the eight neighbours, and the route keeps only its turning points. Not
+    /// retail's: no retail actor walks by it; the field contracts steer their stand-in player by it.
     /// </summary>
     public List<Vector3> Path(Vector3 from, Vector3 to)
     {
@@ -3804,6 +3793,35 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         route.Add(to);
         return route;
     }
+    /// <summary>
+    /// Whether a position is solid by its tile's blocking class (bits 10 to 12): 5 the whole tile, and 1 to 4 the
+    /// half beyond a diagonal or an edge, by the position within the tile (fx, fz from 0 to 127): 1 where fx + fz is
+    /// over 128, 2 where fx is over fz, 3 where fx + fz is under 128, 4 where fx is under fz.
+    /// </summary>
+    public bool Solid(Vector3 position)
+    {
+        int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
+        float fx = position.X - x * 128, fz = position.Z - z * 128;
+        return (TileAttributes(x, z) >> 10 & 7) switch
+        {
+            5 => true, 1 => fx + fz > 128, 2 => fx > fz, 3 => fx + fz < 128, 4 => fx < fz, _ => false,
+        };
+    }
+
+    /// <summary>Whether a collision tile's blocking class (bits 10 to 12 of its attributes) is 5.</summary>
+    public bool Blocked(int x, int z) => (TileAttributes(x, z) >> 10 & 7) == 5;
+
+    /// <summary>The zone a tile is in (its attribute bits 23 to 26), which enemies route between.</summary>
+    public int TileZone(int x, int z) => (int)(TileAttributes(x, z) >> 23 & 15);
+
+    /// <summary>The room's link from one zone to another (<see cref="Installation.MapConversion"/>'s "zone_links"), 0 for none.</summary>
+    public uint ZoneLink(int to, int from)
+    {
+        var links = Document.GetValueOrDefault("zone_links", new GArray()).AsGodotArray();
+        int index = to * 16 + from;
+        return index < links.Count ? (uint)links[index].AsInt64() : 0;
+    }
+
 
     private Dictionary<(int, int), List<(int Y, Vector3 Color)>>? _floorLight;
 

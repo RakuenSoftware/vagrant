@@ -69,6 +69,9 @@ public sealed class FieldPlayer
     /// <summary>Whether it plays its own walking, running, climbing and falling animations; a fighter's are the battle's.</summary>
     public bool Animates = true;
 
+    /// <summary>Whether walking turns it to its heading; an enemy's body turns by its own turn (BATTLE.PRG 0x800a6660).</summary>
+    public bool Turns = true;
+
     /// <summary>Whether she is moving under the player's input this frame.</summary>
     public bool Moving { get; private set; }
 
@@ -117,13 +120,12 @@ public sealed class FieldPlayer
                 if (--_frames <= 0) Launch(0, Vector3.Zero);
                 return;
             case State.Air:
-                if (_leap > 0) { StepLeap(); return; }
                 if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
                 else _velocity = Vector3.Zero;
                 StepAir();
                 return;
         }
-        if (heading is { } target) Face(facing ?? target);
+        if (heading is { } target && Turns) Face(facing ?? target);
         if (jump)
         {
             if (heading is { } leap) { Launch(walk ? 1 : 2, Motion(leap, speed)); return; }
@@ -153,49 +155,6 @@ public sealed class FieldPlayer
     }
 
     private float _airVertical;
-
-    /// <summary>A leap's frames left, its gravity a frame, and where it lands.</summary>
-    private int _leap;
-    private float _leapGravity;
-    private Vector3 _leapTo;
-
-    /// <summary>
-    /// Leaps to a point (BATTLE.PRG 0x800a208c, an enemy's jump to a tile): at most 18 a frame across; it rises over
-    /// the higher end, by 63 for a drop and 63 (or 30 from beside a rise of no more than 64) otherwise, and gravity 6
-    /// takes it down, so the frames are those of the arc and 5 (10 rising more than 64), and no fewer than its speed
-    /// needs; it turns to <paramref name="facing"/> over 8 frames. It lands on the point.
-    /// </summary>
-    public void Leap(Vector3 target, int speed, float facing)
-    {
-        if (_state != State.Ground) return;
-        var from = _actor.Position;
-        float dx = target.X - from.X, dy = target.Y - from.Y, dz = target.Z - from.Z;
-        speed = Math.Clamp(speed, 1, 18);
-        int least = (int)(Math.Max(Math.Abs(dx), Math.Abs(dz)) / speed);
-        const float gravity = 6 / 2f;
-        float lift = dy > 0 ? 63 : dy >= -64 ? 30 : 63, top = Math.Min(0, dy) - lift;
-        int frames = (int)Math.Ceiling(Math.Sqrt(2 * -top / gravity) + Math.Sqrt(2 * (dy - top) / gravity)) + (dy > 0 || dy >= -64 ? 5 : 10);
-        frames = Math.Max(Math.Max(frames, least), 1);
-        _velocity = new Vector3(dx / frames, (dy - gravity * frames * frames / 2) / frames, dz / frames);
-        _leapGravity = gravity;
-        _leap = frames;
-        _leapTo = target;
-        _state = State.Air;
-        _actor.TurnOver(facing, 8);
-        _heading = facing;
-    }
-
-    /// <summary>A frame of a leap: along its arc, and onto the point it is bound for at its last.</summary>
-    private void StepLeap()
-    {
-        _actor.Position += _velocity;
-        _velocity.Y += _leapGravity;
-        if (--_leap > 0) return;
-        _actor.Position = _leapTo;
-        _velocity = Vector3.Zero;
-        _state = State.Ground;
-        _animation = -1;
-    }
 
     /// <summary>
     /// A frame in the air: gravity, steering, a ledge met in flight (climbed at once if no more than 255 above), and

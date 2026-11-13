@@ -13,8 +13,6 @@ public sealed class EventActor
 {
     /// <summary>Waiting bits, as the retail actor wait tests them: walking a route, moving, turning, scaling, animation not finished.</summary>
     public const int Routing = 0x01, Moving = 0x08, Turning = 0x10, Scaling = 0x20, Animating = 0x80;
-    /// <summary>Route walking pace in units a frame: the walk speed. The retail path walker was not read, so this is an inference.</summary>
-    public const float RouteSpeed = 9;
     /// <summary>Default walk speed (frames per 128 units) and turn speed (frames per full turn) when a script leaves them unset.</summary>
     public const int DefaultMoveSpeed = 16, DefaultTurnSpeed = 32;
 
@@ -397,14 +395,6 @@ public sealed class EventActor
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) return;
         var error = Scene.Present(default, command with { FrameRate = 30 }, _ => { });
         if (error != Error.Ok) GD.PushWarning($"{Id}: {command.GetType().Name} could not be presented ({error}).");
-    }
-
-    /// <summary>Retail 2a: walks a route of points, facing each in turn; an empty route ends at once.</summary>
-    public void Follow(System.Collections.Generic.IEnumerable<Vector3> route)
-    {
-        var points = new System.Collections.Generic.List<Vector3>();
-        foreach (var point in route) points.Add(RetailSpace * point);
-        Command(new Wol.Engine.World.ActorRouteTo(Id, points.ToArray(), RouteSpeed / Installation.MapConversion.UnitsPerMetre));
     }
 
     /// <summary>Retail 28: a straight glide that keeps the facing.</summary>

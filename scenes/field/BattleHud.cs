@@ -136,14 +136,21 @@ public sealed partial class BattleHud : RetailScreen
 
     /// <summary>The chain timing's "!" sprite (SYSTEM.DAT section 1's page, 22 by 32 at (0xC0, 0)), when installed.</summary>
     public Texture2D? ChainCue { get; set; }
-    private Vector3? _cueAt;
+    private Vector2? _cueAt;
     private int _cueFrames;
-    private Func<Vector3, Vector2?>? _cueProject;
     private (int Grade, int Word, int Age)? _timing;
     private (int Count, int Age)? _chains;
 
     /// <summary>Shows the red "!" over Ashley's head (a point in the field) for <paramref name="frames"/> frames (BATTLE.PRG 0x80096FF0).</summary>
-    public void Cue(Vector3 head, int frames, Func<Vector3, Vector2?> project) { _cueAt = head; _cueFrames += frames; _cueProject = project; QueueRedraw(); }
+    /// <summary>Shows the red "!" for some frames at Ashley's head as it is on the screen now: the point is taken once and held (BATTLE.PRG 0x80096ff0).</summary>
+    public void Cue(Vector3 head, int frames, Func<Vector3, Vector2?> project)
+    {
+        if (project(head) is not { } point) return;
+        var (scale, origin) = FieldView.Pin(GetViewportRect().Size, 1);
+        _cueAt ??= ((point - origin) / scale).Round();
+        _cueFrames += frames;
+        QueueRedraw();
+    }
 
     /// <summary>A press's grade (0 too fast, 1 fast, 2 in time, 3 slow, 4 too slow) and, in time, which word praises it.</summary>
     public void Timing(int grade, int word) { _timing = (grade, word, 0); QueueRedraw(); }
@@ -197,9 +204,8 @@ public sealed partial class BattleHud : RetailScreen
     /// </summary>
     private void DrawCue()
     {
-        if (ChainCue == null || _cueAt is not { } head || _cueProject?.Invoke(head) is not { } point) return;
+        if (ChainCue == null || _cueAt is not { } at) return;
         var (scale, origin) = FieldView.Pin(GetViewportRect().Size, 1);
-        var at = ((point - origin) / scale).Round();
         if (at.Y < 40) { float d = 40 - at.Y; at.Y = 40 + d; at.X += at.X + d < 288 ? d : -d; }
         DrawSetTransform(origin, 0, scale);
         DrawTextureRect(ChainCue, new Rect2(at.X - 11, at.Y - 32, 22, 32), false, new Color(240 / 128f, 64 / 128f, 32 / 128f));
@@ -257,6 +263,17 @@ public sealed partial class BattleHud : RetailScreen
     private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30), new(160, 17, 20, 13), new(160, 17, 20, 13) };
     private static readonly Vector2[] MarkOffsets = { new(-2, -16), new(-14, -16), new(0, -21), new(-7, -21) };
 
+    /// <summary>
+    /// A sprite's place by its offset from the head's screen point: retail adds them as one 32-bit word each (y in
+    /// the high half), so an x taken back past 0 borrows one from y and leaves it a row lower (0x80095c18).
+    /// </summary>
+    private static Vector2 Packed(Vector2 point, Vector2 offset)
+    {
+        int x = (int)point.X, y = (int)point.Y, dx = (int)offset.X, dy = (int)offset.Y;
+        int word = (y << 16 | x & 0xFFFF) + (dy << 16 | dx & 0xFFFF);
+        return new Vector2((short)word, (short)(word >> 16));
+    }
+
     private void DrawBalloons()
     {
         if (_emotes == null || _project == null || _balloons.Count == 0) return;
@@ -302,10 +319,10 @@ public sealed partial class BattleHud : RetailScreen
             if (side == 1) target = new Rect2(target.Position + new Vector2(target.Size.X, 0), new Vector2(-target.Size.X, target.Size.Y));
             DrawTextureRectRegion(_emotes, target, texels);
             if (kind <= 3)
-                for (int k = 0; k < kind; k++) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[side] + new Vector2(k * 6, 0), new Vector2(5, 5)), new Rect2(90, 18, 5, 5));
-            else if (kind == 4) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[shape], new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
+                for (int k = 0; k < kind; k++) DrawTextureRectRegion(_emotes, new Rect2(Packed(Packed(point, new Vector2(k * 6, 0)), MarkOffsets[side]), new Vector2(5, 5)), new Rect2(90, 18, 5, 5));
+            else if (kind == 4) DrawTextureRectRegion(_emotes, new Rect2(Packed(point, MarkOffsets[shape]), new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
             // Won over (0x80095ecc): its 16 by 16 mark in the rounded balloon, 2 right and 3 up of the dots' place.
-            else if (kind == 5) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[side] + new Vector2(2, -3), new Vector2(16, 16)), new Rect2(152, 32, 16, 16));
+            else if (kind == 5) DrawTextureRectRegion(_emotes, new Rect2(Packed(Packed(point, MarkOffsets[side]), new Vector2(2, -3)), new Vector2(16, 16)), new Rect2(152, 32, 16, 16));
         }
         DrawSetTransform(Vector2.Zero);
     }

@@ -59,9 +59,9 @@ public sealed partial class FieldBattle
     public sealed partial class Mind
     {
         /// <summary>Its word for each actor index (+0x1a4): bit 0 sees it, 1 just lost it, 2 low line of sight, 3 in its view cone, 5 aware of it, 6-7 the relation (3 foe, 2 ally, 1 neither), 8-14 frames a foe went unseen, 15-19 frames it is seen regardless, 20-26 frames a relation is overridden, 27 another stands in the line of fire, 28-29 the relation restored, 30 high line of sight, 31 perceived for targeting.</summary>
-        public readonly uint[] Relations = new uint[16];
+        public uint[] Relations = new uint[16];
         /// <summary>The squared distance to each actor index (+0x1e4).</summary>
-        public readonly uint[] Distances = new uint[16];
+        public uint[] Distances = new uint[16];
         /// <summary>Its reference height (+0x82, the centre, negative above the feet), eye height (+0xb8) and girth (+0x92).</summary>
         public int Height, Head, Radius = 63;
         /// <summary>How far it sees and hears, squared (+0xac, +0xa4), and the cosine (4096 a whole) its view cone opens to (+0xa8).</summary>
@@ -109,12 +109,12 @@ public sealed partial class FieldBattle
         public (int X, int Z) MemoryTargetTile;
         /// <summary>The unstick step (+0xfa), its four directions (+0x118) and whom it faces as it steps (+0xfb).</summary>
         public int Unstick, UnstickFace = 16;
-        public readonly int[] UnstickDirections = new int[4];
+        public int[] UnstickDirections = new int[4];
         /// <summary>The flee memory (+0x114) and the threats' tile (+0x110).</summary>
         public int FleeTimer;
         public (int X, int Z) Threat;
         /// <summary>The ring of its last eight positions' low bytes (+0x70, +0x78), its index and fill (+0x80, +0x81), and the pause an oscillation earns (+0x19a).</summary>
-        public readonly byte[] RingX = new byte[8], RingZ = new byte[8];
+        public byte[] RingX = new byte[8], RingZ = new byte[8];
         public int RingIndex, RingFill, Pause;
         /// <summary>Its movement mode (+0x8a: 1 chase, 2 go to, 3 wander, 4 flee, 5 patrol, 6 hold in range).</summary>
         public int Mode;
@@ -123,7 +123,7 @@ public sealed partial class FieldBattle
         public bool TurnLatch;
         public float TurnAngle;
         /// <summary>The look-around timers by mode (+0x474): frames left and kind.</summary>
-        public readonly (int Ticks, int Kind)[] Looks = new (int, int)[8];
+        public (int Ticks, int Kind)[] Looks = new (int, int)[8];
         /// <summary>The bodyguard's latches: its protectee was an ally (+0x0f), the intercept timer (+0x44), and its protectee lost (+0x18).</summary>
         public bool Protecting, Lost;
         public int Intercept;
@@ -239,18 +239,20 @@ public sealed partial class FieldBattle
     /// 16-bit value, as the GTE squares it) shifted to an even exponent picks a mantissa for the executable's inverse
     /// root table; each part times that (the GTE's GPF, unshifted), down half the exponent.
     /// </summary>
-    private (int X, int Z) Normalise(int dx, int dz)
+    /// <summary>A vector made 4096 long by the GTE's normalise (SLUS 0x80041abc, its inverse-root table): each axis a 16-bit value.</summary>
+    private (int X, int Y, int Z) Normalise(int dx, int dy, int dz)
     {
         dx = (short)dx;
+        dy = (short)dy;
         dz = (short)dz;
-        int length = dx * dx + dz * dz;
+        int length = dx * dx + dy * dy + dz * dz;
         int zeros = length < 0 ? System.Numerics.BitOperations.LeadingZeroCount((uint)~length) : System.Numerics.BitOperations.LeadingZeroCount((uint)length);
         int even = zeros & ~1, mantissa = even >= 24 ? length << (even - 24) : length >> (24 - even);
         int inverse = _view.Content.Field.InverseSquareRoot(mantissa - 64), shift = ((31 - even) >> 1) & 31;
-        return (dx * inverse >> shift, dz * inverse >> shift);
+        return (dx * inverse >> shift, dy * inverse >> shift, dz * inverse >> shift);
     }
     private int Roll(int range) => (int)(_random.Randi() & (uint)(range - 1));
-    private static (int X, int Z) TileOf(Combatant c) => ((int)Mathf.Floor(c.Actor.Position.X / 128), (int)Mathf.Floor(c.Actor.Position.Z / 128));
+    internal static (int X, int Z) TileOf(Combatant c) => ((int)Mathf.Floor(c.Actor.Position.X / 128), (int)Mathf.Floor(c.Actor.Position.Z / 128));
     private static Vector3 Centre((int X, int Z) tile, float y) => new(tile.X * 128 + 64, y, tile.Z * 128 + 64);
     private Combatant? At(int index) => index is >= 0 and < 16 ? Fighters().Find(c => c.Index == index) ?? _objects.Find(o => o.Index == index) : null;
 
@@ -262,14 +264,7 @@ public sealed partial class FieldBattle
     /// </summary>
     private void Awaken(Combatant c, uint ai, GDictionary stats)
     {
-        if (c.Cube) return;
-        var taken = new HashSet<int>();
-        foreach (var other in Combatants.Values) if (other != c && !other.Dead && other.Mind != null) taken.Add(other.Index);
-        foreach (var crate in _objects) taken.Add(crate.Index);
-        if (c.Actor.Id == "slot:0") c.Index = 0;
-        else if (c.Actor.Id.StartsWith("slot:", StringComparison.Ordinal) && int.TryParse(c.Actor.Id[5..], out int slot) && slot is > 0 and < 16 && !taken.Contains(slot)) c.Index = slot;
-        else for (c.Index = 1; c.Index < 16 && taken.Contains(c.Index); c.Index++) { }
-        if (c.Index >= 16) return;
+        if (c.Cube || c.Index >= 16) return;
         var definition = _view.Content.Character(c.Actor.Character);
         int girth = definition.GetValueOrDefault("girth", 63).AsInt32();
         var (sight, cone, rate) = _view.Content.Field.Senses(ai);
@@ -287,19 +282,22 @@ public sealed partial class FieldBattle
             Group = stats.GetValueOrDefault("group", 0).AsInt32(), LeaderGroup = stats.GetValueOrDefault("leader", 0).AsInt32(),
             HomeRadius = stats.GetValueOrDefault("home_radius", 0).AsInt32(), Dormant = stats.GetValueOrDefault("dormant", false).AsBool() ? 1 : 0,
             UsesSpots = (ai >> 12 & 1) != 0 && Array.Exists(Spots, spot => (spot & 0x8000) != 0),
-            Route = stats.GetValueOrDefault("route", 0).AsInt32() & 3,
+            Route = stats.GetValueOrDefault("route", 0).AsInt32() & 3, Routes = c.Routes,
             PatrolTurns = _view.Content.Field.PatrolTurns(stats.GetValueOrDefault("patrol_turns", 0).AsInt32()),
         };
         if (stats.GetValueOrDefault("home", new Godot.Collections.Array()).AsGodotArray() is { Count: 2 } home) m.Home = (home[0].AsInt32(), home[1].AsInt32());
         (m.MoveFrames, m.IdleFrames, m.Chance) = _view.Content.Field.WanderPace(ai);
         m.TurnSpeed = m.DefaultTurn * rate >> 4;
+        // AI +0x2a (0x800e633c): whether the model has a bone of part group 2, which its twist needs (0x800a152c).
+        m.Twists = definition.GetValueOrDefault("twists", false).AsBool();
         c.Faction = (int)(ai >> 21 & 3);
         // Its movement profiles: their flags (+0x15e) and the larger of their speeds, its reach extension (+0xb3, 0x800e685c).
         var profiles = stats.GetValueOrDefault("moves", new Godot.Collections.Array()).AsGodotArray();
         if (profiles.Count == 2)
         {
-            (m.FlagsA, m.SpeedA) = (profiles[0].AsGodotArray()[0].AsInt32(), profiles[0].AsGodotArray()[1].AsInt32());
-            (m.FlagsB, m.SpeedB) = (profiles[1].AsGodotArray()[0].AsInt32(), profiles[1].AsGodotArray()[1].AsInt32());
+            // Its record keeps nine tenths of each speed, truncated (0x800769b0, 0x80076a04).
+            (m.FlagsA, m.SpeedA) = (profiles[0].AsGodotArray()[0].AsInt32(), profiles[0].AsGodotArray()[1].AsInt32() * 9 / 10);
+            (m.FlagsB, m.SpeedB) = (profiles[1].AsGodotArray()[0].AsInt32(), profiles[1].AsGodotArray()[1].AsInt32() * 9 / 10);
         }
         m.Moves = m.FlagsA | m.FlagsB;
         // Its steps (0x800e5a9c): their reach in tiles (bits 10-11), the height one may rise or drop (bits 8-9), the
@@ -409,10 +407,18 @@ public sealed partial class FieldBattle
                 Show(c, 0);
                 Show(c, 0x40);
             }
+        // The tick's first steps for every actor (0x800d8ef4 steps 2 and 3): its voiced cue is wiped (one made by a
+        // replan before this tick is never heard), and its icon and voice timers run.
+        foreach (var c in fighters)
+        {
+            if (c.Mind is not { } m || c == Ashley) continue;
+            m.Cue = 0;
+            if (m.IconTimer != 0) Show(c, --m.IconTimer == 0 ? 0 : m.Icon);
+            if (m.VoiceLockout > 0) m.VoiceLockout--;
+        }
         foreach (var c in fighters) if (Acts(c)) Tick(c, actors);
         foreach (var c in fighters) if (Acts(c)) Decide(c, fighters);
         foreach (var c in fighters) if (Acts(c)) Drive(c);
-        foreach (var c in fighters) if (c != Ashley && c.Mind != null && !c.Dead) Gaze(c);
     }
 
     /// <summary>Whether an enemy fights by the AI: a hostile one with its weapon drawn.</summary>
@@ -428,12 +434,10 @@ public sealed partial class FieldBattle
     {
         var m = c.Mind!;
         m.Refreshed = false;
-        if (m.IconTimer != 0) Show(c, --m.IconTimer == 0 ? 0 : m.Icon);
-        if (m.VoiceLockout > 0) m.VoiceLockout--;
         if (c.Cooldown > 0) c.Cooldown--;
         StepToken(c);
         m.Skip = true;
-        if (m.Held || c.Suspended || c.Has(Paralysis) || c.Mover is { Busy: true } || c.HopState != 0) return;
+        if (m.Held || c.Suspended || c.Has(Paralysis) || c.Mover is { Busy: true } || c.HopState != 0 || m.Settling != 0 || m.Settled) return;
         if (m.Lost)
         {
             if (m.IconTimer != 0 && m.Icon == 6) { KeepChase(c); return; }
@@ -600,20 +604,18 @@ public sealed partial class FieldBattle
     /// How squarely an actor looks at a point (BATTLE.PRG 0x800e437c), 4096 dead ahead to -4096 behind: the cosine
     /// between the way it looks and the ground offset to the point (normalised, 0x80041af4), 4096 at no distance. The
     /// way it looks is its body's facing (body +0x26, the port's <see cref="EventActor.Facing"/>: both run 4096 a turn
-    /// with the ground direction (-sin h, -cos h)) turned by its head's twist (body +0x14, <see cref="Twist"/>); the
+    /// with the ground direction (-sin h, -cos h)) turned by its upper body's twist (body +0x14, <see cref="Mind.Twist"/>); the
     /// executable takes the cosine and sine of 3072 less it, which are that direction.
     /// </summary>
     private int Cone(Combatant self, Vector3 point, uint d2)
     {
         if (d2 == 0) return 4096;
-        int a = (3072 - (short)((int)self.Actor.Facing + Twist(self.Actor))) & 0xFFF, along = Cos(a), across = Sin(a);
+        int a = (3072 - (short)((int)self.Actor.Facing + self.Mind!.Twist)) & 0xFFF, along = Cos(a), across = Sin(a);
         var me = self.Actor.Position;
-        var (nx, nz) = Normalise((short)(int)point.X - (short)(int)me.X, (short)(int)point.Z - (short)(int)me.Z);
+        var (nx, _, nz) = Normalise((short)(int)point.X - (short)(int)me.X, 0, (short)(int)point.Z - (short)(int)me.Z);
         return Math.Clamp((nx * along + nz * across) >> 12, -4096, 4096);
     }
 
-    /// <summary>An actor's head's twist from its body's facing (body +0x14), 0 for one without a head that turns.</summary>
-    private static int Twist(EventActor actor) => (int)Mathf.Round(actor.Head?.Yaw ?? 0);
 
     /// <summary>The squared distance between two points at heights raised by their offsets (BATTLE.PRG 0x800e4624), each difference as a 16-bit value.</summary>
     private static uint Distance(Vector3 a, int ha, Vector3 b, int hb)
@@ -661,7 +663,8 @@ public sealed partial class FieldBattle
         m.FaceTarget = 16;
         m.FacePoint = null;
         m.Run = false;
-        m.Descends = m.CrossesZones = m.Wary = m.Away = m.Nearer = m.Wades = m.Grounded = m.Closing = false;
+        m.Descends = m.CrossesZones = m.Wary = m.Away = m.Nearer = m.Wades = m.Grounded = m.Closing = m.Beside = false;
+        m.Aimed = null;
         m.Order = Order.Stand;
         if (!(Launch(c) || Unstick(c) || Behave(c, fighters))) Wander(c);
         // Its stance (0x800db7b4): one dormant holds still; one stirring rises and is awake.
@@ -714,8 +717,9 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Keeps the room's crates as actors (BATTLE.PRG's objects at 0x800f45e0): each the room holds takes the first free
-    /// actor index from 2 as it is first seen (0x800765b0), and the breakable ones (kinds 2 and 4) the first free of
+    /// Keeps the room's crates as actors (BATTLE.PRG's objects at 0x800f45e0): each the room holds takes the first actor
+    /// index from 2 that no character holds, as it is first seen (0x800765b0; retail's setup makes them after the room's
+    /// characters, 0x8008911c), and the breakable ones (kinds 2 and 4) the first free of
     /// four places the enemies strike them from (0x800e6178); one gone gives both up (0x800e7454). Each stands for the
     /// AI where the crate stands, its stand-in 150 under the crate's middle.
     /// </summary>
@@ -743,7 +747,7 @@ public sealed partial class FieldBattle
                     Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = kind,
                 };
                 var taken = new HashSet<int>();
-                foreach (var other in Combatants.Values) if (!other.Dead && other.Mind != null) taken.Add(other.Index);
+                foreach (var other in Combatants.Values) taken.Add(other.Index);
                 foreach (var other in _objects) taken.Add(other.Index);
                 for (crate.Index = 2; crate.Index < 16 && taken.Contains(crate.Index); crate.Index++) { }
                 _objects.Add(crate);
@@ -1431,12 +1435,24 @@ public sealed partial class FieldBattle
                 m.Closing = true;
                 m.Descends |= flag;
                 m.Order = Order.Path;
+                // 0x800e27ec: a hopper draws its goal in along the line to it, to the distance less how far its stop
+                // is from 96; drawn onto its own tile, it keeps the goal and is beside it.
+                if ((m.Moves & 8) != 0)
+                {
+                    var g = m.Goal;
+                    int x = (int)c.Actor.Position.X, z = (int)c.Actor.Position.Z, gx = g.X * 128 + 64, gz = g.Z * 128 + 64;
+                    long ex = (short)(x - gx), ez = (short)(z - gz);
+                    m.Aimed = g;
+                    PointAt(c, m.Tile, Angle(x - gx, z - gz) & 0xFFF, Root(ex * ex + ez * ez) - Math.Abs(stop - 96));
+                    if (m.Goal == m.Tile) { m.Beside = true; m.Goal = g; }
+                }
             }
             else
             {
                 if (m.KeepsFacing) { m.Run = true; m.FacePoint = pos; }
                 else m.FaceTarget = t.Index;
                 m.Heading = Toward(c, pos) + 2048;
+                m.GoalPoint = ((int)pos.X, (int)pos.Z);
                 m.Wary = m.Away = true;
                 m.Order = Order.Away;
                 if (_walking.Contains(c)) m.FaceLatch = true;
@@ -1512,6 +1528,12 @@ public sealed partial class FieldBattle
         return true;
     }
 
+    /// <summary>
+    /// The hold in range's turn (BATTLE.PRG 0x800e2b2c): with no turn speed it does nothing; seeing its target where its
+    /// goal has changed it latches the angle to it; latched, it turns head first at its range turn speed until it looks
+    /// that way, then, the target no longer seen, looks about (kind 1) and lets the latch go, else takes up the angle
+    /// afresh. (Its branch on AI +0x481 is never taken: nothing in BATTLE.PRG writes that byte.)
+    /// </summary>
     private bool Turn(Combatant c, Combatant t)
     {
         var m = c.Mind!;
@@ -1522,7 +1544,7 @@ public sealed partial class FieldBattle
         if (m.Goal != m.TurnGoal && (rel & 0x20) != 0 && !m.TurnLatch) { m.TurnLatch = true; m.TurnAngle = a; m.TurnGoal = m.Goal; }
         if (!m.TurnLatch) return false;
         m.TurnRate = m.TurnSpeed;
-        if ((((int)c.Actor.Facing + Twist(c.Actor)) & 0xFFF) != ((int)m.TurnAngle & 0xFFF)) { m.TurnTo = m.TurnAngle; m.Order = Order.Turn; return true; }
+        if ((((int)c.Actor.Facing + m.Twist) & 0xFFF) != ((int)m.TurnAngle & 0xFFF)) { m.TurnTo = m.TurnAngle; m.Order = Order.Turn; return true; }
         if ((rel & 0x20) == 0)
         {
             if (LookAround(c, 128, 1, 6)) return true;
@@ -1538,8 +1560,9 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// Faces (BATTLE.PRG 0x800e2ccc): whom it faces, at its usual turn speed, head first (command 4); else the point it
-    /// keeps facing, the body alone (command 3); else, head first, the lowest of the four neighbouring tiles about its
-    /// facing; else it stands.
+    /// keeps facing, the body alone (command 3); else, head first, the lowest by the floors grid of the four tiles
+    /// about the way it looks (its facing and twist), tried ahead, then a quarter one way, then the other way, then
+    /// behind (retail's running sum of the steps), on the map; else it stands.
     /// </summary>
     private void Face(Combatant c)
     {
@@ -1547,16 +1570,16 @@ public sealed partial class FieldBattle
         if (Hover(c)) return;
         m.TurnRate = m.DefaultTurn;
         if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = Toward(c, t.Actor.Position); m.Order = Order.Turn; m.Command = Body.Turn; return; }
-        if (m.FacePoint is { } point) { m.TurnTo = Toward(c, point); m.Order = Order.Turn; m.Command = Body.Turn; return; }
-        int facing = (int)c.Actor.Facing & 0xFFF, q = 2 * (((facing >> 10) + ((facing & 0x3FF) > 512 ? 1 : 0)) & 3);
-        float? best = null;
-        int chosen = -1;
+        if (m.FacePoint is { } point) { m.TurnTo = Toward(c, point); m.BodyTurn = true; m.Order = Order.Turn; m.Command = Body.Turn; return; }
+        int v = (short)(int)c.Actor.Facing + m.Twist, q = (v & 0xFFF) >> 10, dir = (v & 0x3FF) <= 512 ? 2 * q : ((q + 1) & 3) * 2;
+        int best = int.MinValue, chosen = -1;
         for (int i = 0; i < 4; i++)
         {
-            int dir = (q + 2 * i) & 7;
-            var (dx, dz) = Directions[dir];
-            var spot = Centre((m.Tile.X + dx, m.Tile.Z + dz), c.Actor.Position.Y);
-            if (_view.FloorAt(spot) is { } floor && (best == null || floor > best)) { best = floor; chosen = dir; }
+            dir = (dir + 2 * i) & 7;
+            int x = (m.Tile.X + Directions[dir].X) & 0xFF, z = (m.Tile.Z + Directions[dir].Z) & 0xFF;
+            if (x >= _width || z >= _depth) continue;
+            int floor = FloorOf((x, z));
+            if (floor > best) { best = floor; chosen = dir; }
         }
         if (chosen < 0) { m.Order = Order.Stand; m.Command = Body.Stand; return; }
         m.TurnTo = chosen << 9;
@@ -1584,9 +1607,10 @@ public sealed partial class FieldBattle
             held = kind;
         }
         m.Looks[slot] = (ticks - 1, held);
-        if (held is not (1 or 2)) return false;
-        // Its head turns (command 16): a glance back of 1280 for its first 13 frames, or right, left, then ahead.
-        m.Glance = held == 2 ? ticks < 11 ? 0 : 1280 : ticks >= 53 ? 800 : ticks >= 18 ? -800 : 0;
+        // The glance is by the kind asked for now (retail's switch on its argument): a call of another kind only counts.
+        if (kind is not (1 or 2)) return false;
+        // Its upper body turns (command 16): a glance back of 1280 for its first 13 frames, or right, left, then ahead.
+        m.Glance = kind == 2 ? ticks < 11 ? 0 : 1280 : ticks >= 53 ? 800 : ticks >= 18 ? -800 : 0;
         m.Order = Order.Stand;
         m.Command = Body.Stand;
         return ticks >= 2;
@@ -1618,6 +1642,7 @@ public sealed partial class FieldBattle
         m.Goal = m.Threat;
         m.Run = run;
         m.FacePoint = point;
+        m.GoalPoint = (m.Threat.X * 128 + 64, m.Threat.Z * 128 + 64);
         m.Heading = Toward(c, point) + 2048;
         m.Away = true;
         m.Order = Order.Away;
@@ -1755,12 +1780,11 @@ public sealed partial class FieldBattle
     /// once. On its point it goes on to the next in use along its way; between points, once its 10 frames since the last
     /// are out, a roll of one in two to its odds turns it back (the roll is made every frame). It walks for its point,
     /// and on it faces about.
-    /// BATTLE.PRG skips the patrol (without moving, reporting movement) when its third argument is 0, which behaviour 6
-    /// (0x800daa6c) never sets: it holds what the calls before it left there, the target's half-tile z from the chase's
-    /// last step (0x800e4904), 1024 from an arctangent (SLUS 0x8004137c) or the look-around's kind 1 (0x800e2c68) after
-    /// one that holds range, or for one with no plan and no foe a value carried over from the actor decided before it.
-    /// None of these is 0 but by coincidence, so the port always patrols. A route with no point in use (retail would
-    /// search it forever) has it face about.
+    /// No room of the disc gives a character behaviour 6 (the room actor records' word +0x10 bits 4-8 are 0, 1, 3 or 4
+    /// throughout), so retail never runs this routine. Were it run, 0x800db5fc would skip the patrol whenever the a2
+    /// register left by the code before it were 0 (it often is: the tick's step 19 leaves 0 there), and a route with
+    /// no point in use would search forever (0x800e245c); the port's patrol walks and faces about instead. Both are
+    /// beyond what any retail data reaches.
     /// </summary>
     private void Patrol(Combatant c)
     {
@@ -1988,17 +2012,16 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Plays a reaction an enemy voiced (the cue in its node's +0x0b, 0x800e48a8): the actor update (0x80075554) has
-    /// its body play it from its sound bank (0x800ae4fc: 1 the alert cry, 2 the calm one), unless it is 3000 or more
-    /// down.
+    /// Plays a reaction an enemy voiced (the cue in its node's +0x0b, 0x800e48a8) as the actor update takes the command
+    /// posted with it (0x800756d0, a frame after the tick that voiced it, and only with a command waiting): its body
+    /// cries out from its sound bank (0x800ae4fc: 1 the alert cry, 2 the calm one), unless it is 3000 or more down.
+    /// The cue stays until the next tick wipes it.
     /// </summary>
     private void Gaze(Combatant c)
     {
         var m = c.Mind!;
         var actor = c.Actor;
-        if (m.Cue == 0) return;
-        if (actor.Position.Y < 3000) _view.PlayActorSound(actor, $"c{actor.Character:X2}_{m.Cue}_p128");
-        m.Cue = 0;
+        if (m.Cue != 0 && actor.Position.Y < 3000) _view.PlayActorSound(actor, $"c{actor.Character:X2}_{m.Cue}_p128");
     }
 
     /// <summary>
@@ -2123,6 +2146,7 @@ public sealed partial class FieldBattle
     /// </summary>
     private void Orbit(Combatant c)
     {
+        c.Pitched = false;
         var b = _finalForm!;
         var m = c.Mind!;
         int x = (int)c.Actor.Position.X, y = (int)c.Actor.Position.Y, z = (int)c.Actor.Position.Z;
@@ -2186,12 +2210,14 @@ public sealed partial class FieldBattle
     /// room's centre from where it is and starts its path; each frame it flies the path's next step on from where it
     /// is (<see cref="Runtime.FieldContent.SwoopPath"/>). At the path's end it waits facing while Ashley is off the
     /// ground (and, in the port, while another move is under way, as it makes one at a time), then takes up its
-    /// angle about the centre again and is done (returns true). Its body's flag 0x10 at +0x5b0 for the first 14 steps
-    /// is not carried.
+    /// angle about the centre again and is done (returns true). Its body's flag 0x10 at +0x5b0 (<see cref="Combatant.Pitched"/>)
+    /// is set for each call that finds the step it came to under 14 (0x800e76d4, read before a new swoop starts its
+    /// steps again, so a later swoop's first call, finding the last swoop's 29, is clear), and cleared as the path ends.
     /// </summary>
     private bool Swoop(Combatant c)
     {
         var b = _finalForm!;
+        c.Pitched = b.Step < 14;
         c.Plans.Clear();
         int x = (int)c.Actor.Position.X, y = (int)c.Actor.Position.Y, z = (int)c.Actor.Position.Z;
         if (!b.Swooping)
@@ -2205,6 +2231,7 @@ public sealed partial class FieldBattle
         {
             if (_player is { Busy: true } || _phase != Phase.Free || _enemyCast != null || _enemyRelease != null) { Face(c); return false; }
             b.Swooping = false;
+            c.Pitched = false;
             b.Angle = (3072 - (Angle(RoomCentre - x, RoomCentre - z) & 0xFFF)) & 0xFFF;
             return true;
         }

@@ -1446,12 +1446,14 @@ public sealed class MapConversion
         var triangles = new JsonArray();
         var heights = new JsonArray();
         var marks = new JsonArray();
+        var ceilings = new JsonArray();
         for (int z = 0; z < depth * 4; z++)
             for (int x = 0; x < width * 4; x++)
             {
                 int floorY = Height(0, x, z, out bool marked), ceilingY = Height(1, x, z, out _);
                 heights.Add(floorY);
                 marks.Add(marked ? 1 : 0);
+                ceilings.Add(ceilingY);
                 // Retail y is down: a floor is walkable when it lies below its ceiling.
                 if (floorY <= ceilingY) continue;
                 int first = vertices.Count;
@@ -1461,7 +1463,7 @@ public sealed class MapConversion
                 triangles.Add(new JsonObject { ["vertices"] = new JsonArray { first, first + 3, first + 2 } });
             }
         var walkmeshes = new JsonArray { new JsonObject { ["vertices"] = vertices, ["triangles"] = triangles } };
-        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights, ["marks"] = marks });
+        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights, ["marks"] = marks, ["ceilings"] = ceilings });
     }
 
     /// <summary>

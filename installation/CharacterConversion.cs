@@ -240,6 +240,10 @@ public sealed class CharacterConversion
             // Byte 6 is also the bone's body part: 1 is the head, which head tracking turns.
             if (_model[_bonesAt + i * 16 + 6] == 1 && headBone < 0) headBone = i;
         }
+        // A bone record's byte 8 is its part group for the upper body's twist (BATTLE.PRG 0x800b28a8): the AI twists a
+        // model only when one bone is of group 2 (0x800a152c(i, 2, 3), AI +0x2a).
+        bool twists = false;
+        for (int i = 0; i < _bones && _weaponTexture < 0; i++) twists |= _model[_bonesAt + i * 16 + 8] == 2;
         // Each limb is aimed at through the first bone whose record byte 7 has the limb's number, from 1, in its low nibble.
         var limbBones = new JsonArray();
         for (int limb = 0; limb < 6; limb++)
@@ -276,7 +280,10 @@ public sealed class CharacterConversion
         // and the height its eyes see from (0x800e6178); a weapon has none.
         int girth = _weaponTexture < 0 && _model.Length >= 0x58 ? BitConverter.ToUInt16(_model, 0x54) : 0;
         int height = _weaponTexture < 0 && _model.Length >= 0x58 ? BitConverter.ToUInt16(_model, 0x56) : 0;
-        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
+        // The head's point above the feet (the u16 at 0x5e, body +0x646), where BATTLE.PRG's code 251 points balloons
+        // and the chain cue (0x800a1280).
+        int crown = _weaponTexture < 0 && _model.Length >= 0x60 ? BitConverter.ToUInt16(_model, 0x5e) : 0;
+        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["crown"] = crown, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["twists"] = twists, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
     }
 
     /// <summary>
