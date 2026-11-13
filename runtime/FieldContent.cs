@@ -26,6 +26,8 @@ public sealed class FieldContent
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
     private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
     private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
+    private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
+    private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -529,6 +531,25 @@ public sealed class FieldContent
         for (int i = 0; i < 15; i++)
             steps[i] = ((sbyte)_battle[CrateCollapse + i], (sbyte)_battle[CrateCollapse + 16 + i], (sbyte)_battle[CrateCollapse + 32 + i], (sbyte)_battle[CrateCollapse + 48 + i]);
         return steps;
+    }
+
+    /// <summary>
+    /// A status bit's standing in an enemy's reckoning of a fighter's well-being (BATTLE.PRG 0x80069BD0, a signed byte a
+    /// bit; 0x800dcc94), and its rules (SLUS_010.40 0x8004EECC, 16 bytes a bit; 0x80081020): the statuses it clears as
+    /// it lands and those that keep it off.
+    /// </summary>
+    public (int Weight, uint Clears, uint BlockedBy) Status(int bit) =>
+        ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12));
+
+    /// <summary>
+    /// What an action costs and how an enemy weighs it (its record in SLUS_010.40's action table; 0x800e4df8,
+    /// 0x800dcc94): the cost's kind (byte 2 bits 1 to 3: 1 MP, 3 HP above half, 4 the weapon's DP), the cost (byte 3)
+    /// and its planning flags (the halfword at 14: 0x20 passed over nine times in ten, 0x40 a last resort).
+    /// </summary>
+    public (int CostKind, int Cost, int Flags) ActionCost(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return (_executable[record + 2] >> 1 & 7, _executable[record + 3], BitConverter.ToUInt16(_executable, record + 14));
     }
 
     /// <summary>

@@ -190,8 +190,8 @@ public sealed class InventoryConversion
         return new JsonObject { ["weapons"] = weapons, ["blades"] = blades, ["grips"] = grips, ["armour"] = armour, ["items"] = items };
     }
 
-    /// <summary>The executable's action table: 52-byte records.</summary>
-    private const int Actions = 0x3C1DC;
+    /// <summary>The executable's action table: 52-byte records (SLUS_010.40 0x8004B9DC).</summary>
+    public const int Actions = 0x3C1DC;
 
     /// <summary>
     /// An action record's effects, its two words at 0x14 and 0x18 (an effect of 0 is none): the effect, its

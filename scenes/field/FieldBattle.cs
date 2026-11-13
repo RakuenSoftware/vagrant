@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using GDictionary = Godot.Collections.Dictionary;
+using Wol.Games.Vagrant.Runtime;
 
 namespace Wol.Games.Vagrant.Scenes.Field;
 
@@ -115,6 +116,8 @@ public sealed class FieldBattle
         /// <summary>The model part the limb is (its first bone's body part: 1 HEAD, 2 R.ARM, 3 L.ARM, 4 LEGS, 6 BODY...), or 0 when the rig does not say.</summary>
         public int Part;
         public int[] Types = new int[4], Affinities = new int[8], Split = new int[6];
+        /// <summary>The four actions the limb lists (0 is none), from which an enemy plans its moves (<see cref="Plan"/>).</summary>
+        public int[] Actions = new int[4];
         public Gear Armour = new();
     }
 
@@ -164,8 +167,6 @@ public sealed class FieldBattle
             }
         }
         public readonly List<Limb> Limbs = new();
-        /// <summary>The actions its limbs list (0 is none), from which an enemy picks its moves.</summary>
-        public readonly List<int> Actions = new();
         /// <summary>
         /// How far it sees (sight ranges by bits 18 to 20 of its record's AI word: 384, 512, 768, 896, 1024, 1536,
         /// 1792 or 8192 units, at most 1536), within what cone (bits 16 and 17: 360, 190, 85 or 40 degrees), and its
@@ -187,8 +188,24 @@ public sealed class FieldBattle
         /// <summary>Restores up to <paramref name="amount"/> magic points, never past its most; returns what it restored.</summary>
         public int Restore(int amount) { int restored = Math.Clamp(amount, 0, MaxMp - Mp); Mp += restored; return restored; }
 
-        /// <summary>Sets <paramref name="status"/> for its whole <see cref="Duration"/>.</summary>
-        public void Afflict(int status) => Statuses[status] = Duration(status);
+        /// <summary>
+        /// Sets <paramref name="status"/> for its whole <see cref="Duration"/> by its rules (<see cref="FieldContent.Status"/>;
+        /// BATTLE.PRG 0x80081020): not while a status that keeps it off is set; the statuses it clears go (raising or
+        /// lowering one strength, intelligence or agility clears the other five; poison clears regeneration); and one
+        /// already set stays as it is unless it clears itself.
+        /// </summary>
+        public void Afflict(int status, FieldContent rules)
+        {
+            int bit = status > 0 && status < StatusBits.Length ? StatusBits[status] : -1;
+            if (bit < 0) { Statuses[status] = Duration(status); return; }
+            var (_, clears, blockedBy) = rules.Status(bit);
+            foreach (int other in Statuses.Keys)
+                if (other > 0 && other < StatusBits.Length && StatusBits[other] >= 0 && (blockedBy >> StatusBits[other] & 1) != 0) return;
+            if (Statuses.ContainsKey(status) && (clears >> bit & 1) == 0) return;
+            foreach (int other in new List<int>(Statuses.Keys))
+                if (other > 0 && other < StatusBits.Length && StatusBits[other] >= 0 && (clears >> StatusBits[other] & 1) != 0) Statuses.Remove(other);
+            Statuses[status] = Duration(status);
+        }
 
         /// <summary>
         /// A cure effect: 27 paralysis, 28 poison, 29 curse, 30 numbness, 31 the magic cancel (every raising and
@@ -437,7 +454,7 @@ public sealed class FieldBattle
             for (int k = 0; k < 6; k++) limb.Split[k] = record["split"].AsGodotArray()[k].AsInt32();
             while (combatant.Limbs.Count < i) combatant.Limbs.Add(new Limb());
             combatant.Limbs.Add(limb);
-            foreach (var action in record["actions"].AsGodotArray()) if (action.AsInt32() != 0) combatant.Actions.Add(action.AsInt32());
+            for (int k = 0; k < 4; k++) limb.Actions[k] = record["actions"].AsGodotArray()[k].AsInt32();
         }
         Combatants[actor.Id] = combatant;
         if (actor.Id == "slot:0") Ashley = combatant;
@@ -863,7 +880,7 @@ public sealed class FieldBattle
                     if (_landed && target.Shield.MaxPp > 0) target.Shield.Drain();
                     break;
                 case 11 or 15 or 16 or 17:
-                    target.Afflict(kind);
+                    target.Afflict(kind, _view.Content.Field);
                     break;
                 case 27 or 30:
                     target.Cure(kind);
@@ -1130,53 +1147,58 @@ public sealed class FieldBattle
         foreach (var value in spell["effects"].AsGodotArray())
         {
             var effect = value.AsGodotDictionary();
-            int kind = effect["effect"].AsInt32(), factor = effect["factor"].AsInt32(), hit = effect["hit"].AsInt32();
-            int type = Math.Clamp(effect["type"].AsInt32(), 1, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
-            if (kind == 62)
-            {
-                // Healing is reckoned on the one healed, give or take 5 (0x800829B8).
-                int heal = Math.Min(target.MaxHp - target.Hp, Math.Max(0, SpellDamage(caster, effect, target, target.Struck) + _random.RandiRange(-5, 5)));
-                target.Hp += heal;
-                Number(target, "+" + heal);
-                continue;
-            }
-            if (kind is >= 1 and <= 26 && kind != 4 && kind != 9 && kind != 14)
-            {
-                // A status spell lands by its hit roll (help always does) and sets its status; a physical one (hit
-                // function 3, a monster's special attack) by the attack's chance.
-                // A drawn shield's gem that guards against the status takes 20 off its chance, which the always-landing
-                // help spells otherwise have whole.
-                int guard = Guarded(target, kind) ? 20 : 0;
-                if (hit == 3 && _random.RandiRange(0, 99) >= HitChance(caster, target, -1, vary: true) - guard) continue;
-                if (hit == 5 && _random.RandiRange(0, 99) >= Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard) { Number(target, "Miss"); continue; }
-                if (hit != 3 && hit != 5 && _random.RandiRange(0, 99) >= 100 - guard) { Number(target, "Miss"); continue; }
-                target.Afflict(kind);
-                Number(target, spell["name"].AsString());
-                continue;
-            }
+            int kind = effect["effect"].AsInt32();
             // Effects 38 and 37 clear the room's traps (flags 32 and 64; 0x80084340, 0x80084310).
             if (kind is 37 or 38) { _view.Flags[kind == 38 ? 32 : 64] = 1; continue; }
-            if (kind != 58 || target == caster) continue;
-            // A spell on the whole target lands on its record's limb (the request's limb, 0x8007138C).
-            int limb = target.Struck;
-            if (hit == 3 && effect["reckoning"].AsInt32() == 2)
-            {
-                // A physical action (a monster's special attack): the attack's chance and damage by its own type and
-                // affinity, scaled by its factor as a spell is.
-                if (_random.RandiRange(0, 99) >= HitChance(caster, target, limb, vary: true)) { Number(target, "Miss"); continue; }
-                int dealt = Damage(caster, target, limb, type, affinity) * (factor * 10 + 100) / 100;
-                Strike(target, dealt);
-                if (target.Dead && target == Ashley) return;
-                continue;
-            }
-            if (hit == 5)
-            {
-                int chance = Math.Clamp(Agility(caster) * (100 - caster.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32() + _random.RandiRange(-5, 5), 0, 100);
-                if (_random.RandiRange(0, 99) >= Math.Min(100, chance + (caster == Ashley ? 10 : 0))) { Number(target, "Miss"); continue; }
-            }
-            Strike(target, SpellDamage(caster, effect, target, limb) + 1 + _random.RandiRange(0, 4));
+            var (hp, status, missed, shown) = Reckon(caster, spell, effect, target, roll: true);
+            if (missed) { if (shown) Number(target, "Miss"); continue; }
+            if (status != 0) { target.Afflict(status, _view.Content.Field); Number(target, spell["name"].AsString()); continue; }
+            if (kind == 62) { target.Hp += hp; Number(target, "+" + hp); continue; }
+            if (hp >= 0) continue;
+            Strike(target, -hp);
             if (target.Dead && target == Ashley) return;
         }
+    }
+
+    /// <summary>
+    /// What one of a spell's effects does to its target, as <see cref="Release"/> describes: the hit points it restores
+    /// (or takes, below 0), the status it sets, or a miss (shown, but not for a physical status's). Without
+    /// <paramref name="roll"/> every roll lands, as an enemy reckons a move ahead (<see cref="Plan"/>).
+    /// </summary>
+    private (int Hp, int Status, bool Missed, bool Shown) Reckon(Combatant caster, GDictionary spell, GDictionary effect, Combatant target, bool roll)
+    {
+        int kind = effect["effect"].AsInt32(), factor = effect["factor"].AsInt32(), hit = effect["hit"].AsInt32();
+        int type = Math.Clamp(effect["type"].AsInt32(), 1, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
+        // Healing is reckoned on the one healed, give or take 5 (0x800829B8).
+        if (kind == 62) return (Math.Min(target.MaxHp - target.Hp, Math.Max(0, SpellDamage(caster, effect, target, target.Struck) + (roll ? _random.RandiRange(-5, 5) : 0))), 0, false, false);
+        if (kind is >= 1 and <= 26 && kind != 4 && kind != 9 && kind != 14)
+        {
+            // A status spell lands by its hit roll (help always does) and sets its status; a physical one (hit
+            // function 3, a monster's special attack) by the attack's chance.
+            // A drawn shield's gem that guards against the status takes 20 off its chance, which the always-landing
+            // help spells otherwise have whole.
+            int guard = Guarded(target, kind) ? 20 : 0;
+            if (roll && hit == 3 && _random.RandiRange(0, 99) >= HitChance(caster, target, -1, vary: true) - guard) return (0, 0, true, false);
+            if (roll && hit == 5 && _random.RandiRange(0, 99) >= Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard) return (0, 0, true, true);
+            if (roll && hit != 3 && hit != 5 && _random.RandiRange(0, 99) >= 100 - guard) return (0, 0, true, true);
+            return (0, kind, false, false);
+        }
+        if (kind != 58 || target == caster) return (0, 0, false, false);
+        // A spell on the whole target lands on its record's limb (the request's limb, 0x8007138C).
+        int limb = target.Struck;
+        if (hit == 3 && effect["reckoning"].AsInt32() == 2)
+        {
+            // A physical action (a monster's special attack): the attack's chance and damage by its own type and
+            // affinity, scaled by its factor as a spell is.
+            if (roll && _random.RandiRange(0, 99) >= HitChance(caster, target, limb, vary: true)) return (0, 0, true, true);
+            return (-(Damage(caster, target, limb, type, affinity) * (factor * 10 + 100) / 100), 0, false, false);
+        }
+        if (roll && hit == 5)
+        {
+            int chance = Math.Clamp(Agility(caster) * (100 - caster.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32() + _random.RandiRange(-5, 5), 0, 100);
+            if (_random.RandiRange(0, 99) >= Math.Min(100, chance + (caster == Ashley ? 10 : 0))) return (0, 0, true, true);
+        }
+        return (-(SpellDamage(caster, effect, target, limb) + 1 + _random.RandiRange(0, 4)), 0, false, false);
     }
 
     /// <summary>
@@ -1315,7 +1337,7 @@ public sealed class FieldBattle
                     break;
                 }
                 case Paralysis or Poison or Curse:
-                    ashley.Afflict(kind);
+                    ashley.Afflict(kind, _view.Content.Field);
                     break;
                 case >= 27 and <= 32:
                     ashley.Cure(kind);
@@ -1375,32 +1397,146 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// An enemy's move: one of the actions its limbs list, at random. A spell (54 to 140) or special attack (141 to
-    /// 183, such as breaths and tail attacks) it has the magic for is cast at Ashley: the wind-up and release, then
-    /// its effects by the same rules as hers. Anything else is an attack.
+    /// Effect ids to the status bits their handlers set (BATTLE.PRG's effect table at 0x800E8378, each handler passing
+    /// its bit to 0x80081020): lowering strength, intelligence and agility 5, 7 and 9, slowing 4, raising 6, 8 and 10,
+    /// quickening 11, silence 12, regeneration 17, paralysis 13, poison 14, numbness 15, curse 16 and the rest.
     /// </summary>
-    private bool EnemySpell(Combatant enemy)
+    private static readonly int[] StatusBits = { -1, 5, 7, 9, 19, 4, 6, 8, 10, 20, 11, 12, 18, 17, 29, 13, 14, 15, 16, 21, 22, 23, 24, 25, 26, 27, 28 };
+
+    /// <summary>
+    /// A fighter's well-being as an enemy reckons it (BATTLE.PRG 0x800dcc94, summed by 0x800dc284): six times the
+    /// standing of its statuses (<see cref="FieldContent.Status"/>; silence only for one with spells, taken for the
+    /// record's byte 23 retail reads), less 128 when it is down and 84 under 44/128 of its hit points; plus four times
+    /// its hit points, its magic points, and twice its weapon's and its shield's phantom points, each a share of its
+    /// most in 128ths.
+    /// </summary>
+    private int WellBeing(Combatant c, int hp, int mp, List<int> statuses)
     {
-        if (enemy.Actions.Count == 0) return false;
-        int action = enemy.Actions[_random.RandiRange(0, enemy.Actions.Count - 1)];
-        if (action is < 54 or > 183 || action <= 140 && enemy.Has(Silence)) return false;
+        bool casts = c == Ashley || c.Limbs.Exists(limb => Array.Exists(limb.Actions, action => action is >= 54 and <= 140));
+        int standing = 0;
+        foreach (int status in statuses)
+            if (status > 0 && status < StatusBits.Length && (StatusBits[status] != 12 || casts)) standing += _view.Content.Field.Status(StatusBits[status]).Weight;
+        if (hp == 0) standing -= 128;
+        if (hp * 128 < c.MaxHp * 44) standing -= 84;
+        int life = c.MaxHp != 0 ? hp * 128 / c.MaxHp : 0, magic = c.MaxMp != 0 ? mp * 128 / c.MaxMp : 0;
+        int phantom = (c.Blade.MaxPp != 0 ? c.Blade.Pp * 128 / c.Blade.MaxPp : 0) + (c.Shield.MaxPp != 0 ? c.Shield.Pp * 128 / c.Shield.MaxPp : 0);
+        return 6 * standing + 4 * life + magic + 2 * phantom;
+    }
+
+    /// <summary>
+    /// How a move would leave the fight (0x800dcc94): every fighter's <see cref="WellBeing"/> after it, the mover's
+    /// side's added and Ashley's taken off. The mover pays its hit and magic points; the target's hit points change by
+    /// <paramref name="change"/> (within 0 and its most) and it takes the statuses <paramref name="added"/> it lacks.
+    /// </summary>
+    private int Outlook(Combatant mover, List<Combatant> fighters, int hpCost, int mpCost, Combatant? target, int change, List<int> added)
+    {
+        int total = 0;
+        foreach (var fighter in fighters)
+        {
+            int hp = fighter.Hp, mp = fighter.Mp;
+            var statuses = new List<int>(fighter.Statuses.Keys);
+            if (fighter == mover) { hp = Math.Max(0, hp - hpCost); mp = Math.Max(0, mp - mpCost); }
+            if (fighter == target)
+            {
+                hp = Math.Clamp(hp + change, 0, fighter.MaxHp);
+                foreach (int status in added) if (!statuses.Contains(status)) statuses.Add(status);
+            }
+            int wellBeing = WellBeing(fighter, hp, mp, statuses);
+            total += fighter == Ashley ? -wellBeing : wellBeing;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// The limb an enemy aims at (0x800dddc8): a random 0 to 5, the low two bits of a roll and its next two each added
+    /// (so the middle limbs come most), taken when the target has that limb, else its last.
+    /// </summary>
+    private int AimLimb(Combatant target)
+    {
+        int roll = (int)(_random.Randi() & 0xF), limb = (roll & 3) + (roll >> 2 & 1) + (roll >> 3 & 1), last = -1;
+        for (int i = 0; i < target.Limbs.Count; i++) if (target.Limbs[i].MaxHp > 0) last = i;
+        return limb < target.Limbs.Count && target.Limbs[limb].MaxHp > 0 ? limb : last;
+    }
+
+    /// <summary>
+    /// An enemy's move (BATTLE.PRG's planner, 0x800dd918): each action its limbs list that it can make (0x800e4df8: the
+    /// limb above 1 hit point and its cost met, magic points while not silenced, hit points leaving more than half, or
+    /// its weapon's DP; paralysed, only actions costing magic points or nothing else) is reckoned on each fighter as
+    /// its target with every roll taken as landing (<see cref="Reckon"/>; an attack, on Ashley's limb
+    /// <see cref="AimLimb"/> picks, by its <see cref="Damage"/>), and scored by its <see cref="Outlook"/>. One flagged
+    /// 0x20 is passed over nine times in ten. The best that scores above doing nothing is the move; failing one, the
+    /// first it can make flagged 0x40 (0x800dc4f0), on Ashley; failing that, none.
+    /// </summary>
+    private (int Action, Combatant Target, int Limb)? Plan(Combatant enemy)
+    {
+        if (Ashley == null) return null;
+        var fighters = new List<Combatant>();
+        foreach (var c in Combatants.Values) if (!c.Dead && !c.Cube && (c == Ashley || c.Hostile)) fighters.Add(c);
+        var spells = _view.Content.Data("spells")["actions"].AsGodotDictionary();
+        int best = Outlook(enemy, fighters, 0, 0, null, 0, new List<int>()), lastResort = 0, aim = AimLimb(Ashley);
+        (int, Combatant, int)? move = null;
+        foreach (var limb in enemy.Limbs)
+        {
+            if (limb.Hp < 2) continue;
+            foreach (int action in limb.Actions)
+            {
+                if (action == 0) continue;
+                var (costKind, cost, flags) = _view.Content.Field.ActionCost(action);
+                if (enemy.Has(Paralysis) && costKind is not (1 or 2)) continue;
+                if (costKind == 1 && (enemy.Mp < cost || enemy.Has(Silence)) || costKind == 3 && enemy.Hp < cost + enemy.MaxHp / 2 || costKind == 4 && enemy.Blade.Dp < cost) continue;
+                if ((flags & 0x40) != 0 && lastResort == 0) lastResort = action;
+                if ((flags & 0x20) != 0 && (_random.Randi() & 0x7F) < 115) continue;
+                int hpCost = costKind == 3 ? cost : 0, mpCost = costKind == 1 ? cost : 0;
+                var spell = spells.GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
+                if (action is < 54 or > 183 || spell.Count == 0)
+                {
+                    int score = Outlook(enemy, fighters, hpCost, mpCost, Ashley, -Damage(enemy, Ashley, aim), new List<int>());
+                    if (score > best) (best, move) = (score, (action, Ashley, aim));
+                    continue;
+                }
+                foreach (var target in fighters)
+                {
+                    int change = 0;
+                    var added = new List<int>();
+                    foreach (var effect in spell["effects"].AsGodotArray())
+                    {
+                        var (hp, status, _, _) = Reckon(enemy, spell, effect.AsGodotDictionary(), target, roll: false);
+                        change += hp;
+                        if (status != 0) added.Add(status);
+                    }
+                    int score = Outlook(enemy, fighters, hpCost, mpCost, target, change, added);
+                    if (score > best) (best, move) = (score, (action, target, aim));
+                }
+            }
+        }
+        return move ?? (lastResort != 0 ? (lastResort, Ashley, aim) : null);
+    }
+
+    /// <summary>
+    /// An enemy's planned move, when it is a spell (54 to 140) or special attack (141 to 183, such as breaths and tail
+    /// attacks): it pays the action's cost (<see cref="FieldContent.ActionCost"/>: magic points, or hit points), then
+    /// the wind-up and release on its target, and its effects by the same rules as Ashley's. Anything else is an attack.
+    /// </summary>
+    private bool EnemySpell(Combatant enemy, int action, Combatant target)
+    {
+        if (action is < 54 or > 183) return false;
         var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
-        if (spell.Count == 0 || enemy.Mp < spell["cost"].AsInt32()) return false;
-        enemy.Mp -= spell["cost"].AsInt32();
-        enemy.Actor.Facing = enemy.Actor.FacingToward(Ashley!.Actor.Position);
+        if (spell.Count == 0) return false;
+        var (costKind, cost, _) = _view.Content.Field.ActionCost(action);
+        if (costKind == 1) enemy.Mp = Math.Max(0, enemy.Mp - cost);
+        if (costKind == 3) enemy.Hp = Math.Max(1, enemy.Hp - cost);
+        enemy.Actor.Facing = enemy.Actor.FacingToward(target.Actor.Position);
         if (Play(enemy, 85, 6) == null) Play(enemy, 87, 6);
         // Its casting lasts as Ashley's does, while its name shows, sparkling in mode 2 for a spell and 3 for a
         // special attack (footage: the Dullahan's Drain Heart).
-        _enemyCast = (enemy, spell, FieldView.AnnounceFrames + 9);
+        _enemyCast = (enemy, spell, target, FieldView.AnnounceFrames + 9);
         _enemyChant = _view.PlayResident(56, enemy.Actor, enemy.Actor, mode: action <= 140 ? 2 : 3);
-        bool heals = false;
-        foreach (var effect in spell["effects"].AsGodotArray()) heals |= effect.AsGodotDictionary()["effect"].AsInt32() == 62;
-        HoldCamera(enemy, heals || Ashley == null ? enemy : Ashley, spell, null);
+        HoldCamera(enemy, target, spell, null);
         _view.Announce(action <= 140 ? 23 : 24, spell["name"].AsString());
         return true;
     }
 
-    private (Combatant Caster, GDictionary Spell, int Frames)? _enemyCast;
+    private (Combatant Caster, GDictionary Spell, Combatant Target, int Frames)? _enemyCast;
     private FieldEffect? _enemyChant;
 
     /// <summary>The visual effect of the spell last released, which the HUD stays put away for.</summary>
@@ -1433,13 +1569,11 @@ public sealed class FieldBattle
         _enemyCast = null;
         if (_enemyChant != null && GodotObject.IsInstanceValid(_enemyChant)) _enemyChant.Mode = 0;
         _enemyChant = null;
-        if (cast.Caster.Dead || Ashley == null || Ashley.Dead) return;
+        if (cast.Caster.Dead || cast.Target.Dead || Ashley == null || Ashley.Dead) return;
         if (Play(cast.Caster, 88, 4) == null) Play(cast.Caster, 89, 4);
         cast.Caster.Actor.Queue($"{cast.Caster.Set}_1", 6);
-        bool heals = false;
-        foreach (var effect in cast.Spell["effects"].AsGodotArray()) heals |= effect.AsGodotDictionary()["effect"].AsInt32() == 62;
         // Its effect plays now; what it does lands at the effect's hit, or once the effect has run.
-        var target = heals ? cast.Caster : Ashley;
+        var target = cast.Target;
         _castEffect = _enemyEffect = _view.PlayEffect(cast.Spell.GetValueOrDefault("visual", 0).AsInt32(), cast.Caster.Actor, target.Actor);
         _enemyRelease = (cast.Caster, cast.Spell, target);
         cast.Caster.Timer = EnemyPause;
@@ -2157,13 +2291,12 @@ public sealed class FieldBattle
             enemy.Telegraph = 0;
             enemy.Alert = AlertFrames;
             enemy.Rest = RestFrames;
-            if (EnemySpell(enemy)) return;
+            // It plans its move; with none worth making it lets the moment pass.
+            if (Plan(enemy) is not { } move) continue;
+            if (EnemySpell(enemy, move.Action, move.Target)) return;
             _attacker = enemy;
             _victim = Ashley;
-            // It aims at one of her limbs.
-            var aims = new List<int>();
-            for (int i = 0; i < Ashley.Limbs.Count; i++) if (Ashley.Limbs[i].MaxHp > 0) aims.Add(i);
-            _victimLimb = aims.Count > 0 ? aims[_random.RandiRange(0, aims.Count - 1)] : -1;
+            _victimLimb = move.Limb;
             _frames = EnemyWindUp;
             _phase = Phase.WindUp;
             return;

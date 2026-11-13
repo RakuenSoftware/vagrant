@@ -1711,7 +1711,7 @@ public sealed partial class FieldMenu : PanelContainer
                     parts.Add(ashley.Cure(kind) || kind is 0x1F or 0x20 ? (kind == 0x1F ? "magic cancelled" : "cured") : "no effect");
                     break;
                 case 10:
-                    ashley.Afflict(FieldBattle.Quicken);
+                    ashley.Afflict(FieldBattle.Quicken, _view.Content.Field);
                     parts.Add("quickened");
                     break;
                 // Elixirs: strength, intelligence, agility, most hit points or most magic points, 1 to 4 more for good.
