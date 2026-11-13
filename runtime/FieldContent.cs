@@ -28,6 +28,8 @@ public sealed class FieldContent
     private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
     private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
     private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
+    private const int Relations = 0x140C;        // BATTLE.PRG 0x80069C0C
+    private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -538,18 +540,50 @@ public sealed class FieldContent
     /// bit; 0x800dcc94), and its rules (SLUS_010.40 0x8004EECC, 16 bytes a bit; 0x80081020): the statuses it clears as
     /// it lands and those that keep it off.
     /// </summary>
-    public (int Weight, uint Clears, uint BlockedBy) Status(int bit) =>
-        ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12));
+    /// <remarks>Its period (the rule's halfword at 6) is how many seconds poison and regeneration take a turn in, as an
+    /// enemy reckons them ahead (0x800de228).</remarks>
+    public (int Weight, uint Clears, uint BlockedBy, int Period) Status(int bit) =>
+        ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12),
+            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6));
 
     /// <summary>
-    /// What an action costs and how an enemy weighs it (its record in SLUS_010.40's action table; 0x800e4df8,
-    /// 0x800dcc94): the cost's kind (byte 2 bits 1 to 3: 1 MP, 3 HP above half, 4 the weapon's DP), the cost (byte 3)
-    /// and its planning flags (the halfword at 14: 0x20 passed over nine times in ten, 0x40 a last resort).
+    /// How one fighter stands to another as a battle begins (BATTLE.PRG 0x80069C0C, read by 0x800e7370): by its
+    /// faction (its AI word's bits 21 and 22), a byte for the player and one for others of factions 0 to 2. 3 is a foe,
+    /// 2 an ally and 1 neither.
     /// </summary>
-    public (int CostKind, int Cost, int Flags) ActionCost(int id)
+    public int Relation(int faction, bool toPlayer) => _battle[Relations + faction * 2 + (toPlayer ? 0 : 1)];
+
+    /// <summary>
+    /// The enemy planner's three passes (BATTLE.PRG 0x80069BF0 and 0x80069BFC, read by 0x800de3e4): how far ahead
+    /// each looks, in frames, and how many of its best moves it keeps.
+    /// </summary>
+    public (int Horizon, int Keep)[] PlanPasses()
+    {
+        var passes = new (int, int)[3];
+        for (int i = 0; i < 3; i++) passes[i] = (BitConverter.ToInt32(_battle, PlanHorizons + i * 4), BitConverter.ToInt32(_battle, PlanHorizons + 12 + i * 4));
+        return passes;
+    }
+
+    /// <summary>
+    /// An action's record as an enemy plans with it (SLUS_010.40's action table, 52 bytes an action):
+    /// <list type="bullet">
+    /// <item>its target kind (byte 2's high four bits; BATTLE.PRG 0x800e5710 sorts them into one target, a target's
+    /// limbs or an area);</item>
+    /// <item>its cost's kind (byte 2 bits 1 to 3: 1 MP, 3 HP above half, 4 the weapon's DP, 6 the weapon's PP;
+    /// 0x800e4df8, 0x800dc888) and the cost (byte 3);</item>
+    /// <item>its range (bytes 4 to 7: x, y and z radii and an angle and shape; 255 first is the weapon's; 0x800e5698);</item>
+    /// <item>its recovery (byte 12; 255 is the user's own; 0x800859b4);</item>
+    /// <item>its planning flags (the halfword at 14: 0x10 weighed without reckoning by some, 0x20 passed over nine times
+    /// in ten, 0x40 a last resort, 0x4000 help, 0x8000 harm, bits 9 to 11 the troubles a help is for, 0x100 any;
+    /// 0x800dcc94, 0x800e4cf4).</item>
+    /// </list>
+    /// </summary>
+    public ActionRecord Action(int id)
     {
         int record = InventoryConversion.Actions + id * 52;
-        return (_executable[record + 2] >> 1 & 7, _executable[record + 3], BitConverter.ToUInt16(_executable, record + 14));
+        return new ActionRecord(_executable[record + 2] >> 4, _executable[record + 2] >> 1 & 7, _executable[record + 3],
+            new[] { (int)_executable[record + 4], _executable[record + 5], _executable[record + 6], _executable[record + 7] },
+            _executable[record + 12], BitConverter.ToUInt16(_executable, record + 14));
     }
 
     /// <summary>
@@ -791,3 +825,6 @@ public sealed class FieldContent
         return ("bank_" + kind, bank, id, pan, group);
     }
 }
+
+/// <summary>An action's record as an enemy plans with it: see <see cref="FieldContent.Action"/>.</summary>
+public readonly record struct ActionRecord(int TargetKind, int CostKind, int Cost, int[] Range, int Recovery, int Flags);

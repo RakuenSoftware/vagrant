@@ -116,7 +116,7 @@ public sealed class FieldBattle
         /// <summary>The model part the limb is (its first bone's body part: 1 HEAD, 2 R.ARM, 3 L.ARM, 4 LEGS, 6 BODY...), or 0 when the rig does not say.</summary>
         public int Part;
         public int[] Types = new int[4], Affinities = new int[8], Split = new int[6];
-        /// <summary>The four actions the limb lists (0 is none), from which an enemy plans its moves (<see cref="Plan"/>).</summary>
+        /// <summary>The four actions the limb lists (0 is none), from which an enemy plans its moves (<see cref="PlanMoves"/>).</summary>
         public int[] Actions = new int[4];
         public Gear Armour = new();
     }
@@ -176,6 +176,16 @@ public sealed class FieldBattle
         public float Sight = DetectRange, Cone = 360;
         public int Pause = EnemyPause;
         public bool Engaged;
+        /// <summary>
+        /// Its planner's state (BATTLE.PRG's AI record): its plan (+0x2f0), its faction (+0x2c, the AI word's bits 21 and
+        /// 22), whether it falls back on its last resorts (+0x26) and weighs moves flagged 0x10 lightly (+0x2b), its
+        /// cooldown (+0x13f, frames until it may plan sooner), its recovery (its data's +0x954, 35 a frame) and what
+        /// each move adds to it, and its two slowing limbs (its data's +0x34 and +0x35).
+        /// </summary>
+        public readonly List<PlanEntry> Plans = new();
+        public int Faction, Cooldown, Recovery, RecoveryBonus;
+        public bool LastResorts, WeighsLightly;
+        public (int A, int B)? SlowingLimbs;
 
         /// <summary>Statuses by effect id, with the frames each has left (-1 lasts until cured).</summary>
         public readonly Dictionary<int, int> Statuses = new();
@@ -198,7 +208,7 @@ public sealed class FieldBattle
         {
             int bit = status > 0 && status < StatusBits.Length ? StatusBits[status] : -1;
             if (bit < 0) { Statuses[status] = Duration(status); return; }
-            var (_, clears, blockedBy) = rules.Status(bit);
+            var (_, clears, blockedBy, _) = rules.Status(bit);
             foreach (int other in Statuses.Keys)
                 if (other > 0 && other < StatusBits.Length && StatusBits[other] >= 0 && (blockedBy >> StatusBits[other] & 1) != 0) return;
             if (Statuses.ContainsKey(status) && (clears >> bit & 1) == 0) return;
@@ -428,6 +438,12 @@ public sealed class FieldBattle
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
         combatant.Set = drawn ? combatant.BattleSet : "base";
         long ai = stats.GetValueOrDefault("ai", 0L).AsInt64();
+        combatant.Faction = (int)(ai >> 21 & 3);
+        combatant.LastResorts = stats.GetValueOrDefault("last_resorts", false).AsBool();
+        combatant.WeighsLightly = stats.GetValueOrDefault("weighs_lightly", false).AsBool();
+        combatant.RecoveryBonus = stats.GetValueOrDefault("recovery", 0).AsInt32();
+        if (stats.GetValueOrDefault("slowing_limbs", new Godot.Collections.Array()).AsGodotArray() is { Count: 2 } slowing)
+            combatant.SlowingLimbs = (slowing[0].AsInt32(), slowing[1].AsInt32());
         if (ai != 0)
         {
             combatant.Sight = Math.Min(DetectRange, new[] { 384f, 512, 768, 896, 1024, 1536, 1792, 8192 }[(ai >> 18) & 7]);
@@ -593,6 +609,13 @@ public sealed class FieldBattle
                 StepCast();
                 break;
         }
+        // The fight is planned anew as a move ends and as the hostile come and go (BATTLE.PRG 0x800dec88).
+        bool acting = _phase is Phase.Striking or Phase.WindUp or Phase.Casting || _enemyCast != null || _enemyRelease != null;
+        int hostile = 0;
+        foreach (var c in Combatants.Values) if (c != Ashley && c.Hostile && !c.Dead) hostile++;
+        if (!acting && (_wasActing || hostile != _hostileCount)) Replan();
+        _wasActing = acting;
+        if (!acting) _hostileCount = hostile;
         if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing) { StepEnemies(); StepEnemyCast(); }
         StepEnemyRelease();
         // The balloons are put away while the sphere is open (BATTLE.PRG 0x8009627C draws none while its flag is set).
@@ -667,18 +690,6 @@ public sealed class FieldBattle
         var local = new Basis(Vector3.Right, attacker.Tilt * 16 * Mathf.Tau / 4096f) * (new Basis(Vector3.Up, -angle) * offset);
         var r = attacker.Range;
         return local.X * local.X / (r.X * r.X) + local.Y * local.Y / (r.Y * r.Y) + local.Z * local.Z / (r.Z * r.Z) < 1;
-    }
-
-    /// <summary>
-    /// Whether an enemy is near enough to set out on its attack (BATTLE.PRG 0x800dbd80 against the threshold 0x800e5698
-    /// gives each attack): within its reach along its range's z radius (32 units a point, turned by its range angle,
-    /// 0x800e5568; taken as the cosine), less 32. The blow itself still needs its sphere (<see cref="InSphere"/>).
-    /// </summary>
-    private static bool WithinReach(Combatant attacker, Combatant target)
-    {
-        float reach = attacker.Range.Z * Mathf.Abs(Mathf.Cos((attacker.Tilt >> 3) * 128 * Mathf.Tau / 4096));
-        if (reach > 32) reach -= 32;
-        return (target.Actor.Position - attacker.Actor.Position).Length() <= reach;
     }
 
     /// <summary>Whether the attacker's sphere reaches any of the target's limbs (0x80071d54), or its middle when it has none.</summary>
@@ -1150,7 +1161,7 @@ public sealed class FieldBattle
             int kind = effect["effect"].AsInt32();
             // Effects 38 and 37 clear the room's traps (flags 32 and 64; 0x80084340, 0x80084310).
             if (kind is 37 or 38) { _view.Flags[kind == 38 ? 32 : 64] = 1; continue; }
-            var (hp, status, missed, shown) = Reckon(caster, spell, effect, target, roll: true);
+            var (hp, status, missed, shown, _) = Reckon(caster, spell, effect, target);
             if (missed) { if (shown) Number(target, "Miss"); continue; }
             if (status != 0) { target.Afflict(status, _view.Content.Field); Number(target, spell["name"].AsString()); continue; }
             if (kind == 62) { target.Hp += hp; Number(target, "+" + hp); continue; }
@@ -1162,15 +1173,16 @@ public sealed class FieldBattle
 
     /// <summary>
     /// What one of a spell's effects does to its target, as <see cref="Release"/> describes: the hit points it restores
-    /// (or takes, below 0), the status it sets, or a miss (shown, but not for a physical status's). Without
-    /// <paramref name="roll"/> every roll lands, as an enemy reckons a move ahead (<see cref="Plan"/>).
+    /// (or takes, below 0), the status it sets, or a miss (shown, but not for a physical status's), with the chance it
+    /// was rolled against (100 for what always lands; BATTLE.PRG keeps it with the result, 0x8007f3d0). An enemy
+    /// reckons its moves ahead with these same rolls (<see cref="Score"/>).
     /// </summary>
-    private (int Hp, int Status, bool Missed, bool Shown) Reckon(Combatant caster, GDictionary spell, GDictionary effect, Combatant target, bool roll)
+    private (int Hp, int Status, bool Missed, bool Shown, int Chance) Reckon(Combatant caster, GDictionary spell, GDictionary effect, Combatant target)
     {
         int kind = effect["effect"].AsInt32(), factor = effect["factor"].AsInt32(), hit = effect["hit"].AsInt32();
         int type = Math.Clamp(effect["type"].AsInt32(), 1, 3), affinity = Math.Max(0, effect["affinity"].AsInt32() - 1);
         // Healing is reckoned on the one healed, give or take 5 (0x800829B8).
-        if (kind == 62) return (Math.Min(target.MaxHp - target.Hp, Math.Max(0, SpellDamage(caster, effect, target, target.Struck) + (roll ? _random.RandiRange(-5, 5) : 0))), 0, false, false);
+        if (kind == 62) return (Math.Min(target.MaxHp - target.Hp, Math.Max(0, SpellDamage(caster, effect, target, target.Struck) + _random.RandiRange(-5, 5))), 0, false, false, 100);
         if (kind is >= 1 and <= 26 && kind != 4 && kind != 9 && kind != 14)
         {
             // A status spell lands by its hit roll (help always does) and sets its status; a physical one (hit
@@ -1178,27 +1190,33 @@ public sealed class FieldBattle
             // A drawn shield's gem that guards against the status takes 20 off its chance, which the always-landing
             // help spells otherwise have whole.
             int guard = Guarded(target, kind) ? 20 : 0;
-            if (roll && hit == 3 && _random.RandiRange(0, 99) >= HitChance(caster, target, -1, vary: true) - guard) return (0, 0, true, false);
-            if (roll && hit == 5 && _random.RandiRange(0, 99) >= Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard) return (0, 0, true, true);
-            if (roll && hit != 3 && hit != 5 && _random.RandiRange(0, 99) >= 100 - guard) return (0, 0, true, true);
-            return (0, kind, false, false);
+            int chance = hit switch
+            {
+                3 => HitChance(caster, target, -1, vary: true) - guard,
+                5 => Math.Clamp(Agility(caster) - Agility(target) + 130 - spell["cost"].AsInt32(), 0, 100) - guard,
+                _ => 100 - guard,
+            };
+            if (_random.RandiRange(0, 99) >= chance) return (0, 0, true, hit != 3, chance);
+            return (0, kind, false, false, chance);
         }
-        if (kind != 58 || target == caster) return (0, 0, false, false);
+        if (kind != 58 || target == caster) return (0, 0, false, false, 100);
         // A spell on the whole target lands on its record's limb (the request's limb, 0x8007138C).
         int limb = target.Struck;
         if (hit == 3 && effect["reckoning"].AsInt32() == 2)
         {
             // A physical action (a monster's special attack): the attack's chance and damage by its own type and
             // affinity, scaled by its factor as a spell is.
-            if (roll && _random.RandiRange(0, 99) >= HitChance(caster, target, limb, vary: true)) return (0, 0, true, true);
-            return (-(Damage(caster, target, limb, type, affinity) * (factor * 10 + 100) / 100), 0, false, false);
+            int chance = HitChance(caster, target, limb, vary: true);
+            if (_random.RandiRange(0, 99) >= chance) return (0, 0, true, true, chance);
+            return (-(Damage(caster, target, limb, type, affinity) * (factor * 10 + 100) / 100), 0, false, false, chance);
         }
-        if (roll && hit == 5)
+        int odds = 100;
+        if (hit == 5)
         {
-            int chance = Math.Clamp(Agility(caster) * (100 - caster.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32() + _random.RandiRange(-5, 5), 0, 100);
-            if (_random.RandiRange(0, 99) >= Math.Min(100, chance + (caster == Ashley ? 10 : 0))) return (0, 0, true, true);
+            odds = Math.Clamp(Agility(caster) * (100 - caster.Risk) / 100 - Agility(target) * (100 - target.Risk) / 100 + 130 - spell["cost"].AsInt32() + _random.RandiRange(-5, 5), 0, 100);
+            if (_random.RandiRange(0, 99) >= Math.Min(100, odds + (caster == Ashley ? 10 : 0))) return (0, 0, true, true, odds);
         }
-        return (-(SpellDamage(caster, effect, target, limb) + 1 + _random.RandiRange(0, 4)), 0, false, false);
+        return (-(SpellDamage(caster, effect, target, limb) + 1 + _random.RandiRange(0, 4)), 0, false, false, odds);
     }
 
     /// <summary>
@@ -1403,118 +1421,478 @@ public sealed class FieldBattle
     /// </summary>
     private static readonly int[] StatusBits = { -1, 5, 7, 9, 19, 4, 6, 8, 10, 20, 11, 12, 18, 17, 29, 13, 14, 15, 16, 21, 22, 23, 24, 25, 26, 27, 28 };
 
+    /// <summary>A fighter's statuses as BATTLE.PRG keeps them, a bit each (its data's +0x948).</summary>
+    private static uint StatusWord(Combatant c)
+    {
+        uint word = 0;
+        foreach (int status in c.Statuses.Keys) if (status > 0 && status < StatusBits.Length && StatusBits[status] >= 0) word |= 1u << StatusBits[status];
+        return word;
+    }
+
+    /// <summary>
+    /// One move an enemy has planned (a 20-byte entry of its AI record's list at +0x2f0, built by BATTLE.PRG
+    /// 0x800dd918): its score (the fight's well-being after it, times 128, plus its weight), the action and the limb
+    /// slot and place it is listed in, its target and the target's limb, the frame of the planner's clock from which it
+    /// may be made, and its weight (a hit chance in 128ths; 0 when it no longer can be made).
+    /// </summary>
+    public sealed class PlanEntry
+    {
+        public int Score, Action, Slot, Index, Limb, Horizon, Weight;
+        public Combatant Target = null!;
+        public PlanEntry Copy() => (PlanEntry)MemberwiseClone();
+    }
+
+    /// <summary>
+    /// A fighter as the planner reckons it (BATTLE.PRG's 24-byte snapshot, 0x800dc424): hit, magic and its weapon's
+    /// and shield's phantom points, each with its most, and its statuses.
+    /// </summary>
+    private struct Standing
+    {
+        public int Hp, MaxHp, Mp, MaxMp, BladePp, BladeMaxPp, ShieldPp, ShieldMaxPp;
+        public uint Statuses;
+    }
+
+    /// <summary>The frames since the fight was last planned (BATTLE.PRG's clock at +0x18, a frame each AI tick, 0x800d8ef4).</summary>
+    private int _planClock;
+    /// <summary>The targets each action is planned on already this round (BATTLE.PRG's marks at 0x800f5904, a byte a target and action).</summary>
+    private readonly HashSet<(Combatant Target, int Action)> _planned = new();
+    /// <summary>The last resorts met while planning (0x800f58f8, sixteen at most) and the limb slots and places they came from (0x800f58f4).</summary>
+    private readonly List<PlanEntry> _lastResorts = new();
+    private int _lastResortSlots;
+    /// <summary>Whether something was under way last frame, and how many were hostile: a change has the fight planned anew.</summary>
+    private bool _wasActing;
+    private int _hostileCount = -1;
+
+    /// <summary>
+    /// The largest magic cost among an actor's actions (its AI record's +0x17, 0x800e5710), 1 for one without a planner
+    /// (Ashley). Silence counts against one only when it is not 0.
+    /// </summary>
+    private int MostMagic(Combatant c)
+    {
+        if (c == Ashley) return 1;
+        int most = 0;
+        foreach (var limb in c.Limbs)
+            foreach (int action in limb.Actions)
+                if (action != 0 && _view.Content.Field.Action(action) is { CostKind: 1 } record) most = Math.Max(most, record.Cost);
+        return most;
+    }
+
+    /// <summary>
+    /// How <paramref name="from"/> stands to <paramref name="to"/> (its AI record's +0x1a4 word, bits 6 and 7, set as the
+    /// battle begins by 0x800e7370): 2 to itself, else by its faction and whether the other is the player or another of
+    /// factions 0 to 2 (<see cref="FieldContent.Relation"/>). 3 is a foe, 2 an ally, 1 neither.
+    /// </summary>
+    private int Relation(Combatant from, Combatant to) => from == to ? 2 : _view.Content.Field.Relation(from.Faction, to == Ashley || to.Faction >= 3);
+
     /// <summary>
     /// A fighter's well-being as an enemy reckons it (BATTLE.PRG 0x800dcc94, summed by 0x800dc284): six times the
-    /// standing of its statuses (<see cref="FieldContent.Status"/>; silence only for one with spells, taken for the
-    /// record's byte 23 retail reads), less 128 when it is down and 84 under 44/128 of its hit points; plus four times
-    /// its hit points, its magic points, and twice its weapon's and its shield's phantom points, each a share of its
-    /// most in 128ths.
+    /// standing of its statuses (<see cref="FieldContent.Status"/>; silence only for one with a magic cost,
+    /// <see cref="MostMagic"/>), less 128 when it is down and 84 under 44/128 of its hit points; plus four times its hit
+    /// points, its magic points, and twice its weapon's and its shield's phantom points, each a share of its most in
+    /// 128ths.
     /// </summary>
-    private int WellBeing(Combatant c, int hp, int mp, List<int> statuses)
+    private int WellBeing(Combatant c, Standing s)
     {
-        bool casts = c == Ashley || c.Limbs.Exists(limb => Array.Exists(limb.Actions, action => action is >= 54 and <= 140));
         int standing = 0;
-        foreach (int status in statuses)
-            if (status > 0 && status < StatusBits.Length && (StatusBits[status] != 12 || casts)) standing += _view.Content.Field.Status(StatusBits[status]).Weight;
-        if (hp == 0) standing -= 128;
-        if (hp * 128 < c.MaxHp * 44) standing -= 84;
-        int life = c.MaxHp != 0 ? hp * 128 / c.MaxHp : 0, magic = c.MaxMp != 0 ? mp * 128 / c.MaxMp : 0;
-        int phantom = (c.Blade.MaxPp != 0 ? c.Blade.Pp * 128 / c.Blade.MaxPp : 0) + (c.Shield.MaxPp != 0 ? c.Shield.Pp * 128 / c.Shield.MaxPp : 0);
+        bool silenceCounts = MostMagic(c) != 0;
+        for (int bit = 0; bit < 32; bit++)
+            if ((s.Statuses >> bit & 1) != 0 && (bit != 12 || silenceCounts)) standing += _view.Content.Field.Status(bit).Weight;
+        if (s.Hp == 0) standing -= 128;
+        if (s.Hp * 128 < s.MaxHp * 44) standing -= 84;
+        int life = s.MaxHp != 0 ? s.Hp * 128 / s.MaxHp : 0, magic = s.MaxMp != 0 ? s.Mp * 128 / s.MaxMp : 0;
+        int phantom = (s.BladeMaxPp != 0 ? s.BladePp * 128 / s.BladeMaxPp : 0) + (s.ShieldMaxPp != 0 ? s.ShieldPp * 128 / s.ShieldMaxPp : 0);
         return 6 * standing + 4 * life + magic + 2 * phantom;
     }
 
-    /// <summary>
-    /// How a move would leave the fight (0x800dcc94): every fighter's <see cref="WellBeing"/> after it, the mover's
-    /// side's added and Ashley's taken off. The mover pays its hit and magic points; the target's hit points change by
-    /// <paramref name="change"/> (within 0 and its most) and it takes the statuses <paramref name="added"/> it lacks.
-    /// </summary>
-    private int Outlook(Combatant mover, List<Combatant> fighters, int hpCost, int mpCost, Combatant? target, int change, List<int> added)
+    /// <summary>The fighters the planner reckons with (BATTLE.PRG's actor list, 0x800f1928): Ashley and every living fighter but the crates.</summary>
+    private List<Combatant> Fighters()
     {
-        int total = 0;
-        foreach (var fighter in fighters)
-        {
-            int hp = fighter.Hp, mp = fighter.Mp;
-            var statuses = new List<int>(fighter.Statuses.Keys);
-            if (fighter == mover) { hp = Math.Max(0, hp - hpCost); mp = Math.Max(0, mp - mpCost); }
-            if (fighter == target)
-            {
-                hp = Math.Clamp(hp + change, 0, fighter.MaxHp);
-                foreach (int status in added) if (!statuses.Contains(status)) statuses.Add(status);
-            }
-            int wellBeing = WellBeing(fighter, hp, mp, statuses);
-            total += fighter == Ashley ? -wellBeing : wellBeing;
-        }
-        return total;
-    }
-
-    /// <summary>
-    /// The limb an enemy aims at (0x800dddc8): a random 0 to 5, the low two bits of a roll and its next two each added
-    /// (so the middle limbs come most), taken when the target has that limb, else its last.
-    /// </summary>
-    private int AimLimb(Combatant target)
-    {
-        int roll = (int)(_random.Randi() & 0xF), limb = (roll & 3) + (roll >> 2 & 1) + (roll >> 3 & 1), last = -1;
-        for (int i = 0; i < target.Limbs.Count; i++) if (target.Limbs[i].MaxHp > 0) last = i;
-        return limb < target.Limbs.Count && target.Limbs[limb].MaxHp > 0 ? limb : last;
-    }
-
-    /// <summary>
-    /// An enemy's move (BATTLE.PRG's planner, 0x800dd918): each action its limbs list that it can make (0x800e4df8: the
-    /// limb above 1 hit point and its cost met, magic points while not silenced, hit points leaving more than half, or
-    /// its weapon's DP; paralysed, only actions costing magic points or nothing else) is reckoned on each fighter as
-    /// its target with every roll taken as landing (<see cref="Reckon"/>; an attack, on Ashley's limb
-    /// <see cref="AimLimb"/> picks, by its <see cref="Damage"/>), and scored by its <see cref="Outlook"/>. One flagged
-    /// 0x20 is passed over nine times in ten. The best that scores above doing nothing is the move; failing one, the
-    /// first it can make flagged 0x40 (0x800dc4f0), on Ashley; failing that, none.
-    /// </summary>
-    private (int Action, Combatant Target, int Limb)? Plan(Combatant enemy)
-    {
-        if (Ashley == null) return null;
         var fighters = new List<Combatant>();
-        foreach (var c in Combatants.Values) if (!c.Dead && !c.Cube && (c == Ashley || c.Hostile)) fighters.Add(c);
-        var spells = _view.Content.Data("spells")["actions"].AsGodotDictionary();
-        int best = Outlook(enemy, fighters, 0, 0, null, 0, new List<int>()), lastResort = 0, aim = AimLimb(Ashley);
-        (int, Combatant, int)? move = null;
-        foreach (var limb in enemy.Limbs)
+        if (Ashley != null && !Ashley.Dead) fighters.Add(Ashley);
+        foreach (var c in Combatants.Values) if (c != Ashley && !c.Dead && !c.Cube) fighters.Add(c);
+        return fighters;
+    }
+
+    /// <summary>
+    /// Whether an enemy can make the action in limb slot <paramref name="slot"/> (BATTLE.PRG 0x800e4df8): the limb above
+    /// 1 hit point and the cost met, magic points while not silenced, hit points leaving more than half, or its
+    /// weapon's DP; paralysed, only an action costing magic points or of kind 2.
+    /// </summary>
+    private bool Usable(Combatant enemy, int slot, int action)
+    {
+        if (slot >= enemy.Limbs.Count || enemy.Limbs[slot].Hp < 2) return false;
+        var record = _view.Content.Field.Action(action);
+        if (enemy.Has(Paralysis) && record.CostKind is not (1 or 2)) return false;
+        return record.CostKind switch
         {
-            if (limb.Hp < 2) continue;
-            foreach (int action in limb.Actions)
+            1 => enemy.Mp >= record.Cost && !enemy.Has(Silence),
+            3 => enemy.Hp >= record.Cost + enemy.MaxHp / 2,
+            4 => enemy.Blade.Dp >= record.Cost,
+            _ => true,
+        };
+    }
+
+    /// <summary>
+    /// How an action picks its target (BATTLE.PRG 0x800e5710, by a bit of its record's target kind): 1 a target, 2 a
+    /// target's limbs, 3 an area, 0 none; and whether it may not be made on its user (kinds 3, 4, 7, 8 and 14).
+    /// </summary>
+    private static (int Kind, bool NotSelf) Targeting(ActionRecord record)
+    {
+        int bit = 1 << record.TargetKind;
+        return ((bit & 0xA) != 0 ? 1 : (bit & 0x40A0) != 0 ? 2 : (bit & 0x1954) != 0 ? 3 : 0, (bit & 0x4198) != 0);
+    }
+
+    /// <summary>
+    /// Whether an action is harm (bit 15 of its planning flags) or help (bit 14) to a target (BATTLE.PRG 0x800dc484 and
+    /// 0x800dc48c): action 0x60's harm and help trade places on a target of class 2.
+    /// </summary>
+    private static bool Harms(ActionRecord record, int action, Combatant target, bool help)
+    {
+        bool set = (record.Flags >> (help ? 14 : 15) & 1) != 0;
+        return action == 0x60 && (target.Class & 7) == 2 ? !set : set;
+    }
+
+    /// <summary>
+    /// Whether an enemy may make an action on a target (BATTLE.PRG 0x800e4cf4): an ally or foe; help only on an ally,
+    /// and, unless its flags take any (0x100), one in a trouble it is for (bits 9 to 11: unable to act, short of magic,
+    /// under half its hit points; 0x800e4f14); harm not on an ally; and not on itself when its kind may not.
+    /// </summary>
+    private bool Allowed(Combatant enemy, int action, Combatant target)
+    {
+        int relation = Relation(enemy, target);
+        if (relation < 2) return false;
+        var record = _view.Content.Field.Action(action);
+        if (Harms(record, action, target, help: true))
+        {
+            if (relation >= 3) return false;
+            int most = MostMagic(target);
+            bool unable = (StatusWord(target) & 0x9E2B0) != 0 || most != 0 && target.Has(Silence);
+            bool short_ = most != 0 && (target.Mp < most || target.Mp * 2 < target.MaxMp);
+            bool weak = target.Hp * 2 < target.MaxHp;
+            int troubles = (unable ? 1 : 0) | (short_ ? 2 : 0) | (weak ? 4 : 0);
+            if ((record.Flags & 0x100) == 0 && (record.Flags >> 9 & troubles) == 0) return false;
+        }
+        if (Harms(record, action, target, help: false) && relation < 3) return false;
+        return !(target == enemy && Targeting(record).NotSelf);
+    }
+
+    /// <summary>
+    /// What a move would leave the fight at (BATTLE.PRG 0x800dcc94), as a plan entry's score: each fighter's standing
+    /// (0x800dc424) after the move, its user paying the cost (magic points, hit points or its weapon's phantom points;
+    /// 0x800dc888) and its target taking what the move rolls (an attack its hit and <see cref="Damage"/>, a spell each
+    /// effect's <see cref="Reckon"/>; a miss takes nothing), each fighter's <see cref="WellBeing"/> added for an ally and
+    /// taken off for any other but one standing neither way; times 128, plus the weight: the chance the move rolled on
+    /// its target, in 128ths, or 0 had it missed (0x800dcbd8); 128 for none. An action flagged 0x20 is passed over nine
+    /// times in ten; one flagged 0x10, for an enemy that weighs those lightly, is not reckoned: it scores 1 over standing
+    /// still, at weight 40.
+    /// </summary>
+    private int Score(Combatant enemy, int action, Combatant? target, int limb, List<Combatant> fighters, out int weight)
+    {
+        weight = 128;
+        var record = action != 0 ? _view.Content.Field.Action(action) : default;
+        if ((record.Flags & 0x20) != 0 && (_random.Randi() & 0x7F) < 115) return int.MinValue;
+        var standings = new Dictionary<Combatant, Standing>();
+        foreach (var f in fighters)
+            standings[f] = new Standing
             {
-                if (action == 0) continue;
-                var (costKind, cost, flags) = _view.Content.Field.ActionCost(action);
-                if (enemy.Has(Paralysis) && costKind is not (1 or 2)) continue;
-                if (costKind == 1 && (enemy.Mp < cost || enemy.Has(Silence)) || costKind == 3 && enemy.Hp < cost + enemy.MaxHp / 2 || costKind == 4 && enemy.Blade.Dp < cost) continue;
-                if ((flags & 0x40) != 0 && lastResort == 0) lastResort = action;
-                if ((flags & 0x20) != 0 && (_random.Randi() & 0x7F) < 115) continue;
-                int hpCost = costKind == 3 ? cost : 0, mpCost = costKind == 1 ? cost : 0;
-                var spell = spells.GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
-                if (action is < 54 or > 183 || spell.Count == 0)
+                Hp = f.Hp, MaxHp = f.MaxHp, Mp = f.Mp, MaxMp = f.MaxMp, BladePp = f.Blade.Pp, BladeMaxPp = f.Blade.MaxPp,
+                ShieldPp = f.Shield.Pp, ShieldMaxPp = f.Shield.MaxPp, Statuses = StatusWord(f),
+            };
+        int bonus = 0;
+        if (enemy.WeighsLightly && (record.Flags & 0x10) != 0) { bonus = 1; weight = 40; }
+        else if (action != 0 && target != null)
+        {
+            var user = standings[enemy];
+            switch (record.CostKind)
+            {
+                case 1: user.Mp = Math.Clamp(user.Mp - record.Cost, 0, user.MaxMp); break;
+                case 3: user.Hp = Math.Clamp(user.Hp - record.Cost, 0, user.MaxHp); break;
+                case 6: user.BladePp = Math.Clamp(user.BladePp - record.Cost, 0, user.BladeMaxPp); break;
+            }
+            standings[enemy] = user;
+            weight = 0;
+            var struck = standings[target];
+            var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
+            if (action is < 54 or > 183 || spell.Count == 0)
+            {
+                int chance = Math.Min(100, HitChance(enemy, target, limb, vary: true));
+                if (_random.RandiRange(0, 99) < chance)
                 {
-                    int score = Outlook(enemy, fighters, hpCost, mpCost, Ashley, -Damage(enemy, Ashley, aim), new List<int>());
-                    if (score > best) (best, move) = (score, (action, Ashley, aim));
-                    continue;
+                    struck.Hp = Math.Clamp(struck.Hp - Damage(enemy, target, limb), 0, struck.MaxHp);
+                    weight = chance + chance / 4 + chance / 32;
                 }
+            }
+            else
+            {
+                bool landed = false;
+                int chance = 0;
+                foreach (var value in spell["effects"].AsGodotArray())
+                {
+                    var (hp, status, missed, _, odds) = Reckon(enemy, spell, value.AsGodotDictionary(), target);
+                    if (missed) continue;
+                    landed = true;
+                    chance = odds;
+                    struck.Hp = Math.Clamp(struck.Hp + hp, 0, struck.MaxHp);
+                    if (status > 0 && status < StatusBits.Length && StatusBits[status] is int bit and >= 0)
+                    {
+                        var (_, clears, blockedBy, _) = _view.Content.Field.Status(bit);
+                        if ((struck.Statuses & blockedBy) == 0) struck.Statuses = struck.Statuses & ~(clears & struck.Statuses) | 1u << bit;
+                    }
+                }
+                if (landed) weight = Math.Clamp(chance, 0, 100) + Math.Clamp(chance, 0, 100) / 4 + Math.Clamp(chance, 0, 100) / 32;
+            }
+            standings[target] = struck;
+        }
+        int total = 0;
+        foreach (var f in fighters)
+        {
+            int relation = Relation(enemy, f);
+            if (relation == 1) continue;
+            int wellBeing = WellBeing(f, standings[f]);
+            total += relation == 2 ? wellBeing : -wellBeing;
+        }
+        return (total + bonus) * 128 + weight;
+    }
+
+    /// <summary>
+    /// Adds a move to an enemy's plan (BATTLE.PRG 0x800dc344): not past sixteen, nor one of weight 0; its target is
+    /// marked as planned for its action.
+    /// </summary>
+    private void Propose(Combatant enemy, PlanEntry entry)
+    {
+        if (enemy.Plans.Count >= 16 || entry.Weight == 0) return;
+        _planned.Add((entry.Target, entry.Action));
+        enemy.Plans.Add(entry.Copy());
+    }
+
+    /// <summary>
+    /// Keeps a move flagged 0x40 as a last resort (BATTLE.PRG 0x800dc4f0): once a limb slot and place, sixteen at most.
+    /// </summary>
+    private void KeepLastResort(PlanEntry entry)
+    {
+        if ((_view.Content.Field.Action(entry.Action).Flags & 0x40) == 0) return;
+        int bit = 1 << (entry.Slot * 4 + entry.Index);
+        if ((_lastResortSlots & bit) != 0 || _lastResorts.Count >= 16) return;
+        _lastResortSlots |= bit;
+        _lastResorts.Add(entry.Copy());
+    }
+
+    /// <summary>
+    /// An enemy's moves as of <paramref name="horizon"/> (BATTLE.PRG 0x800dd918): every action it can make
+    /// (<see cref="Usable"/>) on every living fighter it may (<see cref="Allowed"/>) and has not yet planned for it, each
+    /// scored (<see cref="Score"/>) and planned when it beats standing still. One on a target scores once. One on a
+    /// target's limbs scores on each limb it has: the best of those whose weight a roll of 0 to 127 falls under is
+    /// planned if it beats standing still, else the best of them all if that does. One on an area scores once and is
+    /// planned so likewise. Every one is offered as a last resort, a limb one at a limb the roll (the low two bits of a
+    /// roll and its next two, added) picks or else its last.
+    /// </summary>
+    private void Propose(Combatant enemy, int horizon, List<Combatant> fighters)
+    {
+        int standStill = Score(enemy, 0, null, 0, fighters, out _);
+        for (int slot = 0; slot < 6 && slot < enemy.Limbs.Count; slot++)
+            for (int index = 0; index < 4; index++)
+            {
+                int action = enemy.Limbs[slot].Actions[index];
+                if (action == 0 || !Usable(enemy, slot, action)) continue;
+                var (kind, _) = Targeting(_view.Content.Field.Action(action));
                 foreach (var target in fighters)
                 {
-                    int change = 0;
-                    var added = new List<int>();
-                    foreach (var effect in spell["effects"].AsGodotArray())
+                    if (target.Hp == 0 || !Allowed(enemy, action, target) || _planned.Contains((target, action))) continue;
+                    var candidate = new PlanEntry { Action = action, Slot = slot, Index = index, Target = target, Horizon = horizon };
+                    if (kind == 1)
                     {
-                        var (hp, status, _, _) = Reckon(enemy, spell, effect.AsGodotDictionary(), target, roll: false);
-                        change += hp;
-                        if (status != 0) added.Add(status);
+                        candidate.Score = Score(enemy, action, target, 0, fighters, out candidate.Weight);
+                        KeepLastResort(candidate);
+                        if (candidate.Score > standStill) Propose(enemy, candidate);
+                        continue;
                     }
-                    int score = Outlook(enemy, fighters, hpCost, mpCost, target, change, added);
-                    if (score > best) (best, move) = (score, (action, target, aim));
+                    if (kind is not (2 or 3)) continue;
+                    PlanEntry? chosen = null, best = null;
+                    int last = -1;
+                    for (int limb = 0; limb < (kind == 2 ? 6 : 1); limb++)
+                    {
+                        if (kind == 2 && (limb >= target.Limbs.Count || target.Limbs[limb].MaxHp == 0)) continue;
+                        last = limb;
+                        candidate.Limb = kind == 2 ? limb : 0;
+                        candidate.Score = Score(enemy, action, target, candidate.Limb, fighters, out candidate.Weight);
+                        if ((_random.Randi() & 0x7F) < candidate.Weight && (chosen == null || chosen.Score < candidate.Score)) chosen = candidate.Copy();
+                        if (best == null || best.Score < candidate.Score) best = candidate.Copy();
+                    }
+                    if (kind == 2)
+                    {
+                        int roll = (int)(_random.Randi() & 0xF), pick = (roll & 3) + (roll >> 2 & 1) + (roll >> 3 & 1);
+                        candidate.Limb = pick < target.Limbs.Count && target.Limbs[pick].MaxHp != 0 || last < 0 ? pick : last;
+                    }
+                    KeepLastResort(candidate);
+                    if (chosen != null && chosen.Score > standStill) Propose(enemy, chosen);
+                    else if (best != null && best.Score > standStill) Propose(enemy, best);
                 }
             }
+    }
+
+    /// <summary>
+    /// Sorts plan entries from <paramref name="first"/> to <paramref name="last"/> by score, best first (BATTLE.PRG
+    /// 0x800e6958, a quicksort pivoting on the middle entry).
+    /// </summary>
+    private static void SortPlans(List<PlanEntry> plans, int first, int last)
+    {
+        if (first >= last) return;
+        int middle = (first + last) >> 1;
+        (plans[first], plans[middle]) = (plans[middle], plans[first]);
+        int kept = first;
+        for (int i = first + 1; i <= last; i++)
+            if (plans[first].Score < plans[i].Score) { kept++; (plans[kept], plans[i]) = (plans[i], plans[kept]); }
+        (plans[first], plans[kept]) = (plans[kept], plans[first]);
+        SortPlans(plans, first, kept - 1);
+        SortPlans(plans, kept + 1, last);
+    }
+
+    /// <summary>
+    /// Brings every fighter <paramref name="frames"/> on as an enemy reckons ahead (BATTLE.PRG 0x800de030), the clock
+    /// <paramref name="clock"/> with it: from 2881 frames each limb mends 2 hit points; slowing ends unless both its
+    /// slowing limbs are crippled; hit points come back a frame in 120 and magic points one in 180 (less one); poison
+    /// takes and regeneration gives 5% of its hit points a turn of its period (<see cref="FieldContent.Status"/>), in
+    /// seconds of 30 frames; and a status that would have run out by the clock ends.
+    /// </summary>
+    private void Project(List<Combatant> fighters, int frames, ref int clock)
+    {
+        clock += frames;
+        int seconds = frames / 32 + frames / 512;
+        foreach (var c in fighters)
+        {
+            if (clock >= 2881) foreach (var limb in c.Limbs) limb.Hp = Math.Min(limb.Hp + 2, limb.MaxHp);
+            if (c.SlowingLimbs is { } pair && (pair.A < c.Limbs.Count && c.Limbs[pair.A].Hp >= 2 || pair.B < c.Limbs.Count && c.Limbs[pair.B].Hp >= 2)) c.Statuses.Remove(Slow);
+            if (frames / 120 > 0) c.Hp = Math.Min(c.Hp - 1 + frames / 120, c.MaxHp);
+            if (frames / 180 > 0) c.Mp = Math.Min(c.Mp - 1 + frames / 180, c.MaxMp);
+            if (c.Has(Poison)) c.Hp = Math.Max(0, c.Hp - seconds / _view.Content.Field.Status(StatusBits[Poison]).Period * (c.MaxHp * 5) / 100);
+            if (c.Has(Regen)) c.Hp = Math.Max(0, c.Hp + seconds / _view.Content.Field.Status(StatusBits[Regen]).Period * (c.MaxHp * 5) / 100);
+            foreach (var (status, left) in new Dictionary<int, int>(c.Statuses)) if (left >= 0 && left <= clock) c.Statuses.Remove(status);
         }
-        return move ?? (lastResort != 0 ? (lastResort, Ashley, aim) : null);
+    }
+
+    /// <summary>
+    /// Plans an enemy's moves (BATTLE.PRG 0x800de3e4). With every fighter as it stands kept aside, it looks ahead in three
+    /// passes (<see cref="FieldContent.PlanPasses"/>: now, 455 and 2900 frames): each at least as far as it must wait
+    /// (its cooldown, or its recovery at 35 a frame), every fighter brought on that far (<see cref="Project"/>), its
+    /// moves proposed (<see cref="Propose(Combatant, int, List{Combatant})"/>) and sorted, and its best kept (10, then
+    /// what of 13 the first left, then 3), the rest let go to be proposed again. With none, one that falls back on its
+    /// last resorts plans those at weight 128. The fighters are put back; then, of two or more, one of the first pass's
+    /// may go first: in turn, any whose weight (at most 76) a roll of 0 to 127 falls under, the rest sorted after it.
+    /// Each after the first waits at least 80 frames on it, and each a further 0 to 7. Then they are checked
+    /// (<see cref="Recheck"/>).
+    /// </summary>
+    private void PlanMoves(Combatant enemy, List<Combatant> fighters)
+    {
+        enemy.Plans.Clear();
+        _lastResorts.Clear();
+        _lastResortSlots = 0;
+        foreach (var limb in enemy.Limbs) foreach (int action in limb.Actions) _planned.RemoveWhere(mark => mark.Action == action);
+        var kept = new List<(Combatant C, int Hp, int Mp, Dictionary<int, int> Statuses, int[] Limbs)>();
+        foreach (var f in fighters) kept.Add((f, f.Hp, f.Mp, new Dictionary<int, int>(f.Statuses), f.Limbs.ConvertAll(l => l.Hp).ToArray()));
+        int wait = Math.Max(enemy.Cooldown, enemy.Recovery / 35), clock = 0;
+        var passes = _view.Content.Field.PlanPasses();
+        var keep = new int[3];
+        var chosen = new List<PlanEntry>[3];
+        for (int pass = 0; pass < 3; pass++)
+        {
+            int horizon = Math.Max(passes[pass].Horizon, wait);
+            Project(fighters, horizon, ref clock);
+            Propose(enemy, horizon, fighters);
+            SortPlans(enemy.Plans, 0, enemy.Plans.Count - 1);
+            keep[pass] = Math.Min(enemy.Plans.Count, pass == 1 ? Math.Max(0, 16 - passes[2].Keep - keep[0]) : passes[pass].Keep);
+            chosen[pass] = enemy.Plans.GetRange(0, keep[pass]);
+            for (int i = keep[pass]; i < enemy.Plans.Count; i++) _planned.Remove((enemy.Plans[i].Target, enemy.Plans[i].Action));
+            enemy.Plans.Clear();
+        }
+        foreach (var list in chosen) foreach (var entry in list) if (enemy.Plans.Count < 16) enemy.Plans.Add(entry);
+        if (enemy.Plans.Count == 0 && enemy.LastResorts)
+        {
+            foreach (var entry in _lastResorts) { entry.Weight = 128; enemy.Plans.Add(entry); }
+            SortPlans(enemy.Plans, 0, enemy.Plans.Count - 1);
+        }
+        foreach (var (c, hp, mp, statuses, limbs) in kept)
+        {
+            c.Hp = hp;
+            c.Mp = mp;
+            c.Statuses.Clear();
+            foreach (var (status, left) in statuses) c.Statuses[status] = left;
+            for (int i = 0; i < limbs.Length; i++) c.Limbs[i].Hp = limbs[i];
+        }
+        if (enemy.Plans.Count >= 2)
+            for (int pass = 0; pass < 3; pass++)
+            {
+                if (keep[pass] == 0) continue;
+                for (int i = 0; i < keep[pass]; i++)
+                {
+                    long roll = _random.Randi() & 0x7F;
+                    if (enemy.Plans[i].Action == 0 || roll >= Math.Min(enemy.Plans[i].Weight, 76)) continue;
+                    (enemy.Plans[0], enemy.Plans[i]) = (enemy.Plans[i], enemy.Plans[0]);
+                    SortPlans(enemy.Plans, 1, keep[pass] - 1);
+                    break;
+                }
+                break;
+            }
+        for (int i = 0; i < enemy.Plans.Count; i++)
+        {
+            if (i > 0 && enemy.Plans[i].Horizon - enemy.Plans[0].Horizon < 80) enemy.Plans[i].Horizon = enemy.Plans[0].Horizon + 80;
+            enemy.Plans[i].Horizon += (int)(_random.Randi() & 7);
+        }
+        Recheck(enemy);
+    }
+
+    /// <summary>
+    /// Checks an enemy's plan as it stands (BATTLE.PRG 0x800d85d8): a move whose time has come that it may no longer make
+    /// on its target, or can no longer make, is dropped (weight 0); if its first is dropped, the next still standing
+    /// takes its place, and with none the plan is empty.
+    /// </summary>
+    private void Recheck(Combatant enemy)
+    {
+        foreach (var entry in enemy.Plans)
+            if (entry.Weight != 0 && entry.Horizon <= _planClock && (!Allowed(enemy, entry.Action, entry.Target) || !Usable(enemy, entry.Slot, entry.Action)))
+                entry.Weight = 0;
+        if (enemy.Plans.Count == 0 || enemy.Plans[0].Weight != 0) return;
+        int next = enemy.Plans.FindIndex(1, entry => entry.Weight != 0);
+        if (next < 0) enemy.Plans.Clear();
+        else enemy.Plans[0] = enemy.Plans[next];
+    }
+
+    /// <summary>
+    /// Plans the fight anew (BATTLE.PRG 0x800dec88, after any move ends and as fighters join or leave): the clock goes
+    /// back to 0 and each hostile enemy plans its moves (<see cref="PlanMoves"/>).
+    /// </summary>
+    private void Replan()
+    {
+        _planClock = 0;
+        var fighters = Fighters();
+        foreach (var enemy in Combatants.Values) if (enemy != Ashley && enemy.Hostile && !enemy.Dead && !enemy.Cube) PlanMoves(enemy, fighters);
+    }
+
+    /// <summary>
+    /// How near an enemy must be to its target to make an action (BATTLE.PRG 0x800e5698, its square against the
+    /// squared distance): the action's range (its own, or the weapon's when its first byte is 255; 0x800e5568), its z
+    /// radius for shapes 1, 2 and 4 and its y radius else, 32 units a point, turned by its angle (byte 3 less its low
+    /// three, 128ths of a turn's 4096ths; the cosine, or the sine for shapes other than 1 to 4), less 32 past 32.
+    /// </summary>
+    private static bool WithinReach(Combatant attacker, Combatant target, ActionRecord record)
+    {
+        if (target == attacker) return true;
+        float reach;
+        if (record.Range[0] == 255)
+            reach = attacker.Range.Z * Mathf.Abs(Mathf.Cos((attacker.Tilt >> 3) * 128 * Mathf.Tau / 4096));
+        else
+        {
+            int shape = record.Range[3] & 7;
+            float angle = (record.Range[3] >> 3) * 128 * Mathf.Tau / 4096;
+            reach = (1 << shape & 0x16) != 0 ? record.Range[2] * 32 * Mathf.Abs(Mathf.Cos(angle))
+                : shape == 3 ? record.Range[1] * 32 * Mathf.Abs(Mathf.Cos(angle)) : record.Range[1] * 32 * Mathf.Abs(Mathf.Sin(angle));
+        }
+        if (reach > 32) reach -= 32;
+        return (target.Actor.Position - attacker.Actor.Position).Length() <= reach;
     }
 
     /// <summary>
     /// An enemy's planned move, when it is a spell (54 to 140) or special attack (141 to 183, such as breaths and tail
-    /// attacks): it pays the action's cost (<see cref="FieldContent.ActionCost"/>: magic points, or hit points), then
+    /// attacks): it pays the action's cost (<see cref="FieldContent.Action"/>: magic points, or hit points), then
     /// the wind-up and release on its target, and its effects by the same rules as Ashley's. Anything else is an attack.
     /// </summary>
     private bool EnemySpell(Combatant enemy, int action, Combatant target)
@@ -1522,9 +1900,9 @@ public sealed class FieldBattle
         if (action is < 54 or > 183) return false;
         var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(action.ToString(), new GDictionary()).AsGodotDictionary();
         if (spell.Count == 0) return false;
-        var (costKind, cost, _) = _view.Content.Field.ActionCost(action);
-        if (costKind == 1) enemy.Mp = Math.Max(0, enemy.Mp - cost);
-        if (costKind == 3) enemy.Hp = Math.Max(1, enemy.Hp - cost);
+        var record = _view.Content.Field.Action(action);
+        if (record.CostKind == 1) enemy.Mp = Math.Max(0, enemy.Mp - record.Cost);
+        if (record.CostKind == 3) enemy.Hp = Math.Max(1, enemy.Hp - record.Cost);
         enemy.Actor.Facing = enemy.Actor.FacingToward(target.Actor.Position);
         if (Play(enemy, 85, 6) == null) Play(enemy, 87, 6);
         // Its casting lasts as Ashley's does, while its name shows, sparkling in mode 2 for a spell and 3 for a
@@ -2198,6 +2576,14 @@ public sealed class FieldBattle
     private void StepEnemies()
     {
         if (Ashley == null || Ashley.Dead) return;
+        // The AI tick (BATTLE.PRG 0x800d8ef4): the planner's clock runs on, each cooldown (0x800e4358) and recovery
+        // (35 a frame, 0x80088620) runs down.
+        if (_planClock < 0xFFFE) _planClock++;
+        foreach (var c in Combatants.Values)
+        {
+            if (c.Cooldown > 0) c.Cooldown--;
+            c.Recovery = c.Recovery >= 36 ? c.Recovery - 35 : 0;
+        }
         foreach (var enemy in Combatants.Values)
         {
             if (!enemy.Hostile || enemy.Dead || enemy.Suspended || !enemy.Drawn || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) continue;
@@ -2228,7 +2614,9 @@ public sealed class FieldBattle
                 enemy.Engaged = true;
             }
             if (distance > Math.Max(DetectRange, enemy.Sight) * 1.5f) { enemy.Engaged = false; continue; }
-            if (!WithinReach(enemy, Ashley))
+            // It closes in until its first planned move's target is within that action's reach (its weapon's with none).
+            var plan = enemy.Plans.Count > 0 ? enemy.Plans[0] : null;
+            if (!(plan != null ? WithinReach(enemy, plan.Target, _view.Content.Field.Action(plan.Action)) : WithinReach(enemy, Ashley, _view.Content.Field.Action(1))))
             {
                 var waypoint = Waypoint(enemy, Ashley.Actor.Position);
                 // It walks there as Ashley moves (walk command 9, 0x8007589c): stepping off a ledge, it falls and lands
@@ -2279,6 +2667,8 @@ public sealed class FieldBattle
             actor.Facing = actor.FacingToward(Ashley.Actor.Position);
             if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
             if (--enemy.Timer > 0) continue;
+            // Its first planned move must have come due on the planner's clock (BATTLE.PRG 0x800d85d8).
+            if (plan == null || plan.Horizon > _planClock) continue;
             // It sets out to act: its balloon telegraphs the move for 120 frames (BATTLE.PRG 0x800D836C). Only as many set
             // out at once as the room allows (its "telegraphs"); one still alert from its last move skips the dots.
             if (enemy.Telegraph == 0)
@@ -2291,11 +2681,19 @@ public sealed class FieldBattle
             enemy.Telegraph = 0;
             enemy.Alert = AlertFrames;
             enemy.Rest = RestFrames;
-            // It plans its move; with none worth making it lets the moment pass.
-            if (Plan(enemy) is not { } move) continue;
+            // It makes its first planned move still standing (0x800d85d8); with none it lets the moment pass. Setting out
+            // starts its cooldown (the room's, 0x800dad74) and adds the action's recovery and its own, 256 a point, but for
+            // actions 22 to 53 (0x800859b4; an action of 255 takes its user's weapon's, its data's +0x147 from template byte
+            // 0x48 by 0x8006a334, which is 0 in every zone's templates).
+            Recheck(enemy);
+            if (enemy.Plans.Count == 0) continue;
+            var move = enemy.Plans[0];
+            var record = _view.Content.Field.Action(move.Action);
+            enemy.Cooldown = _view.Document.GetValueOrDefault("cooldown", 150).AsInt32();
+            if (move.Action is < 22 or > 53) enemy.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + enemy.RecoveryBonus) * 256;
             if (EnemySpell(enemy, move.Action, move.Target)) return;
             _attacker = enemy;
-            _victim = Ashley;
+            _victim = move.Target;
             _victimLimb = move.Limb;
             _frames = EnemyWindUp;
             _phase = Phase.WindUp;

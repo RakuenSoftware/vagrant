@@ -212,7 +212,7 @@ public sealed class MapConversion
             ["room_actors"] = RoomActors(),
             ["crates"] = crates,
             ["crate_turns"] = CrateTurns(), ["crate_rolls"] = CrateRolls(),
-            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
+            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["cooldown"] = Cooldown(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
             ["conditions"] = Conditions(),
         };
     }
@@ -247,6 +247,17 @@ public sealed class MapConversion
     {
         int at = SubSection(room, 5, out int length);
         return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 29) + 1 : 1;
+    }
+
+    /// <summary>
+    /// The frames an enemy waits after a move before it may plan one sooner (BATTLE.PRG 0x800E71A4 keeps it at the
+    /// battle's +8, which 0x800dad74 gives the mover's cooldown): bits 21 to 28 of the word at 0x450 of room
+    /// sub-section 5; 150 in a room without the section.
+    /// </summary>
+    private int Cooldown(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 21 & 0xFF) : 150;
     }
 
     /// <summary>The area the room belongs to: the scene id in room sub-section 10 (section B), at 0x50; -1 without one.</summary>
@@ -990,6 +1001,11 @@ public sealed class MapConversion
             ["ai"] = (long)BitConverter.ToUInt32(data, at + 0x2C),
             // The limb a blow or spell on the whole character lands on (BATTLE.PRG copies it to the actor's +0x36).
             ["default_limb"] = (int)data[at + 0x32],
+            // The two limbs whose loss keeps it slowed as an enemy reckons ahead (copied to its data's +0x34 and +0x35,
+            // BATTLE.PRG 0x80076a5c; 0x800de104), and what its moves add to its recovery (byte 0x23's low six bits,
+            // its data's +0x954 bits 18 to 23; 0x800859b4).
+            ["slowing_limbs"] = new JsonArray { (int)data[at + 0x30], (int)data[at + 0x31] },
+            ["recovery"] = data[at + 0x23] & 0x3F,
             ["class"] = data[at + 3] >> 5,
             ["name"] = DialogueConversion.Decode(data, at + 4).Text,
             ["weapon"] = new JsonObject
@@ -1147,10 +1163,18 @@ public sealed class MapConversion
             // animations.
             int unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
             if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
+            // The record's word at 0x14 goes to the actor's +0x34 (BATTLE.PRG 0x80077c30): with bit 0 its bits 1 to 11
+            // take the place of the AI word's bits 21 to 31 (0x800e5a74); bit 13 lets its planner fall back on its last
+            // resorts, bit 12 has it weigh the moves flagged 0x10 without reckoning them (0x800e5dc8).
+            var stats = CharacterRecord(_zone, first + template * CharacterRecordSize);
+            uint planning = BitConverter.ToUInt32(_map, record + 0x14);
+            if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
+            stats["last_resorts"] = (planning >> 13 & 1) != 0;
+            stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
             actors.Add(new JsonObject
             {
                 ["unit_sector"] = (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
-                ["stats"] = CharacterRecord(_zone, first + template * CharacterRecordSize),
+                ["stats"] = stats,
                 ["slot"] = (int)_map[record + 5],
                 ["character"] = (int)_zone[first + template * 0x464 + 2],
                 ["tile"] = new JsonArray { (int)_map[record + 12], (int)_map[record + 14] },
