@@ -271,7 +271,12 @@ public sealed class CharacterConversion
         // How high its middle stands above its feet, at model size: the header's s16 at 0x72 (BATTLE.PRG keeps it at the
         // model's +0x65A and centres the attack sphere there, 0x800a190c); a weapon has none.
         int centre = _weaponTexture < 0 && _model.Length >= 0x74 ? BitConverter.ToInt16(_model, 0x72) : 0;
-        return new JsonObject { ["centre"] = centre, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
+        // Its girth and height for the enemy AI: the header's u16s at 0x54 and 0x56, which BATTLE.PRG keeps 0x5E8 on at
+        // the actor's +0x63C and +0x63E (as the shadow and centre above), the radius an actor blocks a line of fire by
+        // and the height its eyes see from (0x800e6178); a weapon has none.
+        int girth = _weaponTexture < 0 && _model.Length >= 0x58 ? BitConverter.ToUInt16(_model, 0x54) : 0;
+        int height = _weaponTexture < 0 && _model.Length >= 0x58 ? BitConverter.ToUInt16(_model, 0x56) : 0;
+        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
     }
 
     /// <summary>
