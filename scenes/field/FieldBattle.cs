@@ -881,7 +881,7 @@ public sealed partial class FieldBattle
     /// </summary>
     public string Art(int id, FieldPlayer player)
     {
-        if (Ashley == null || _phase != Phase.Free) return "Not now.";
+        if (Ashley == null || _phase != Phase.Free || EnemyActing) return "Not now.";
         if (!Drawn) return "Draw your weapon first.";
         var art = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(id.ToString(), new GDictionary()).AsGodotDictionary();
         if (art.Count == 0) return "That art is not known here.";
@@ -933,7 +933,7 @@ public sealed partial class FieldBattle
     /// </summary>
     public string Cast(int id, FieldPlayer player, Action? confirmed = null)
     {
-        if (Ashley == null || _phase != Phase.Free) return "Not now.";
+        if (Ashley == null || _phase != Phase.Free || EnemyActing) return "Not now.";
         var spell = _view.Content.Data("spells")["actions"].AsGodotDictionary().GetValueOrDefault(id.ToString(), new GDictionary()).AsGodotDictionary();
         if (spell.Count == 0) return "That spell is not known here.";
         int cost = spell["cost"].AsInt32();
@@ -1905,6 +1905,12 @@ public sealed partial class FieldBattle
     }
 
     private (Combatant Caster, GDictionary Spell, Combatant Target, int Frames)? _enemyCast;
+
+    /// <summary>
+    /// Whether an enemy's spell or special attack is under way: the battle makes one action at a time, so Ashley's
+    /// spells and arts wait for it (an enemy's waits on hers, <see cref="Gate"/>).
+    /// </summary>
+    public bool EnemyActing => _enemyCast != null || _enemyRelease != null;
     private FieldEffect? _enemyChant;
 
     /// <summary>The visual effect of the spell last released, which the HUD stays put away for.</summary>

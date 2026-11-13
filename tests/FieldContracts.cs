@@ -1549,6 +1549,8 @@ public partial class FieldContracts : Node
                 if (_masterySpell >= 0) break;
             }
             if (_masterySpell < 0) { Finish("no healing spell was found to cast"); return true; }
+            // An enemy's spell under way finishes first: the battle makes one action at a time.
+            if (battle.EnemyActing) { _masterySpell = -1; return true; }
             ashley.Mp = ashley.MaxMp;
             // The enemies wait while she casts, so that no move of theirs speaks over the message looked for.
             foreach (var c in battle.Combatants.Values) if (c != ashley && c.Mind != null) c.Mind.Held = true;
