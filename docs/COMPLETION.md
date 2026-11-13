@@ -13,6 +13,7 @@ verify each against the current owner before treating that historical list as a 
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
+| Title attract demonstrations | Both retail demo starts run to completion without input, alternate by title visit, accept L1 interruption and return to the title flow; headless and rendered checks pass | Full screenshot-by-screenshot comparison against a retail title loop |
 | Retail-screen pixel contract in LDR/HDR | Five-bit blend arithmetic against a known background | Screenshot and timing parity for every 3D scene, camera and effect |
 
 ## Confirmed defects and remaining gaps
@@ -22,8 +23,9 @@ verify each against the current owner before treating that historical list as a 
   starting weapon from DP 12593 / PP 11 to DP 12600 / PP 0. FieldView now resolves the starting weapon from its
   carried records, using the same assembled-weapon lookup as the equipment menu. The save/resume contract also
   checks that battle and the carried blade agree after JSON round-tripping and further wear.
-- **Title attract demo remains absent.** TitleSequence sends Stage.Attract through Leave and returns to the
-  intro. The title contract verifies that loop; it does not verify a retail demo.
+- **Title attract demos, fixed in this audit.** TitleSequence now runs the retail zone 20/map 0 and zone 2/map 1
+  events, with their demo flags, alternating by title visit. The title contract verifies natural completion and
+  interruption in both headless and rendered runs.
 - **Workshop presentation remains incomplete.** FieldMenu's ASSEMBLE, REPAIR and COMBINE paths use text panels.
   Executing the operations does not establish retail layout, animation or navigation parity.
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot

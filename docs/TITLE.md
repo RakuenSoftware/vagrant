@@ -61,9 +61,14 @@ It shares New Game's glow. Confirming Settings opens a dialog with the engine's 
 
 With HDR 2D active (the shared display owner enables it on Forward+), the window's buffer holds linear colour. The capture path in the title contracts therefore encodes captures to sRGB before saving them.
 
-## Not yet converted
+## Idle demonstrations
 
-- The attract demo. The idle timeout currently returns straight to the intro.
+The idle timeout starts the retail field demonstrations, using the same room and event owners as the story.
+TITLE.PRG increments its title-visit counter at 0x8007138c. At 0x80071748 it selects 4 minus the counter's low bit;
+0x80071ce0 maps those choices to zone 20/map 0 first, then zone 2/map 1, with state flags 13 and 14 set. Returning
+from a demo advances the title visit and starts the intro again. A pad press, including a shoulder button, leaves
+the demonstration. Publisher and developer logos show only on the initial visit; Sound retains its session value.
 
-Menu sounds use the game's sound driver. Continue opens the memory-card LOAD screens and resumes the selected
-save; those older omissions have been implemented.
+The title contract runs both demonstrations to their ends without input, checks their order and flags, then
+interrupts another with L1. It runs headlessly and on an isolated display with captures. Menu sounds use the game's
+sound driver, and Continue opens the memory-card LOAD screens and resumes the selected save.

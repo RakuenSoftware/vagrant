@@ -240,7 +240,23 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Until(() => _title.Screen == "intro", 200, "the intro after Continue")) yield return f;
         foreach (int f in Until(() => _title.Screen == "menu", TitleSequence.IntroPictureFrames + 10, "the unskipped intro to end")) yield return f;
         foreach (int f in Until(() => _title.Screen == "attract", TitleSequence.IntroMusicFrames + TitleSequence.IdleFrames + 200, "the idle timeout")) yield return f;
-        foreach (int f in Until(() => _title.Screen == "intro", TitleSequence.LeaveFrames + 10, "the title loop after the timeout")) yield return f;
+        foreach (int zone in new[] { 20, 2 })
+        {
+            foreach (int f in Until(() => _title.Demo != null, TitleSequence.LeaveFrames + 10, "the field demo")) yield return f;
+            Expect(_title.Demo!.Zone == zone && _title.Demo.Map == (zone == 20 ? 0 : 1), "the idle demos did not alternate in retail order");
+            Expect(_title.Demo.Flags[13] == 1 && _title.Demo.Flags[14] == 1, "the field demo flags were not set");
+            GD.Print($"TITLE: retail demo {zone},{_title.Demo.Map} started");
+            yield return 120;
+            Capture($"demo_{zone:d2}");
+            foreach (int f in Until(() => _title.Screen == "intro", 60 * 600, "the field demo to finish without input")) yield return f;
+            Expect(_title.Demo == null, "the demo field survived its return to the title");
+            GD.Print($"TITLE: retail demo {zone} completed without input");
+            foreach (int f in Until(() => _title.Screen == "menu", TitleSequence.IntroPictureFrames + 10, "the intro after the demo")) yield return f;
+            foreach (int f in Until(() => _title.Screen == "attract", TitleSequence.IntroMusicFrames + TitleSequence.IdleFrames + 200, "the next idle demo")) yield return f;
+        }
+        foreach (int f in Until(() => _title.Demo != null, TitleSequence.LeaveFrames + 10, "the interruptible demo")) yield return f;
+        foreach (int f in Press("ps_l1")) yield return f;
+        foreach (int f in Until(() => _title.Screen == "intro", 10, "a shoulder button to leave the demo")) yield return f;
         Expect(!_screens.GetRange(1, _screens.Count - 1).Contains("publisher"), "the logos played again after the first title visit");
 
         // New Game darkens the title and hands over to the opening field.
