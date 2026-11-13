@@ -23,7 +23,7 @@ public partial class FieldContracts : Node
     private bool _campaign, _campaignBypassEnemies;
     private string _campaignSave = "", _campaignLoad = "";
     private (int Zone, int Map)? _campaignCheckpoint;
-    private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt;
+    private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt, _campaignBagTries;
     private int _campaignPuzzle, _campaignPuzzleAt, _campaignHallAt;
     private string _campaignTargetText = "";
     private int _campaignCubePicks, _campaignWaitForEnemyUntil, _emptyLimbPicks, _fightCloseUntil;
@@ -31,7 +31,8 @@ public partial class FieldContracts : Node
     private string _fightPreferredPart = "", _fightTargetId = "";
     private int _fightPartSearch, _fightProgressAt;
     private int _fightLastHp = -1, _fightStalls;
-    private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount;
+    private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount, _campaignHealHp, _campaignHealMp, _campaignHealClass, _campaignHealSpellRow, _campaignHealSelection, _campaignDeathAt;
+    private bool _campaignHealMagic;
     private bool _repairAllCheck;
     private bool _combineCheck;
     private bool _nameCheck, _assemblyCheck;
@@ -632,6 +633,15 @@ public partial class FieldContracts : Node
             Capture($"campaign_{_campaignRooms:d4}_{_view.Zone:d3}_{_view.Map:d2}");
         }
         if (_view.Battle?.GameOver == true) { Finish($"campaign: Ashley fell in {_view.Zone},{_view.Map} after {_campaignRooms} room entries"); return; }
+        // A defeated enemy can open the gadget bag during recovery. Collect its actual drops before menu navigation.
+        if (_view.MenuOpen && _view.MenuPage == 11)
+        {
+            Steer(Vector2.Zero);
+            if (_campaignHealStep > 0) { _campaignHealStart++; _campaignHealAt++; }
+            if (_press == 0 && _frame % 8 == 0) Tap(++_campaignBagTries <= 20 ? "ps_circle" : "ps_cross");
+            return;
+        }
+        _campaignBagTries = 0;
         if (_view.Controlled && _view.Battle is { Ashley: { } observed } observedBattle)
         {
             // A room script may hide a live enemy (Sackheim during Goodwin's encounter). Its AI must stop too.
@@ -658,19 +668,55 @@ public partial class FieldContracts : Node
                 GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
         }
         if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
-        // Recovery uses the earned inventory through ITEMS, USE and the normal targeting sphere. No HP or item
-        // count is written by this driver. The starting Cure Roots are the first option, then any bulbs/tonics found.
+        // HP reaches zero before the status tick dispatches the defeat event. Do not save or open menus in that gap.
+        if (_view.Controlled && _view.Battle is { } dying && dying.Combatants.Values.Any(c => c.Hostile && !c.Dead && c.Hp == 0))
+        {
+            if (_campaignDeathAt == 0) _campaignDeathAt = _frame;
+            if (_frame - _campaignDeathAt > 600) { Finish("campaign: the pending enemy death did not reach its status tick"); return; }
+            Steer(Vector2.Zero); return;
+        }
+        _campaignDeathAt = 0;
+        // Learn and cast the Heal actually found in the bag. MP and every item are spent by their normal menus.
         if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp / 2 || patient.Risk > 60))
-            foreach (int item in patient.Hp < patient.MaxHp / 2 ? new[] { 323, 324, 325 } : new[] { 331, 332, 333 })
-                if (_view.Items.GetValueOrDefault(item) > 0)
+        {
+            bool life = patient.Hp < patient.MaxHp / 2;
+            int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()["96"].AsGodotDictionary()["cost"].AsInt32();
+            _campaignHealMagic = life && _view.Spells.Contains(96) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence);
+            if (_campaignHealMagic)
+            {
+                var classes = _view.Content.Data("magic_menu")["classes"].AsGodotArray();
+                for (int i = 0; i < classes.Count; i++)
                 {
-                    (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealItem, _campaignHealCount) = (1, _frame, _frame, item, _view.Items[item]);
-                    GD.Print($"CAMPAIGN: seeking {_view.ItemName(item)} at {patient.Hp}/{patient.MaxHp} HP");
-                    break;
+                    var known = classes[i].AsGodotArray().Select(v => v.AsInt32()).Where(_view.Spells.Contains).ToList();
+                    if (!known.Contains(96)) continue;
+                    _campaignHealClass = i; _campaignHealSpellRow = known.IndexOf(96); break;
                 }
+                (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealHp, _campaignHealMp) = (1, _frame, _frame, patient.Hp, patient.Mp);
+                GD.Print($"CAMPAIGN: seeking learned Heal at {patient.Hp}/{patient.MaxHp} HP, {patient.Mp} MP");
+            }
+            else
+            {
+                int[] choices = !life ? new[] { 331, 332, 333 }
+                    : _view.Spells.Contains(96) && patient.Mp < cost ? new[] { 327, 328, 329, 330, 323, 324, 325, 326 }
+                    : new[] { 425, 323, 324, 325, 326 };
+                foreach (int item in choices)
+                    if (_view.Items.GetValueOrDefault(item) > 0)
+                    {
+                        (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealItem, _campaignHealCount, _campaignHealHp, _campaignHealMp) = (1, _frame, _frame, item, _view.Items[item], patient.Hp, patient.Mp);
+                        GD.Print($"CAMPAIGN: seeking {_view.ItemName(item)} at {patient.Hp}/{patient.MaxHp} HP");
+                        break;
+                    }
+            }
+        }
         if (_campaignHealStep > 0 && _view.Battle is { Ashley: { } recovering } healing)
         {
             Steer(Vector2.Zero);
+            if (!_view.Controlled)
+            {
+                _campaignHealStart++; _campaignHealAt++;
+                if (_frame % 30 == 0) Tap("ps_circle");
+                return;
+            }
             if (_frame - _campaignHealStart > 1800) { Finish($"campaign: recovery step {_campaignHealStep} stalled, page {_view.MenuPage}, help {_view.ItemHelpShown}, {_view.SystemBox.Text}"); return; }
             if (_press > 0 || _frame % 8 != 0) return;
             switch (_campaignHealStep)
@@ -681,12 +727,15 @@ public partial class FieldContracts : Node
                     else if (!healing.Busy) Tap("ps_triangle");
                     break;
                 case 2:
-                    if (_view.MenuPage == 3) _campaignHealStep = 3;
-                    else if (_view.MenuRow != 3) Tap(_view.MenuRow > 3 ? "ps_up" : "ps_down");
+                    int page = _campaignHealMagic ? 0 : 3;
+                    if (!_view.MenuOpen) _campaignHealStep = 1;
+                    else if (_view.MenuPage == page) { _campaignHealStep = _campaignHealMagic ? 7 : 3; _campaignHealSelection = 0; }
+                    else if (_view.MenuRow != page) Tap(_view.MenuRow > page ? "ps_up" : "ps_down");
                     else Tap("ps_circle");
                     break;
                 case 3:
                 {
+                    if (!_view.MenuOpen) { _campaignHealStep = 1; break; }
                     string name = _view.ItemName(_campaignHealItem);
                     var row = _view.ItemRows.FirstOrDefault(r => r.Name == name);
                     if (string.IsNullOrEmpty(row.Name)) Tap("ps_l1");
@@ -699,14 +748,25 @@ public partial class FieldContracts : Node
                     break;
                 case 5:
                     if (healing.Paused) Tap("ps_circle");
-                    if (_view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount) { _campaignHealStep = 6; _campaignHealAt = _frame; }
+                    if (_campaignHealMagic ? recovering.Mp < _campaignHealMp || recovering.Hp > _campaignHealHp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
+                    { _campaignHealStep = 6; _campaignHealAt = _frame; }
+                    else if (!healing.Paused && !healing.Busy && !_view.MenuOpen && _frame - _campaignHealAt > 120) _campaignHealStep = 1;
                     break;
                 case 6:
-                    if (!healing.Busy)
+                    if (!healing.Busy && !healing.Paused && !_view.MenuOpen)
                     {
-                        GD.Print($"CAMPAIGN: used {_view.ItemName(_campaignHealItem)}, remaining {_view.Items.GetValueOrDefault(_campaignHealItem)}, HP {recovering.Hp}/{recovering.MaxHp}");
+                        GD.Print(_campaignHealMagic ? $"CAMPAIGN: cast learned Heal, HP {recovering.Hp}/{recovering.MaxHp}, MP {recovering.Mp}"
+                            : $"CAMPAIGN: used {_view.ItemName(_campaignHealItem)}, remaining {_view.Items.GetValueOrDefault(_campaignHealItem)}, HP {recovering.Hp}/{recovering.MaxHp}");
                         _campaignHealStep = 0;
                     }
+                    break;
+                case 7:
+                    if (_campaignHealSelection < _campaignHealClass) { Tap("ps_down"); _campaignHealSelection++; }
+                    else { Tap("ps_circle"); _campaignHealStep = 8; _campaignHealSelection = 0; }
+                    break;
+                case 8:
+                    if (_campaignHealSelection < _campaignHealSpellRow) { Tap("ps_down"); _campaignHealSelection++; }
+                    else { Tap("ps_circle"); _campaignHealStep = 5; _campaignHealAt = _frame; }
                     break;
             }
             return;
@@ -866,7 +926,7 @@ public partial class FieldContracts : Node
         }
         if (battle.Busy) { Steer(Vector2.Zero); return; }
         if (battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue)
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue)
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
@@ -956,6 +1016,11 @@ public partial class FieldContracts : Node
                     int next = _view.Map switch { 0 => 1, 1 => 2, 2 => 3, 3 => 6, 6 => _campaignCheckpoint is { Zone: 13, Map: 4 } ? 4 : 8,
                         8 => 10, 10 => 11, 11 => 12, 12 => 13, 13 => 15, 15 => 16, _ => -1 };
                     if (_view.Map == 16 ? zone != 14 : next >= 0 && (zone != 13 || candidate["map"].AsInt32() != next)) cost += 10000;
+                }
+                if (_view.Zone == 13 && _campaignCheckpoint is { Zone: 15 })
+                {
+                    int next = _view.Map switch { 16 => 15, 15 => 13, 13 => 12, _ => -1 };
+                    if (_view.Map == 12 ? zone != 15 : next >= 0 && (zone != 13 || candidate["map"].AsInt32() != next)) cost += 10000;
                 }
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }

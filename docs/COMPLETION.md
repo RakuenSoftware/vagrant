@@ -8,9 +8,9 @@ verify each against the current owner before treating that historical list as a 
 
 | Check | What it establishes | What remains unverified |
 |---|---|---|
-| 385 historical individual room runs, with failing rooms rerun after fixes | Room loading and entry events under each test's starting state | These preceded the normal-play mode flag fix and omitted mode-specific actors; they need repeating in normal mode, as well as a continuous campaign |
+| 385 normal-mode individual room checks, repeated after the state-reset fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan and the optional Catacombs ghost, and saves after each | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -55,7 +55,8 @@ verify each against the current owner before treating that historical list as a 
   references before freeing scene nodes, preventing the repeated disposed-node exception.
 - **Normal-play mode flags, fixed in this audit.** Fresh event worlds now initialize flags 1 and 0x11c to one,
   matching TITLE.PRG 0x8007137c/0x80071254. Leaving flag 1 at zero excluded normal-play-only room actors, including
-  the first Minotaur. Earlier campaign checkpoints and room sweeps cannot establish normal-mode encounter coverage.
+  the first Minotaur. Earlier campaign checkpoints and room sweeps cannot establish normal-mode encounter coverage; the new 385-room
+  sweep passes with these normal-play flags.
 - **Interaction events, fixed in this audit.** Cross now tests type-4 room conditions before doors and chests.
   Condition 8 compares the interaction tile, as BATTLE.PRG 0x80074860/0x800bf258 do. Previously these scripted gates
   never responded. An interaction that starts an event also stops that frame's player movement.
@@ -97,7 +98,8 @@ verify each against the current owner before treating that historical list as a 
   changes clear 0x20..0x7f, while a disk resume preserves that room state. BATTLE.PRG 0x800bf6dc/0x800bf7dc,
   0x800be98c and 0x800beb9c establish these ranges. Previously the Minotaur's camera selector stayed in flag 60
   throughout later rooms, preventing the Catacombs north encounter from starting. The disk-resume contract checks
-  preserved room variables followed by their reset on the next room change.
+  preserved room variables followed by their reset on the next room change. The opening field and title/attract
+  contracts also pass after this change.
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
   establish the prerequisites, persistent state or routing of a complete playthrough.
 
