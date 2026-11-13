@@ -25,6 +25,7 @@ public sealed class FieldContent
     private const long MusicSectors = 0x8004A6C0, SoundFileMap = 0x8004B1B0, SoundSectors = 0x8004A530, EffectSectors = 0x8004A9E0;
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
     private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
+    private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -516,6 +517,18 @@ public sealed class FieldContent
         var swings = new int[16];
         for (int category = 0; category < 16; category++) swings[category] = _battle[SwingSounds + category];
         return swings;
+    }
+
+    /// <summary>
+    /// A broken crate's collapse (BATTLE.PRG motion 247, 0x800b1308): for each of its 15 steps, how far it moves down
+    /// (y down; 0x800E9238) and its x, y and z scale, 64 a whole (0x800E9248, 0x800E9258, 0x800E9268), signed bytes.
+    /// </summary>
+    public (int Down, int X, int Y, int Z)[] CrateCollapseSteps()
+    {
+        var steps = new (int, int, int, int)[15];
+        for (int i = 0; i < 15; i++)
+            steps[i] = ((sbyte)_battle[CrateCollapse + i], (sbyte)_battle[CrateCollapse + 16 + i], (sbyte)_battle[CrateCollapse + 32 + i], (sbyte)_battle[CrateCollapse + 48 + i]);
+        return steps;
     }
 
     /// <summary>

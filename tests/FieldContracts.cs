@@ -49,6 +49,7 @@ public partial class FieldContracts : Node
     /// which reveals them; she stands beside the first, and its panel is captured every 4 frames from 80 to 120.
     /// </summary>
     private bool _revealTraps;
+    private List<(string Id, int Kind, int X, int Z, float Bottom, int Orientation)> _cubeCrates = new();
     private int _revealedAt = -1;
     /// <summary>
     /// With <c>--art=N</c> in a fight, Ashley uses Break Art action N once she can, captured every other frame; its blow
@@ -61,7 +62,7 @@ public partial class FieldContracts : Node
     private bool _carry;
     private int _carryStep, _carryCrates;
     private string _carryTiles = "";
-    /// <summary>With <c>--cube</c>, Ashley draws her weapon facing the nearest crate, opens the attack sphere on it ("Cube") and strikes it, which leaves it standing.</summary>
+    /// <summary>With <c>--cube</c>, Ashley draws her weapon facing the nearest crate, opens the attack sphere on it ("Cube") and strikes it: no crate moves, and only a kind 2 or 4 crate may break.</summary>
     private bool _cube;
     private int _cubeStep, _cubeRisk, _cubeRiskBefore;
     /// <summary>With <c>--status=N</c>, Ashley takes status effect N once she is the player's, for the HUD to show it.</summary>
@@ -542,6 +543,7 @@ public partial class FieldContracts : Node
                     if (!readout.StartsWith("Cube", StringComparison.Ordinal)) { Finish($"the sphere did not name the crate Cube: \"{readout}\""); return; }
                     _cubeRisk = cubeStriker.Risk;
                     _cubeRiskBefore = cubeStriker.Risk;
+                    _cubeCrates = new List<(string Id, int Kind, int X, int Z, float Bottom, int Orientation)>(_view.Crates);
                     Tap("ps_circle");
                     break;
                 }
@@ -549,7 +551,16 @@ public partial class FieldContracts : Node
                 case > 75 and < 160: _cubeRisk = Math.Max(_cubeRisk, cubeStriker.Risk); break;
                 case 160:
                     Capture("cube_after");
-                    if (new List<(string, int, int, int, float, int)>(_view.Crates).Count != _carryCrates || CrateTiles() != _carryTiles) { Finish("striking the crate moved or broke it"); return; }
+                    {
+                        // A blow that lands breaks a kind 2 or 4 crate, gone from the room, and the crates stacked on it
+                        // come down one crate's height (0x8009f530); any other crate takes the flash alone and nothing
+                        // moves (BATTLE.PRG 0x80085718, 0x800838ec).
+                        var after = new List<(string Id, int Kind, int X, int Z, float Bottom, int Orientation)>(_view.Crates);
+                        var gone = _cubeCrates.FindAll(before => !after.Exists(now => now.Id == before.Id));
+                        if (gone.Count > 1 || gone.Exists(crate => crate.Kind is not (2 or 4))) { Finish("striking a crate broke the wrong crates"); return; }
+                        if (after.Exists(now => _cubeCrates.Find(before => before.Id == now.Id) is var was && (was.X != now.X || was.Z != now.Z || was.Bottom + (gone.Exists(broken => broken.X == was.X && broken.Z == was.Z && broken.Bottom > was.Bottom) ? 128 : 0) != now.Bottom))) { Finish("striking the crate moved a crate, or left a stack standing on nothing"); return; }
+                        GD.Print(gone.Count == 1 ? $"FIELD: the blow broke a kind {gone[0].Kind} crate" : "FIELD: the crate took the blow and stood");
+                    }
                     // RISK rises with the blow and falls back soon after (footage: RISK 1, then ZERO).
                     Finish(_cubeRisk <= _cubeRiskBefore ? "striking the crate did not raise her RISK" : "");
                     return;

@@ -3354,20 +3354,84 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         public int Kind, X, Z, Moves, Orientation = -1;
         public float Bottom;
         public Node3D Node = null!;
-        public bool Carried;
+        public bool Carried, Broken, Gone;
+        /// <summary>A broken crate's collapse step (BATTLE.PRG motion 247), -1 when not collapsing.</summary>
+        public int Collapse = -1;
+        public Vector3 Rest;
+        /// <summary>A crate falling after the one under it broke (motion 252): its speed, the base it lands at, and whether its landing sounds.</summary>
+        public float FallSpeed, FallTo = float.NaN;
+        public bool Leads;
     }
 
     private readonly List<Crate> _crates = new();
 
+    /// <summary>
+    /// Breaks a crate struck down (kinds 2 and 4; BATTLE.PRG 0x80074a20 then 0x8009f314): resident sound 50 at it
+    /// (0x800ae7d8), then its collapse (<see cref="FieldContent.CrateCollapseSteps"/>), a step a frame, after which it
+    /// is gone (0x80099d6c) and the crates stacked on it fall onto what is below (0x8009f530, motion 252: 3 faster a
+    /// frame, all of them together), the lowest sounding as it lands, 48 on a crate and 49 otherwise (0x800b0d60).
+    /// </summary>
+    public void BreakCrate(string id)
+    {
+        if (_crates.Find(crate => crate.Id == id) is not { Broken: false } crate) return;
+        crate.Broken = true;
+        crate.Collapse = 0;
+        crate.Rest = crate.Node.Position;
+        PlaySound("effect_50_p128", 127, PlacedPan(crate.Node.GlobalPosition));
+    }
+
+    /// <summary>Steps the crates collapsing.</summary>
+    private void StepCollapses()
+    {
+        foreach (var crate in _crates)
+        {
+            if (crate.Collapse < 0) continue;
+            var steps = _content.Field.CrateCollapseSteps();
+            int down = 0;
+            for (int i = 0; i <= crate.Collapse; i++) down += steps[i].Down;
+            var (_, x, y, z) = steps[crate.Collapse];
+            crate.Node.Position = crate.Rest + EventActor.RetailSpace.Basis * new Vector3(0, down, 0);
+            // Scale 0 is taken as a sliver, which a transform can still invert; it is hidden at the end.
+            crate.Node.Scale = new Vector3(Math.Max(0.1f, x), Math.Max(0.1f, y), Math.Max(0.1f, z)) / 64f;
+            if (++crate.Collapse < steps.Length) continue;
+            crate.Collapse = -1;
+            crate.Node.Visible = false;
+            crate.Gone = true;
+            Crate? lowest = null;
+            foreach (var above in _crates)
+            {
+                if (above.Gone || above.Carried || above.X != crate.X || above.Z != crate.Z || above.Bottom >= crate.Bottom) continue;
+                above.FallTo = above.Bottom + 128;
+                above.FallSpeed = 0;
+                if (lowest == null || above.Bottom > lowest.Bottom) lowest = above;
+            }
+            if (lowest != null) lowest.Leads = true;
+        }
+        foreach (var crate in _crates)
+        {
+            if (float.IsNaN(crate.FallTo)) continue;
+            crate.FallSpeed += 3;
+            crate.Bottom = Math.Min(crate.Bottom + crate.FallSpeed, crate.FallTo);
+            ShowCrate(crate);
+            if (crate.Bottom < crate.FallTo) continue;
+            crate.FallTo = float.NaN;
+            crate.FallSpeed = 0;
+            if (!crate.Leads) continue;
+            crate.Leads = false;
+            bool onCrate = _crates.Exists(under => under != crate && !under.Gone && !under.Carried && under.X == crate.X && under.Z == crate.Z && under.Bottom > crate.Bottom);
+            PlaySound(onCrate ? "effect_48_p128" : "effect_49_p128", 127, PlacedPan(crate.Node.GlobalPosition));
+        }
+    }
+
     /// <summary>The crates standing in the room: their id, kind, tile, base height (y down) and orientation (-1 none).</summary>
     public IEnumerable<(string Id, int Kind, int X, int Z, float Bottom, int Orientation)> Crates
     {
-        get { foreach (var crate in _crates) if (!crate.Carried) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, crate.Orientation); }
+        get { foreach (var crate in _crates) if (!crate.Carried && !crate.Broken && !crate.Gone) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, crate.Orientation); }
     }
     private Crate? _carried;
 
     /// <summary>The tile of the room's crate <paramref name="index"/> (in the room's order), or null while carried or past the last.</summary>
-    public (int X, int Z)? CrateTile(int index) => index >= 0 && index < _crates.Count && !_crates[index].Carried ? (_crates[index].X, _crates[index].Z) : null;
+    public (int X, int Z)? CrateTile(int index) => index >= 0 && index < _crates.Count && !_crates[index].Carried && !_crates[index].Gone ? (_crates[index].X, _crates[index].Z) : null;
 
     /// <summary>The top of the highest crate on a position's tile, which is floor there; null without one.</summary>
     private float? CrateTop(Vector3 position)
@@ -3375,7 +3439,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
         float? top = null;
         foreach (var crate in _crates)
-            if (!crate.Carried && crate.X == x && crate.Z == z && (top == null || crate.Bottom - 128 < top)) top = crate.Bottom - 128;
+            if (!crate.Carried && !crate.Gone && crate.X == x && crate.Z == z && (top == null || crate.Bottom - 128 < top)) top = crate.Bottom - 128;
         return top;
     }
 
@@ -3732,7 +3796,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             foreach (var effect in _effects) shake += effect.Shake;
             Field.NudgeCamera(new Vector3(shake.X, -shake.Y, shake.Z) / Installation.MapConversion.UnitsPerMetre, shake.W * Mathf.Tau / 4096);
         }
-        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); StepTrapPanels(); }
+        if (_oddFrame) { StepPalettes(); StepPlatforms(); StepSwings(); StepGroupScripts(); foreach (var actor in Actors.Values) { actor.StepLook(); actor.StepSounds(); } if (_trails.Count > 0) StepTrails(); StepTrapPanels(); StepCollapses(); }
         // The event camera's roll (opcode e2) is the engine's; play has none.
         if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();

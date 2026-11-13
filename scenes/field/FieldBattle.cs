@@ -221,6 +221,8 @@ public sealed class FieldBattle
         public bool Hostile, Marked, Drawn, Dead;
         /// <summary>A crate taken as a target: BATTLE.PRG gives each crate an actor and a fighter record named "Cube" (0x8007647C, 1 of 1 HP).</summary>
         public bool Cube;
+        /// <summary>A crate's kind: 2 and 4 take blows (+0x954 bit 16 clear, 0x8007647C), the rest none.</summary>
+        public int CubeKind;
         /// <summary>What it may drop when felled (its record's drop table) and its room record's three items.</summary>
         public GDictionary? Drops;
         public Godot.Collections.Array? DropItems;
@@ -1532,7 +1534,7 @@ public sealed class FieldBattle
                 var cube = new Combatant
                 {
                     Actor = new EventActor(crate.Id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
-                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true,
+                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = crate.Kind,
                 };
                 _targets.Add((cube, new List<int> { -1 }));
             }
@@ -2014,10 +2016,17 @@ public sealed class FieldBattle
         int limb = _victimLimb;
         target.Engaged = true;
         attacker.Risk = Math.Min(100, attacker.Risk + attacker.Cost);
-        // A crate takes the blow's flash and nothing else: no number, and it stays where it stands (footage, 6:02).
-        // BATTLE.PRG treats a crate whose record has +0x954 bit 16 (every kind but 2 and 4) apart (0x80085F04); what
-        // that changes is not followed.
-        if (target.Cube) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
+        // A crate takes no number (0x80087578) and does not move. One whose record has +0x954 bit 16 (every kind but 2
+        // and 4) has its blow's result cleared (0x80085718): the flash and nothing else (footage, 6:02). A kind 2 or 4
+        // crate takes the blow as anyone does, its one hit point gone on a hit, and breaks (0x80074a20).
+        if (target.Cube)
+        {
+            if (target.CubeKind is not (2 or 4)) { _view.PlayResident(1, attacker.Actor, target.Actor); return; }
+            if (_random.RandiRange(0, 99) >= Math.Min(100, HitChance(attacker, target, -1, vary: true) + 10)) { _view.PlayResident(0x27, attacker.Actor, target.Actor); return; }
+            _view.PlayResident(1, attacker.Actor, target.Actor);
+            _view.BreakCrate(target.Actor.Id);
+            return;
+        }
         int chance = Math.Min(100, HitChance(attacker, target, limb, vary: true) + (attacker == Ashley ? 10 : 0));
         _landed = false;
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
