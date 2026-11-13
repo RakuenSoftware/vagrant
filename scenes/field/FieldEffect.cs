@@ -28,11 +28,13 @@ public sealed partial class FieldEffect : Node3D
 
         public Vector3 Position(int bone = -1)
         {
-            if (Actor == null) return Point;
+            // An actor an event deletes while its effect plays leaves the effect where it last stood.
+            if (Actor == null || !GodotObject.IsInstanceValid(Actor.Node)) return Point;
             int b = bone >= 0 ? bone : Bone;
             // An actor taken whole stands at its root bone (the hips), which goes with it when it lies down (the dying
             // soldier of E232, MAP010); one without a skeleton, 150 above its feet.
-            return b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
+            if (bone < 0) return Point = b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
+            return Actor.BonePosition(b);
         }
     }
 
