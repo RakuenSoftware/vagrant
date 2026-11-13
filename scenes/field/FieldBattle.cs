@@ -483,6 +483,7 @@ public sealed class FieldBattle
                     view.Content.HudLettering, view.Content.ScreenTexture("hud_page_976", true));
                 if (hudData.ContainsKey("chain_cue")) _hud.ChainCue = view.Content.ScreenTexture("hud_chain_cue");
                 if (view.Content.Has("hud_cursor")) _hud.StatusPage = view.Content.ScreenTexture("hud_cursor", true);
+                _hud.NoticePage = view.Content.ScreenTexture("hud_page_848", true);
                 hud.AddChild(_hud);
             }
             catch (System.IO.IOException) { _hud = null; }
@@ -1494,11 +1495,11 @@ public sealed class FieldBattle
     private void WeaponDrift(ActionRecord record, Combatant c, int classArg, int affinityArg)
     {
         if (record.CostKind == 1 || c.Blade.Id == 0) return;
-        if (classArg != 0) ClassDrift(c, c.Blade, classArg - 1);
+        if (classArg != 0) ClassDrift(c.Blade, classArg - 1, Told(c, 240));
         int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
         if (affinityArg == 0 || index is < 0 or > 6) return;
         int raised = new[] { 0, 3, 4, 1, 2, 6, 5 }[index];
-        c.Blade.Drift(true, raised, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, index }, Random, Told(c));
+        c.Blade.Drift(true, raised, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, index }, Random, Told(c, 240));
     }
 
     /// <summary>
@@ -1530,10 +1531,11 @@ public sealed class FieldBattle
         }
         if (pieces.Count == 0) return;
         var piece = pieces[Random(pieces.Count)];
-        if (classArg != 0) ClassDrift(c, piece, classArg - 1);
+        var told = Told(c, piece == c.Shield ? 241 : c.Limbs.Find(l => l.Armour == piece)?.Part ?? 0);
+        if (classArg != 0) ClassDrift(piece, classArg - 1, told);
         int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
         if (affinityArg == 0 || index is < 0 or > 6) return;
-        piece.Drift(true, index, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, new[] { 0, 3, 4, 1, 2, 6, 5 }[index] }, Random, Told(c));
+        piece.Drift(true, index, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, new[] { 0, 3, 4, 1, 2, 6, 5 }[index] }, Random, told);
     }
 
     /// <summary>
@@ -1545,28 +1547,35 @@ public sealed class FieldBattle
     /// index times 0xdc, or none for the shield) and the piece's index. Its "fallers" are then bytes that far past the
     /// record, outside it, so only the rise is kept.
     /// </remarks>
-    private void ClassDrift(Combatant owner, Gear gear, int c)
+    private void ClassDrift(Gear gear, int c, Action<int, bool>? told)
     {
         if (c is < 0 or > 7) return;
-        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random, Told(owner));
+        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random, told);
     }
 
     /// <summary>
-    /// What tells of a change to a piece's class or affinity value (BATTLE.PRG 0x80096768: a popup of kind 7 over Ashley,
-    /// only for her own gear, 0x80080a9c's last argument): the class's or affinity's name with +1 or -1.
+    /// Whether Ashley is told of her weapon's and her armour's changes (option bits 0x40 and 0x80 of [0x80060020], set by
+    /// OPTIONS' "Weapon status" and "Armor status", MENU8 0x80103b50 and 0x80103b94). Retail's default for both is off
+    /// ("Turn the weapon status display off. This is the default setting."); the port has no such options, so they keep it.
     /// </summary>
-    /// <remarks>Retail shows a weapon's changes only with option bit 0x40 of [0x80060020] and armour's with 0x80; the
-    /// port has no such options, so both show. Its popup draws the piece's and value's icons; here it is their names.</remarks>
-    private Action<int, bool>? Told(Combatant owner)
+    public bool ToldWeapon, ToldArmour;
+
+    /// <summary>
+    /// What tells of a change to one of Ashley's pieces (BATTLE.PRG 0x80096768, only for her own gear): a notice in the
+    /// lower-left corner (<see cref="BattleHud.AddNotice"/>). <paramref name="piece"/> is retail's argument: 240 her
+    /// weapon, 241 her shield, else the armoured limb's body part (its data's +0x39e), which picks the piece's sprite
+    /// (1 head, 2 and 3 the arms, 4 legs, 5 and 6 the body).
+    /// </summary>
+    private Action<int, bool>? Told(Combatant owner, int piece)
     {
-        if (owner != Ashley || !_view.Content.Has("battle_text")) return null;
+        if (owner != Ashley || _hud == null || !(piece == 240 ? ToldWeapon : ToldArmour)) return null;
+        int sprite = piece switch { 240 => 0, 241 => 1, 1 => 4, 4 => 6, 6 => 5, 2 or 3 or 5 => piece, _ => piece };
         return (index, raised) =>
         {
-            var text = _view.Content.Data("battle_text");
-            var list = text[index < 6 ? "classes" : "affinities"].AsGodotArray();
-            int at = index < 6 ? index : index - 6;
-            string name = at < list.Count ? list[at].AsGodotDictionary()["text"].AsString() : "";
-            Number(owner, name + (raised ? " +1" : " -1"));
+            var (pu, pv, pw, ph) = _view.Content.Field.NoticeSprite(false, sprite);
+            var (vu, vv, vw, vh) = _view.Content.Field.NoticeSprite(true, index);
+            var (r, g, b) = _view.Content.Field.NoticeColour(raised);
+            _hud.AddNotice(new Rect2(pu, pv, pw, ph), new Rect2(vu, vv, vw, vh), raised, new Color(r / 128f, g / 128f, b / 128f));
         };
     }
 
@@ -1978,9 +1987,10 @@ public sealed class FieldBattle
     /// way takes the entry, at its own limb, unless it is the target (the result is marked redirected, +0x48); the floor
     /// makes the entry a place (+0x40), which every effect passes by.
     /// </summary>
-    /// <remarks>A fighter's box is its model's girth across and height high (actor +0x63c, +0x63e) on its feet; a crate,
-    /// whose actor has no model, is taken as its own 128-unit cube. Then the room's moving platforms stop it within 64
-    /// across and 32 under their point (0x800e6ba0, the list of 0x8008d2c0).</remarks>
+    /// <remarks>A fighter's box is its model's girth across and height high (actor +0x63c, +0x63e) on its feet. A crate is
+    /// an actor (0x800765b0, side 0x10) whose body is an object of the table at 0x800f45e0 (0x8009998c), boxed 63 across
+    /// and 128 high on its body's place, the bottom of the crate. Then the room's moving platforms stop it within 64
+    /// across and from their point to 64 under it (0x800e6ba0, the list of 0x8008d2c0).</remarks>
     private void LineOfFire(Resolution r, Outcome entry)
     {
         if (entry.Void || r.Caster is not { } caster) return;
@@ -2004,7 +2014,7 @@ public sealed class FieldBattle
             foreach (var crate in _view.Crates)
             {
                 var at = new Vector3(crate.X * 128 + 64, crate.Bottom, crate.Z * 128 + 64);
-                if (Math.Abs(at.X - point.X) >= 64 || Math.Abs(at.Y - 64 - point.Y) >= 64 || Math.Abs(at.Z - point.Z) >= 64) continue;
+                if (Math.Abs(at.X - point.X) >= 63 || Math.Abs(at.Y - 64 - point.Y) >= 64 || Math.Abs(at.Z - point.Z) >= 63) continue;
                 if ((at.X - from.X) * step.X + (at.Z - from.Z) * step.Z < 0) continue;
                 // The crate takes the entry, whole.
                 if (Crate(crate.Id, crate.Kind, at - new Vector3(0, 64, 0)) is { } cube) { entry.Who = cube; entry.Limb = -1; }

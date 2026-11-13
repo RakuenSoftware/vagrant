@@ -456,10 +456,73 @@ public sealed partial class BattleHud : RetailScreen
 
     private static int LimbState(int hp, int most) => hp < 2 ? 0 : 4 * hp < most ? 1 : 4 * hp < 3 * most ? 2 : hp < most ? 3 : 4;
 
+    /// <summary>The HUD page through the palette at (848, 223), which the gear-change notices are drawn from.</summary>
+    public Texture2D? NoticePage;
+
+    // The gear-change notices (BATTLE.PRG's popups of kind 7): the piece's and the value's sprites, rise or fall, colour,
+    // its wait (in turns of 21 frames) before it shows, its age once shown and how far newer ones have lifted it.
+    private sealed class Notice
+    {
+        public Rect2 Piece, Value;
+        public bool Raised;
+        public Color Colour;
+        public int Wait, Age, Lift;
+    }
+    private readonly List<Notice> _notices = new();
+    private int _noticeClock;
+
+    /// <summary>
+    /// Queues a gear-change notice (BATTLE.PRG 0x80096768): it waits a turn of 21 frames for each one queued before it
+    /// (0x80094234), then shows for 61 frames in the lower-left corner, lifting the ones before it 10 rows.
+    /// </summary>
+    public void AddNotice(Rect2 piece, Rect2 value, bool raised, Color colour) =>
+        _notices.Add(new Notice { Piece = piece, Value = value, Raised = raised, Colour = colour, Wait = _notices.Count });
+
+    private void StepNotices()
+    {
+        if (_notices.Count == 0) return;
+        if (++_noticeClock >= 21)
+        {
+            _noticeClock = 0;
+            for (int i = 0; i < _notices.Count; i++)
+            {
+                if (_notices[i].Wait < 0 || --_notices[i].Wait != -1) continue;
+                for (int older = 0; older < i; older++) _notices[older].Lift += 10;
+            }
+        }
+        for (int i = _notices.Count - 1; i >= 0; i--)
+            if (_notices[i].Wait < 0 && ++_notices[i].Age >= 61) _notices.RemoveAt(i);
+        QueueRedraw();
+    }
+
+    /// <summary>
+    /// The notices shown (BATTLE.PRG 0x8009695c, from (8, 172) less their lift): the piece's sprite, 2 on the value's,
+    /// 2 on the arrow (8 by 8 from (120, 208) for a fall, (128, 208) for a rise, a row higher), then the digit 1 (6 by 10
+    /// from the digits' row 0, 5 on), each tinted with the notice's colour.
+    /// </summary>
+    private void DrawNotices()
+    {
+        if (NoticePage == null || _digits == null) return;
+        var unit = Unit;
+        foreach (var n in _notices)
+        {
+            if (n.Wait >= 0) continue;
+            float y = 172 - n.Lift, x = 8;
+            FieldView.Sprite(this, NoticePage, n.Piece, new Vector2(x, y), unit, n.Colour);
+            x += 2 + n.Piece.Size.X;
+            FieldView.Sprite(this, NoticePage, n.Value, new Vector2(x, y), unit, n.Colour);
+            x += 2 + n.Value.Size.X;
+            FieldView.Sprite(this, NoticePage, new Rect2(n.Raised ? 128 : 120, 208, 8, 8), new Vector2(x, y - 1), unit, n.Colour);
+            x += 2 + 5;
+            FieldView.Sprite(this, _digits, new Rect2(6, 0, 6, 10), new Vector2(x, y - 1), unit, n.Colour);
+        }
+    }
+
     /// <summary>BATTLE MODE moves on the 30 Hz frame: it slides in a step a frame (its pulse held) and out again.</summary>
     public override void _PhysicsProcess(double delta)
     {
         if ((++_ticks & 1) != 0) return;
+        StepNotices();
         if ((_parts != null || _leftParts != null) && _slideFrames < 16) { _slideFrames++; QueueRedraw(); }
         int slide = _slide;
         if (_drawn && _slide < 4) { _slide++; _pulse = 0; }
@@ -499,6 +562,7 @@ public sealed partial class BattleHud : RetailScreen
         if (_digits == null || _labels == null || MaxHp == 0 || Acting) return;
         // The blocks and the figure keep to the window's left edge, BATTLE MODE and the part list to its right.
         DrawSetTransform(FieldView.Pin(Size, 0).Offset);
+        DrawNotices();
         if (Risk != 0) Block(2, Risk, 100);
         else Letter("RISK  ZERO", new Vector2(12, 22));
         Block(1, Mp, MaxMp);

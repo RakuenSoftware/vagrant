@@ -34,6 +34,7 @@ public sealed class FieldContent
     private const int PhantomShares = 0x7FAF4;   // BATTLE.PRG 0x800E82F4
     private const int CrippledBits = 0x7FA00;    // BATTLE.PRG 0x800E8200
     private const int TargetKinds = 0x7F994;     // BATTLE.PRG 0x800E8194, then 0x800E81B4, 0x800E81C4 and 0x800E81D4
+    private const int NoticePieces = 0x944, NoticeValues = 0x97C, NoticeColours = 0xB94;   // BATTLE.PRG 0x80069144, 0x8006917C, 0x80069394
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -553,6 +554,24 @@ public sealed class FieldContent
         ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12),
             BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6), BitConverter.ToUInt32(_executable, StatusRules + bit * 16),
             BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 4));
+
+    /// <summary>
+    /// A gear-change notice's sprites on the HUD page (BATTLE.PRG 0x8009695c, 8 bytes each: u, v, width and height):
+    /// the piece (<paramref name="value"/> false; 0 weapon, 1 shield, 2 right arm, 3 left arm, 4 head, 5 body, 6 legs,
+    /// the table at 0x80069144) or the class or affinity (classes 0 to 5, then affinities 6 to 12; 0x8006917C).
+    /// </summary>
+    public (int U, int V, int Width, int Height) NoticeSprite(bool value, int index)
+    {
+        int at = (value ? NoticeValues : NoticePieces) + Math.Clamp(index, 0, value ? 12 : 6) * 8;
+        return (_battle[at], _battle[at + 2], BitConverter.ToInt16(_battle, at + 4), BitConverter.ToInt16(_battle, at + 6));
+    }
+
+    /// <summary>A gear-change notice's colour (BATTLE.PRG 0x80069394: red, green and blue for a fall, then for a rise; 128 leaves a texel as it is).</summary>
+    public (int Red, int Green, int Blue) NoticeColour(bool raised)
+    {
+        int at = NoticeColours + (raised ? 4 : 0);
+        return (_battle[at], _battle[at + 1], _battle[at + 2]);
+    }
 
     /// <summary>
     /// The statuses that share one of a fighter's five status timers (BATTLE.PRG 0x80069BBC, a word a timer; its data's

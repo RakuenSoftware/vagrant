@@ -3281,8 +3281,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// The points of the room's platforms that are switched on (BATTLE.PRG 0x8008d2c0 lists them from 0x800f1ca0: its
-    /// place with its dip), which stop a missile (0x800e6ba0) and which Fixate is cast on (0x80070cac).
+    /// The points of the room's platforms that are switched on (BATTLE.PRG 0x8008d2c0 lists them from 0x800f1ca0: x and z
+    /// its place, y its lift's dip less its height (the record's y is up), so its place with the dip added, y down), which
+    /// stop a missile (0x800e6ba0) and which Fixate is cast on (0x80070cac).
     /// </summary>
     public List<Vector3> PlatformPoints()
     {
