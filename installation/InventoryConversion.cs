@@ -202,12 +202,12 @@ public sealed class InventoryConversion
         var effects = new JsonArray();
         for (int i = 0; i < 2; i++)
         {
-            uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-            if ((word & 0x7F) == 0) continue;
+            var effect = new ActionEffect(BitConverter.ToUInt32(executable, record + 0x14 + i * 4));
+            if (effect.Effect == 0) continue;
             effects.Add(new JsonObject
             {
-                ["effect"] = (int)(word & 0x7F), ["prerequisite"] = (int)(word >> 7 & 0x3F), ["hit"] = (int)(word >> 13 & 7),
-                ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F), ["type"] = (int)(word >> 27 & 3), ["affinity"] = (int)(word >> 29),
+                ["effect"] = effect.Effect, ["prerequisite"] = effect.Prerequisite, ["hit"] = effect.Hit,
+                ["reckoning"] = effect.Reckoning, ["factor"] = effect.Factor, ["type"] = effect.Type, ["affinity"] = effect.Affinity,
             });
         }
         return effects;
@@ -567,4 +567,21 @@ public sealed class InventoryConversion
         foreach (int offset in new[] { 380, 372, 364, 356, 348, 344, 336 }) categories.Add(At(offset));
         return new JsonObject { ["title"] = At(420), ["categories"] = categories, ["slash"] = At(432), ["get"] = At(436), ["all"] = At(440), ["end"] = At(444) };
     }
+}
+
+/// <summary>
+/// One of an action record's two effect words (SLUS_010.40 0x8004B9DC + id * 52, at 0x14 and 0x18), as BATTLE.PRG's
+/// resolver (0x80085b10) reads it: the effect (bits 0 to 6, the handler table at 0x800E8378), its prerequisite (7 to
+/// 12: who it falls on and what it needs, 0x8007fdd8), its hit function (13 to 15, 0x800E8234), its reckoning (16 to
+/// 21, 0x800E830C), a factor (22 to 26), a damage type (27 and 28) and an affinity (29 to 31; 0 the weapon's).
+/// </summary>
+public readonly record struct ActionEffect(uint Word)
+{
+    public int Effect => (int)(Word & 0x7F);
+    public int Prerequisite => (int)(Word >> 7 & 0x3F);
+    public int Hit => (int)(Word >> 13 & 7);
+    public int Reckoning => (int)(Word >> 16 & 0x3F);
+    public int Factor => (int)(Word >> 22 & 0x1F);
+    public int Type => (int)(Word >> 27 & 3);
+    public int Affinity => (int)(Word >> 29);
 }
