@@ -625,6 +625,8 @@ public sealed partial class FieldBattle
         foreach (var other in Combatants.Values)
         {
             if (other.Actor == mover || other.Dead || !other.Actor.Visible) continue;
+            // An enemy's body is never stopped by bodies 0 and 1 (BATTLE.PRG 0x800a8fd4 tests bodies 2 to 16 only).
+            if (mover != Ashley?.Actor && other.Index is 0 or 1) continue;
             var at = other.Actor.Position;
             float after = new Vector2(next.X - at.X, next.Z - at.Z).Length(), before = new Vector2(mover.Position.X - at.X, mover.Position.Z - at.Z).Length();
             if (after < Spacing && after < before) return true;
