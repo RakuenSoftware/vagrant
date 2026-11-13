@@ -2611,8 +2611,10 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// Each enemy's balloon over its head, by the icon its AI shows (BATTLE.PRG's byte at 0x800f2260, set by
-    /// <see cref="Show"/>): the rounded balloon with one, two then three dots (1 to 3) over a token's first 24 frames,
-    /// then the jagged balloon with its mark (4), which also stands while the 90 frames after a release run.
+    /// <see cref="Show"/>, drawn by 0x80095c18): the rounded balloon with one, two then three dots (1 to 3) over a
+    /// token's first 24 frames, then the jagged balloon with its mark (4), which also stands while the 90 frames after a
+    /// release run; the alarm (6) and the searching mark (7). One won over (bit 7) shows its mark (5) unless a
+    /// telegraph's balloon stands.
     /// </summary>
     private void StepBalloons()
     {
@@ -2621,8 +2623,8 @@ public sealed partial class FieldBattle
         foreach (var enemy in Combatants.Values)
         {
             if (enemy.Dead || !enemy.Hostile || enemy.Mind == null) continue;
-            int kind = enemy.Mind.Shown & 0x7F;
-            if (kind is < 1 or > 4 || Ashley == null) continue;
+            int icon = enemy.Mind.Shown, kind = (icon & 0x80) == 0 ? icon : (icon & 7) is >= 1 and <= 4 ? icon & 7 : 5;
+            if (kind is < 1 or > 7 || Ashley == null) continue;
             // It turns to the other side of its head once it is 32 units past Ashley across the screen.
             var camera = _view.Field?.Camera;
             if (camera == null || !camera.IsInsideTree()) continue;
