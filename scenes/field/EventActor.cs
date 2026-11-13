@@ -531,10 +531,13 @@ public sealed class EventActor
     public EventActor? LookTarget;
     public int LookSpeed = 0x1000;
     public HeadTurn? Head;
+    /// <summary>A turn of the head the battle holds it to (an enemy's upper-body twist, body +0x14), null when it does not.</summary>
+    public float? HeldYaw;
 
     public void StepLook()
     {
         if (Head == null) return;
+        if (HeldYaw is { } held) { Head.Yaw = held; return; }
         string clip = Player?.CurrentAnimation ?? "";
         bool free = clip == $"base_{FieldPlayer.Idle}" || clip == $"base_{FieldPlayer.Walk}";
         var point = LookTarget?.Position ?? LookPoint;

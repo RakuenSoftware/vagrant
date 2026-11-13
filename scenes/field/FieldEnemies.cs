@@ -41,7 +41,7 @@ public sealed partial class FieldBattle
     /// An actor's AI record (BATTLE.PRG, 0x484 bytes): what it perceives of every actor, how it stands to them, its
     /// token, state, plan phase, chase, memory and the order it gives its body. Offsets are the record's.
     /// </summary>
-    public sealed class Mind
+    public sealed partial class Mind
     {
         /// <summary>Its word for each actor index (+0x1a4): bit 0 sees it, 1 just lost it, 2 low line of sight, 3 in its view cone, 5 aware of it, 6-7 the relation (3 foe, 2 ally, 1 neither), 8-14 frames a foe went unseen, 15-19 frames it is seen regardless, 20-26 frames a relation is overridden, 27 another stands in the line of fire, 28-29 the relation restored, 30 high line of sight, 31 perceived for targeting.</summary>
         public readonly uint[] Relations = new uint[16];
@@ -201,6 +201,13 @@ public sealed partial class FieldBattle
             (m.FlagsB, m.SpeedB) = (profiles[1].AsGodotArray()[0].AsInt32(), profiles[1].AsGodotArray()[1].AsInt32());
         }
         m.Moves = m.FlagsA | m.FlagsB;
+        // Its steps (0x800e5a9c): their reach in tiles (bits 10-11), the height one may rise or drop (bits 8-9), the
+        // trap marks it shuns (bits 30-31, none for a profile with 0xc0), and its girth for spacing (+0x94).
+        m.StepReach = (int)(ai >> 10 & 3) + 1;
+        m.StepHeight = new[] { 0, 130, 258, 514 }[ai >> 8 & 3];
+        m.Shuns = (m.Moves & 0xC0) != 0 ? 0 : new[] { 4, 5, 5, 7 }[ai >> 30];
+        m.Girth = girth > 128 ? girth : m.Radius;
+        m.Airborne = c.Gait == Gait.Fly && c.Altitude > 16;
         m.ReachBonus = Math.Max(m.SpeedA, m.SpeedB);
         // Its hop's reach (0x800e6178): the hopping profile's speed, 128 units a point, kept within its sight.
         m.HopReach = (m.FlagsA & 8) != 0 ? m.SpeedA << 7 : (m.FlagsB & 8) != 0 ? m.SpeedB << 7 : 0;
@@ -370,9 +377,11 @@ public sealed partial class FieldBattle
             m.RingIndex = (m.RingIndex + 1) & 7;
         }
         else m.RingFill = 0;
+        if ((m.Detour >> 5 & 0x7F) != 0) m.Detour -= 1u << 5;
         Perceive(c, Ashley!, fighters);
         if (_rotating != 0 && fighters.Find(f => f.Index == _rotating) is { Mind: not null } other) Perceive(c, other, fighters);
         if (Recheck(c)) { KeepChase(c); m.Skip = true; return; }
+        if (m.LeapHold != 0) m.LeapHold--;
         // Whether it retreats (0x800d93ac): never; under a quarter or half its hit points; or while it has fled lately
         // or knows of a foe; any rule also with no plan and foes about.
         bool retreat = m.FleeRule switch
@@ -517,6 +526,7 @@ public sealed partial class FieldBattle
         m.FaceTarget = 16;
         m.FacePoint = null;
         m.Run = false;
+        m.Descends = m.CrossesZones = m.Wary = m.Away = m.Nearer = m.Wades = m.Grounded = m.Closing = false;
         m.Order = Order.Stand;
         if (!(Launch(c) || Unstick(c) || Behave(c, fighters))) Wander(c);
         // Its stance (0x800db7b4): one dormant holds still; one stirring rises and is awake.
@@ -1037,7 +1047,7 @@ public sealed partial class FieldBattle
         }
         m.ChaseTarget = t.Index;
         m.Stop = stop;
-        m.Goal = TileOf(t);
+        m.Goal = Aim(c, t);
         if (!ChaseStep(c, t, backsOff)) return false;
         SetMode(c, 1);
         return true;
@@ -1083,6 +1093,8 @@ public sealed partial class FieldBattle
                 long run = stop + (_walking.Contains(c) && m.Run ? 128 : 0);
                 m.Run = run * run < d;
                 m.FaceTarget = t.Index;
+                m.Closing = true;
+                m.Descends |= flag;
                 m.Order = Order.Path;
             }
             else
@@ -1090,6 +1102,7 @@ public sealed partial class FieldBattle
                 if (m.KeepsFacing) { m.Run = true; m.FacePoint = pos; }
                 else m.FaceTarget = t.Index;
                 m.Heading = c.Actor.FacingToward(pos) + 2048;
+                m.Wary = m.Away = true;
                 m.Order = Order.Away;
                 if (_walking.Contains(c)) m.FaceLatch = true;
             }
@@ -1132,6 +1145,7 @@ public sealed partial class FieldBattle
                 }
                 if (m.SearchTimer == 0) { m.Searching = false; return false; }
                 m.Run = true;
+                m.Closing = true;
                 m.Goal = m.LastKnown;
                 m.Order = Order.Path;
                 result = true;
@@ -1194,9 +1208,10 @@ public sealed partial class FieldBattle
     private void Face(Combatant c)
     {
         var m = c.Mind!;
+        if (Hover(c)) return;
         m.TurnRate = m.DefaultTurn;
-        if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = c.Actor.FacingToward(t.Actor.Position); m.Order = Order.Turn; return; }
-        if (m.FacePoint is { } point) { m.TurnTo = c.Actor.FacingToward(point); m.Order = Order.Turn; return; }
+        if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = c.Actor.FacingToward(t.Actor.Position); m.Order = Order.Turn; m.Command = Body.Turn; return; }
+        if (m.FacePoint is { } point) { m.TurnTo = c.Actor.FacingToward(point); m.Order = Order.Turn; m.Command = Body.Turn; return; }
         int facing = (int)c.Actor.Facing & 0xFFF, q = 2 * (((facing >> 10) + ((facing & 0x3FF) > 512 ? 1 : 0)) & 3);
         float? best = null;
         int chosen = -1;
@@ -1207,9 +1222,10 @@ public sealed partial class FieldBattle
             var spot = Centre((m.Tile.X + dx, m.Tile.Z + dz), c.Actor.Position.Y);
             if (_view.FloorAt(spot) is { } floor && (best == null || floor > best)) { best = floor; chosen = dir; }
         }
-        if (chosen < 0) { m.Order = Order.Stand; return; }
+        if (chosen < 0) { m.Order = Order.Stand; m.Command = Body.Stand; return; }
         m.TurnTo = chosen << 9;
         m.Order = Order.Turn;
+        m.Command = Body.Turn;
     }
 
     /// <summary>The eight directions by facing octant (BATTLE.PRG 0x800f16ec): tile steps in x and z.</summary>
@@ -1217,8 +1233,8 @@ public sealed partial class FieldBattle
 
     /// <summary>
     /// Looks about (BATTLE.PRG 0x800e4180): a look of kind 1 (70 frames: one way, the other, then ahead) or 2 (24
-    /// frames) starts on a roll under its chance and runs its frames; returns whether it is still looking. Its head's
-    /// turn is not yet shown; it stands as it looks.
+    /// frames) starts on a roll under its chance and runs its frames; returns whether it is still looking. It stands
+    /// as it looks, turning its head.
     /// </summary>
     private bool LookAround(Combatant c, int chance, int kind, int slot)
     {
@@ -1232,7 +1248,10 @@ public sealed partial class FieldBattle
         }
         m.Looks[slot] = (ticks - 1, held);
         if (held is not (1 or 2)) return false;
+        // Its head turns (command 16): a glance back of 1280 for its first 13 frames, or right, left, then ahead.
+        m.Glance = held == 2 ? ticks < 11 ? 0 : 1280 : ticks >= 53 ? 800 : ticks >= 18 ? -800 : 0;
         m.Order = Order.Stand;
+        m.Command = Body.Stand;
         return ticks >= 2;
     }
 
@@ -1263,6 +1282,7 @@ public sealed partial class FieldBattle
         m.Run = run;
         m.FacePoint = point;
         m.Heading = c.Actor.FacingToward(point) + 2048;
+        m.Away = true;
         m.Order = Order.Away;
         SetMode(c, 4);
         return true;
@@ -1303,6 +1323,8 @@ public sealed partial class FieldBattle
         }
         if (m.WanderCount == m.MoveFrames) { if (Roll(128) < 44) m.WanderCount = 0; }
         else if (m.WanderCount >= m.IdleFrames + m.MoveFrames) m.WanderCount = Roll(128) < 44 ? m.MoveFrames : 0;
+        m.CrossesZones = true;
+        Afresh(m);
         if (m.WanderCount >= m.MoveFrames) { Face(c); return; }
         int odds = 1 << (m.Chance & 31);
         if (radius >= 63)
@@ -1316,7 +1338,7 @@ public sealed partial class FieldBattle
                 for (int i = 0; i < 4; i++)
                 {
                     int d = (first + 2 * i) & 7;
-                    if (Walkable(c, Step(m.Tile, d))) { m.WanderHeading = (d * 512 - 256 + Roll(512)) & 0xFFFF; break; }
+                    if (Free(c, d, m.Airborne)) { m.WanderHeading = (d * 512 - 256 + Roll(512)) & 0xFFFF; break; }
                 }
                 if (m.WanderHeading < 0) m.WanderHeading = Roll(4096);
             }
@@ -1331,6 +1353,7 @@ public sealed partial class FieldBattle
             m.Order = Order.Away;
             return;
         }
+        m.Wary = true;
         if (Roll(odds) == 0) m.WanderState = 0;
         switch (m.WanderState)
         {
@@ -1405,6 +1428,7 @@ public sealed partial class FieldBattle
     {
         var m = c.Mind!;
         if (m.Memory != m.Tile) { m.Unstick = 0; return false; }
+        m.CrossesZones = true;
         if (m.Unstick == 0)
         {
             int o = ((int)c.Actor.FacingToward(Centre(m.Goal, c.Actor.Position.Y)) >> 9) & 7, o2 = (o + 2) & 7;
@@ -1429,9 +1453,6 @@ public sealed partial class FieldBattle
     }
 
     private static (int X, int Z) Step((int X, int Z) tile, int direction) => (tile.X + Directions[direction].X, tile.Z + Directions[direction].Z);
-
-    /// <summary>Whether it can stand on a tile (BATTLE.PRG 0x800d954c, its attribute masks not yet read): not the tile it remembers failing on, with a floor that does not block.</summary>
-    private bool Walkable(Combatant c, (int X, int Z) tile) => tile != c.Mind!.Memory && !_view.Blocked(tile.X, tile.Z) && _view.FloorAt(Centre(tile, c.Actor.Position.Y)) != null;
 
     /// <summary>
     /// A move ended (BATTLE.PRG's action end): an enemy that made a planned move remembers its target's tile
@@ -1581,163 +1602,5 @@ public sealed partial class FieldBattle
             Flash(s, 6, 40);
             Voice(s);
         }
-    }
-
-    /// <summary>
-    /// Carries out an enemy's order with its body: one falling carries on falling and a hop runs its course
-    /// (0x800a29e8: vanished, it stands on its tile facing Ashley and reappears, 21 then 22, then stands); then it
-    /// stands, turns at its turn rate, walks for its goal tile by its waypoint (<see cref="Waypoint"/>), or steps along
-    /// a heading still facing its point.
-    /// </summary>
-    private void Drive(Combatant enemy)
-    {
-        var actor = enemy.Actor;
-        var m = enemy.Mind!;
-        if (enemy.Mover is { Busy: true } falling) { falling.Step(null, walk: true); return; }
-        if (enemy.HopState == 1 && !_view.Materialising(actor))
-        {
-            actor.Position = enemy.HopTo;
-            if (At(m.FaceTarget) is { } faced) actor.Facing = actor.FacingToward(faced.Actor.Position);
-            _view.Materialise(actor, appear: true);
-            if (Play(enemy, 21, 8, once: true) is { } set) actor.Queue($"{set}_22", 8);
-            enemy.HopState = 2;
-        }
-        if (enemy.HopState == 2 && !_view.Materialising(actor)) { Play(enemy, 1, 6); enemy.HopState = 0; }
-        if (enemy.HopState != 0 || enemy.Suspended || m.Held || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) return;
-        switch (m.Order)
-        {
-            case Order.Stand:
-                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
-                break;
-            case Order.Turn:
-            {
-                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
-                float turn = Mathf.Wrap(m.TurnTo - actor.Facing, -2048, 2048);
-                actor.Facing = Mathf.PosMod(Math.Abs(turn) <= m.TurnRate ? m.TurnTo : actor.Facing + Math.Sign(turn) * m.TurnRate, 4096);
-                break;
-            }
-            case Order.Path:
-                if (enemy.Gait == Gait.Hop) { Hop(enemy, m.Goal); break; }
-                Walk(enemy, Waypoint(enemy, Centre(m.Goal, actor.Position.Y)), null);
-                break;
-            case Order.Away:
-            {
-                float angle = m.Heading * Mathf.Tau / 4096;
-                var away = actor.Position + new Vector3(-Mathf.Sin(angle), 0, -Mathf.Cos(angle)) * 128;
-                var facing = m.FacePoint ?? (At(m.FaceTarget) is { } t ? t.Actor.Position : (Vector3?)null);
-                if (enemy.Gait == Gait.Hop)
-                {
-                    // 0x800e1764: of the points its reach along the heading and the other way, the one farther from
-                    // what it moves by.
-                    var ahead = PointAt(enemy, (int)m.Heading, m.HopReach);
-                    var behind = PointAt(enemy, (int)m.Heading + 2048, m.HopReach);
-                    var origin = facing ?? actor.Position;
-                    Hop(enemy, ((Centre(behind, 0) - origin) with { Y = 0 }).LengthSquared() < ((Centre(ahead, 0) - origin) with { Y = 0 }).LengthSquared() ? ahead : behind);
-                    break;
-                }
-                Walk(enemy, away, facing);
-                break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Walks an enemy a frame for a point (BATTLE.PRG's walk and run command, 0x800def8c, carried out for the frame by
-    /// the movement Ashley's is, 0x800a5280): asked to run, at the first profile that runs (flags 0x84), else at the
-    /// first that walks (0x42; retail tests the first profile's speed byte for the second, kept); with neither it
-    /// stands. A flyer (0x800e0a68, its arc to the goal not yet followed) heads straight for the point at its cruising
-    /// height, 128 above the floor there, at the speed of its profile that flies (0x10 walking, 0x20 running; with
-    /// none it faces). <paramref name="facing"/> is a point it keeps facing as it goes.
-    /// </summary>
-    private void Walk(Combatant enemy, Vector3 waypoint, Vector3? facing)
-    {
-        var actor = enemy.Actor;
-        var m = enemy.Mind!;
-        if (enemy.Mover is not { } mover) return;
-        if (enemy.Gait == Gait.Fly)
-        {
-            int speed = m.Run ? ((m.FlagsA & 0x20) != 0 ? m.SpeedA : (m.FlagsB & 0x20) != 0 ? m.SpeedB : (m.FlagsA & 0x10) != 0 ? m.SpeedA : (m.FlagsB & 0x10) != 0 ? m.SpeedB : 0)
-                : (m.FlagsA & 0x10) != 0 ? m.SpeedA : (m.FlagsB & 0x10) != 0 ? m.SpeedB : (m.FlagsA & 0x20) != 0 ? m.SpeedA : (m.FlagsB & 0x20) != 0 ? m.SpeedB : 0;
-            if (speed <= 0) { Face(enemy); return; }
-            float floor = _view.SightFloor((int)waypoint.X, (int)waypoint.Z);
-            var aim = waypoint with { Y = floor - 128 };
-            var way = aim - actor.Position;
-            actor.Facing = actor.FacingToward(aim);
-            actor.Position = way.Length() <= speed ? aim : actor.Position + way.Normalized() * speed;
-            if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
-            if (facing is { } look) actor.Facing = actor.FacingToward(look);
-            return;
-        }
-        int pace = 0;
-        bool run = false;
-        if (m.Run && (m.FlagsA & 0x84) != 0) (pace, run) = (m.SpeedA, true);
-        else if (m.Run && (m.FlagsB & 0x84) != 0) (pace, run) = (m.SpeedB, true);
-        else if ((m.FlagsA & 0x42) != 0) pace = m.SpeedA;
-        else if ((m.SpeedA & 0x42) != 0) pace = m.SpeedB;
-        if (pace <= 0)
-        {
-            if (_walking.Remove(enemy)) { mover.Halt(); Play(enemy, 1, 6); }
-            return;
-        }
-        mover.WalkSpeed = pace;
-        mover.Step(actor.FacingToward(waypoint), walk: true);
-        if (!_walking.Contains(enemy) || enemy.Runs != run)
-        {
-            if (!run || Play(enemy, FieldPlayer.Run, 4) == null) Play(enemy, FieldPlayer.Walk, 4);
-            enemy.Runs = run;
-            _walking.Add(enemy);
-        }
-        if (facing is { } point) actor.Facing = actor.FacingToward(point);
-    }
-
-    /// <summary>
-    /// A point its reach along a heading from its tile (BATTLE.PRG 0x800e1388): the first standing tile of eight tries,
-    /// an eighth of the reach nearer each, else the last.
-    /// </summary>
-    private (int X, int Z) PointAt(Combatant c, int heading, int reach)
-    {
-        var m = c.Mind!;
-        float angle = heading * Mathf.Tau / 4096;
-        int step = reach >> 3;
-        (int X, int Z) tile = m.Tile;
-        for (int i = 0; i < 8; i++, reach -= step)
-        {
-            tile = (((m.Tile.X * 128) + (int)(-Mathf.Sin(angle) * reach) + 64) >> 7, ((m.Tile.Z * 128) + (int)(-Mathf.Cos(angle) * reach) + 64) >> 7);
-            if (Walkable(c, tile)) break;
-        }
-        return tile;
-    }
-
-    /// <summary>
-    /// A hopper for its goal tile (BATTLE.PRG 0x800e153c): on it, it faces; beyond its reach the goal comes in to its
-    /// reach (<see cref="PointAt"/>); one that also walks walks once within four tiles; else at most every 6 calls it
-    /// warps (command 13, actor code 23) to the goal or the first free cardinal tile beside it: it fades out (19 then
-    /// 20), stands there facing its target and fades back in (21 then 22), with no flight between.
-    /// </summary>
-    private void Hop(Combatant enemy, (int X, int Z) goal)
-    {
-        var m = enemy.Mind!;
-        var actor = enemy.Actor;
-        if (goal == m.Tile) { Face(enemy); return; }
-        var centre = Centre(goal, actor.Position.Y);
-        if ((long)m.HopReach * m.HopReach < ((centre - actor.Position) with { Y = 0 }).LengthSquared())
-            goal = PointAt(enemy, (int)actor.FacingToward(centre), m.HopReach);
-        int dx = goal.X - m.Tile.X, dz = goal.Z - m.Tile.Z;
-        if ((m.Moves & 6) != 0 && dx * dx + dz * dz < 16) { Walk(enemy, Waypoint(enemy, Centre(goal, actor.Position.Y)), null); return; }
-        if (++enemy.HopCount < 6) { Face(enemy); return; }
-        if (!Walkable(enemy, goal))
-        {
-            (int X, int Z)? free = null;
-            for (int d = 0; d < 8 && free == null; d += 2) if (Walkable(enemy, Step(goal, d))) free = Step(goal, d);
-            if (free is not { } beside) { Face(enemy); return; }
-            goal = beside;
-        }
-        enemy.HopCount = 0;
-        var spot = Centre(goal, 0);
-        if (_view.FloorAt(spot) is not { } landing) return;
-        enemy.HopTo = spot with { Y = landing };
-        enemy.HopState = 1;
-        _view.Materialise(actor, appear: false);
-        if (Play(enemy, 19, 8, once: true) is { } set) actor.Queue($"{set}_20", 8);
     }
 }

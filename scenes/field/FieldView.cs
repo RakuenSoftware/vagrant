@@ -3285,6 +3285,38 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
     }
 
+    /// <summary>The room's collision map in tiles: its width and depth.</summary>
+    public (int Width, int Depth) Tiles => (_columns / 4, _rows / 4);
+
+    /// <summary>How many platforms the room has (its 184-byte records at 0x800f1ca0).</summary>
+    public int PlatformCount => _platforms.Count;
+
+    /// <summary>
+    /// Platform <paramref name="index"/> as the enemies' AI reads its record: where it is now, its top dipped as it sets
+    /// off (0x8008d2c0), the waypoint it travels to (0x8008e2d4), the frames it has waited at one, -1 while travelling
+    /// (0x8008e320), and whether it is switched off; null for none.
+    /// </summary>
+    public (Vector3 Now, Vector3 Bound, int Waited, bool Off)? PlatformState(int index)
+    {
+        if (index < 0 || index >= _platforms.Count) return null;
+        var platform = _platforms[index];
+        var bound = platform.Waypoints.Count == 0 ? platform.Position : platform.Waypoints[Math.Clamp(platform.Target, 0, platform.Last)].Point;
+        return (platform.Position + new Vector3(0, PlatformDip[platform.Dip], 0), bound, platform.Dwelling ? platform.Elapsed : -1, platform.Off);
+    }
+
+    /// <summary>The platform an actor at a position stands on (within 16 of its top), or -1.</summary>
+    public int PlatformUnder(Vector3 position)
+    {
+        for (int i = 0; i < _platforms.Count; i++)
+        {
+            var platform = _platforms[i];
+            if (platform.Off || !platform.HasFootprint || platform.Waypoints.Count == 0) continue;
+            float x = position.X - platform.Position.X, z = position.Z - platform.Position.Z;
+            if (x >= platform.MinX && x <= platform.MaxX && z >= platform.MinZ && z <= platform.MaxZ && Math.Abs(position.Y - (platform.Position.Y + platform.Top + PlatformDip[platform.Dip])) <= 16) return i;
+        }
+        return -1;
+    }
+
     /// <summary>The top of a platform under a position (y down), if one is there and no more than 160 above it.</summary>
     private float? PlatformTop(Vector3 position)
     {
@@ -3310,8 +3342,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (_platformsFrozen) return;
         if (_platformHold > 0) { _platformHold--; return; }
         var ashley = Player;
-        foreach (var platform in _platforms)
+        for (int index = 0; index < _platforms.Count; index++)
         {
+            var platform = _platforms[index];
             if (platform.Off || platform.Waypoints.Count < 2 || platform.Legs.Count == 0) continue;
             bool riding = false;
             if (ashley != null && platform.HasFootprint)
@@ -3324,6 +3357,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             platform.Ridden = riding;
             if (platform.Lift && !riding) continue;
             var before = platform.Position;
+            // Enemies standing on it ride with it (BATTLE.PRG 0x800a51a0, each body's platform at +0x6e4).
+            var riders = new List<EventActor>();
+            if (Battle != null)
+                foreach (var fighter in Battle.Combatants.Values)
+                    if (fighter.Actor != ashley && !fighter.Dead && PlatformUnder(fighter.Actor.Position) == index) riders.Add(fighter.Actor);
             if (platform.Dip < 7) platform.Dip++;
             if (!platform.Dwelling)
             {
@@ -3347,6 +3385,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 platform.Leg = (platform.Leg + 1) % platform.Legs.Count;
             }
             if (riding && ashley != null) ashley.Position += platform.Position - before;
+            foreach (var rider in riders) rider.Position += platform.Position - before;
             Field?.SetActorPosition(platform.Group.ToString(), EventActor.RetailSpace * (platform.Position + new Vector3(0, PlatformDip[platform.Dip], 0)));
         }
     }
@@ -3435,7 +3474,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private Crate? _carried;
 
     /// <summary>The tile of the room's crate <paramref name="index"/> (in the room's order), or null while carried or past the last.</summary>
-    public (int X, int Z)? CrateTile(int index) => index >= 0 && index < _crates.Count && !_crates[index].Carried && !_crates[index].Gone ? (_crates[index].X, _crates[index].Z) : null;
 
     /// <summary>The top of the highest crate on a position's tile, which is floor there; null without one.</summary>
     private float? CrateTop(Vector3 position)
@@ -5413,7 +5451,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>A collision tile's attribute word, or 0 outside the room.</summary>
-    private long TileAttributes(int x, int z)
+    public long TileAttributes(int x, int z)
     {
         int width = _columns / 4, depth = _rows / 4;
         if (x < 0 || z < 0 || x >= width || z >= depth || z * width + x >= _attributes.Length) return 0;

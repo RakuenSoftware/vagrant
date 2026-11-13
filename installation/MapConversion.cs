@@ -206,7 +206,7 @@ public sealed class MapConversion
             ["tile_attributes"] = TileAttributes(room),
             ["doors"] = Doors(room),
             ["chests"] = Chests(room),
-            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room), ["crate_steps"] = CrateSteps(room),
+            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room), ["platform_docks"] = PlatformDocks(room), ["enemy_map"] = EnemyMap(room),
             ["locks"] = Locks(room),
             ["platforms"] = Platforms(room), ["swings"] = Swings(room), ["group_scripts"] = GroupScripts(room),
             ["room_actors"] = RoomActors(),
@@ -578,21 +578,45 @@ public sealed class MapConversion
     }
 
     /// <summary>
-    /// The crate steps a zone link's connector (bit 10) needs (room sub-section 5 at 0x454; BATTLE.PRG 0x800dfaf8): 8
-    /// pairs of tiles (x bits 0 to 4, z 5 to 9), a connector and where crate k (pair 2k or 2k + 1) must stand by it for
-    /// an enemy to climb on from there. Empty for a room without the section.
+    /// Where enemies board the room's platforms (room sub-section 5 at 0x454, BATTLE.PRG's table at 0x800f5910, read by
+    /// 0x800dfaf8, 0x800df9a8 and 0x800dfa54): 8 pairs of tiles (x bits 0 to 4, z 5 to 9), two entries a platform (2p
+    /// and 2p + 1): the tile an enemy steps on from, and where platform p must stand for that. Empty for a room without
+    /// the section.
     /// </summary>
-    private JsonArray CrateSteps(int room)
+    private JsonArray PlatformDocks(int room)
     {
-        var steps = new JsonArray();
+        var docks = new JsonArray();
         int at = SubSection(room, 5, out int length);
-        if (length < 0x454 + 32) return steps;
+        if (length < 0x454 + 32) return docks;
         for (int i = 0; i < 8; i++)
         {
-            int connector = BitConverter.ToUInt16(_map, at + 0x454 + i * 4), crate = BitConverter.ToUInt16(_map, at + 0x454 + i * 4 + 2);
-            steps.Add(new JsonArray { connector & 31, connector >> 5 & 31, crate & 31, crate >> 5 & 31 });
+            int access = BitConverter.ToUInt16(_map, at + 0x454 + i * 4), dock = BitConverter.ToUInt16(_map, at + 0x454 + i * 4 + 2);
+            docks.Add(new JsonArray { access & 31, access >> 5 & 31, dock & 31, dock >> 5 & 31 });
         }
-        return steps;
+        return docks;
+    }
+
+    /// <summary>
+    /// What the enemies' movement reads of the room beyond its tiles (BATTLE.PRG's battle start, 0x800e6f9c): the
+    /// bounds they keep within (the word at 0x494 of room sub-section 5: bytes most x, most z, least x, least z), the
+    /// steps out of each tile that are walled (the bytes from 0x498, one a tile by rows of the map's width: bit d the
+    /// step in direction d), and the flyers' ceiling (the halfword at 0x56 of sub-section 10, in 64-unit levels, 0
+    /// none). Bounds and walls are empty for a room without sub-section 5.
+    /// </summary>
+    private JsonObject EnemyMap(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        SubSection(room, 2, out int words);
+        int tiles = words / 4;
+        var bounds = new JsonArray();
+        var walls = new JsonArray();
+        if (length >= 0x498)
+        {
+            for (int i = 0; i < 4; i++) bounds.Add((int)_map[at + 0x494 + i]);
+            for (int i = 0; i < tiles && 0x498 + i < length; i++) walls.Add((int)_map[at + 0x498 + i]);
+        }
+        int info = SubSection(room, 10, out int infoLength);
+        return new JsonObject { ["bounds"] = bounds, ["walls"] = walls, ["ceiling"] = infoLength >= 0x58 ? (int)BitConverter.ToInt16(_map, info + 0x56) : 0 };
     }
 
     /// <summary>
