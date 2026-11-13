@@ -1388,7 +1388,12 @@ public partial class FieldContracts : Node
         if (step == 175) Capture("options_on");
         if (step == 180) _optionsDialog!.Hide();
         if (step is 200 or 220) Tap("ps_cross");
-        if (step == 260) { _optionsStep = -1; if (_view.MenuOpen) { Finish("the menu did not close after Options"); return true; } }
+        if (step == 260)
+        {
+            if (_view.MenuOpen || _optionsDialog!.Visible) Finish("the menu did not close after Options");
+            else if ((_view.Options & 0xC0) != 0xC0) Finish("closing Options lost the weapon or armor status setting");
+            else Finish("");
+        }
         return true;
     }
     private Wol.Games.Vagrant.Scenes.SettingsDialog? _optionsDialog;
