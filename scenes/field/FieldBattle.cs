@@ -2584,7 +2584,7 @@ public sealed partial class FieldBattle
     {
         var fighters = new List<Combatant>();
         if (Ashley != null && !Ashley.Dead) fighters.Add(Ashley);
-        foreach (var c in Combatants.Values) if (c != Ashley && !c.Dead && !c.Cube && (includeHidden || c.Actor.Visible)) fighters.Add(c);
+        foreach (var c in Combatants.Values) if (c != Ashley && !c.Dead && !c.Cube && (includeHidden || c.Actor.Visible || c.HopState != 0 && (c.Actor.Flags & 1) != 0)) fighters.Add(c);
         return fighters;
     }
 

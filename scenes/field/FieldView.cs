@@ -4854,22 +4854,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public List<GDictionary> Storable()
     {
         var list = new List<GDictionary>();
-        var parts = new HashSet<(string, int)>();
-        foreach (var value in Equipment)
-        {
-            var entry = value.AsGodotDictionary();
-            if (entry["kind"].AsString() != "weapons") continue;
-            parts.Add(("blades", entry["record"].AsGodotDictionary()["blade"].AsInt32()));
-            parts.Add(("grips", entry["record"].AsGodotDictionary()["grip"].AsInt32()));
-        }
+        var heldEntry = Weapons().Find(Holds)?.GetValueOrDefault("entry", new GDictionary()).AsGodotDictionary();
+        var parts = SetParts();
         foreach (var value in Equipment)
         {
             var entry = value.AsGodotDictionary();
             string kind = entry["kind"].AsString();
             var record = entry["record"].AsGodotDictionary();
             if (kind is "blades" or "grips" && parts.Contains((kind, record.GetValueOrDefault("slot", 0).AsInt32()))) continue;
-            if (kind == "weapons" && EquippedWeapon == null && !Unarmed && record["equipped"].AsBool()) continue;
-            if (kind == "weapon" && EquippedWeapon is { } held && held["blade"].AsGodotDictionary().RecursiveEqual(record["blade"].AsGodotDictionary())) continue;
+            if (heldEntry != null && heldEntry.RecursiveEqual(entry)) continue;
             if (kind is "armour" or "shield" && System.Linq.Enumerable.Any(EquippedArmour.Values, worn => worn.RecursiveEqual(record))) continue;
             list.Add(entry);
         }
@@ -4897,7 +4890,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (part["kind"].AsString() == "blades" && partRecord["slot"].AsInt32() == record["blade"].AsInt32()) { blade = partRecord; Equipment.Remove(part); }
             if (part["kind"].AsString() == "grips" && partRecord["slot"].AsInt32() == record["grip"].AsInt32()) { grip = partRecord; Equipment.Remove(part); }
         }
-        Stored.Add(new GDictionary { ["kind"] = "weapon", ["record"] = new GDictionary { ["blade"] = blade ?? new GDictionary(), ["grip"] = grip ?? new GDictionary(), ["name"] = record["name"] } });
+        Stored.Add(new GDictionary { ["kind"] = "weapon", ["record"] = new GDictionary { ["blade"] = blade ?? new GDictionary(), ["grip"] = grip ?? new GDictionary(), ["name"] = record["name"], ["gems"] = record.GetValueOrDefault("gems", new GArray()) } });
     }
 
     /// <summary>Takes a piece of equipment back out of the container.</summary>

@@ -50,6 +50,7 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # Continuous New Game exploration using pad controls and earned state; this driver is still being extended.
 # An optional --campaign-checkpoint=ZONE,MAP guides the route and stops at that checkpoint, not a full-campaign verdict.
 # --campaign-story=N additionally requires story flag 130 to reach N, so a boss checkpoint can wait for its scene.
+# --campaign-flag=FLAG:MIN similarly waits for a local gate or encounter flag without changing it.
 # --campaign-save=/tmp/checkpoint.json exports the earned state there; --campaign-load=PATH resumes it.
 # This diagnostic save uses the real serializer; it does not test the save-point menu.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --campaign

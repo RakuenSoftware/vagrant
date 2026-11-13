@@ -35,7 +35,7 @@ public partial class FieldContracts : Node
     private bool _repairAllCheck;
     private bool _combineCheck;
     private bool _nameCheck, _assemblyCheck;
-    private int _assemblyFrame, _campaignStory;
+    private int _assemblyFrame, _campaignStory, _campaignFlag, _campaignFlagValue;
     private string _assemblyBefore = "";
     private int _nameFrame;
     private string _nameOriginal = "";
@@ -45,6 +45,7 @@ public partial class FieldContracts : Node
     private int _repairFrame, _repairDp, _repairPp, _repairWait;
     private Godot.Collections.Dictionary? _repairLoose, _repairAccessory, _repairStored, _repairShield, _repairArmour;
     private readonly Dictionary<string, Vector3> _campaignHiddenPositions = new();
+    private readonly Dictionary<string, int> _campaignHops = new();
     private readonly Dictionary<(int Zone, int Map), int> _campaignVisits = new();
     private readonly Dictionary<(int Zone, int Map, int Door), int> _campaignAttempts = new();
 
@@ -145,6 +146,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
             if (argument == "--workshop-combine") _combineCheck = true;
+            if (argument.StartsWith("--campaign-flag=", StringComparison.Ordinal) && argument["--campaign-flag=".Length..].Split(':') is [var conditionFlag, var conditionValue]) (_campaignFlag, _campaignFlagValue) = (int.Parse(conditionFlag), int.Parse(conditionValue));
             if (argument.StartsWith("--campaign-story=", StringComparison.Ordinal)) _campaignStory = int.Parse(argument["--campaign-story=".Length..]);
             if (argument == "--workshop-assembly") _assemblyCheck = true;
             if (argument == "--workshop-name") _nameCheck = true;
@@ -614,6 +616,7 @@ public partial class FieldContracts : Node
         {
             _campaignRooms = _view.Rooms.Count;
             _campaignHiddenPositions.Clear();
+            _campaignHops.Clear();
             _campaignBypassEnemies = false;
             _fightTargetId = "";
             _fightProgressAt = _frame;
@@ -633,15 +636,25 @@ public partial class FieldContracts : Node
         {
             // A room script may hide a live enemy (Sackheim during Goodwin's encounter). Its AI must stop too.
             foreach (var c in observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead))
-                if (!c.Actor.Visible && !_view.Materialising(c.Actor))
+                if (!c.Actor.Visible && c.HopState == 0 && !_view.Materialising(c.Actor))
                 {
                     if (_campaignHiddenPositions.TryGetValue(c.Actor.Id, out var held) && held.DistanceTo(c.Actor.Position) > 0.01f)
                     { Finish($"campaign: hidden {c.Name} moved from {held} to {c.Actor.Position}"); return; }
                     _campaignHiddenPositions[c.Actor.Id] = c.Actor.Position;
                 }
                 else _campaignHiddenPositions.Remove(c.Actor.Id);
+            foreach (var c in observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead))
+            {
+                if (c.HopState != 0 && (c.Actor.Flags & 1) != 0)
+                {
+                    if (!_campaignHops.ContainsKey(c.Actor.Id)) _campaignHops[c.Actor.Id] = 0;
+                    if (!observedBattle.Busy && !observedBattle.Paused && !_view.MenuOpen && !c.Suspended && ++_campaignHops[c.Actor.Id] > 240)
+                    { Finish($"campaign: {c.Name}'s vanished warp did not reappear in 240 active frames"); return; }
+                }
+                else if (c.HopState == 0 && _campaignHops.Remove(c.Actor.Id)) GD.Print($"CAMPAIGN: {c.Name} completed its vanish/warp/reappearance");
+            }
             if (_frame % 600 == 0)
-                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}"))}");
+                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
         }
         if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
         // Recovery uses the earned inventory through ITEMS, USE and the normal targeting sphere. No HP or item
@@ -746,6 +759,20 @@ public partial class FieldContracts : Node
         }
         if ((_view.Zone, _view.Map) == (9, 17) && _view.Flags[130] >= 10
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => c.Name == "Dummy")) _campaignBypassEnemies = true;
+        // The Catacombs ghost appears when Ashley stops in its western hall; running around the room misses it.
+        if ((_view.Zone, _view.Map) == (13, 4) && _view.Flags[191] == 0)
+        {
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: ghost approach stalled at {ashley.Actor.Position}"); return; }
+            var point = new Vector3(1472, -128, 704);
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
+            { Steer(Vector2.Zero); return; }
+            var steps = _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            return;
+        }
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
@@ -824,7 +851,7 @@ public partial class FieldContracts : Node
         }
         if (battle.Busy) { Steer(Vector2.Zero); return; }
         if (battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory)
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue)
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
@@ -882,7 +909,7 @@ public partial class FieldContracts : Node
         var doors = _view.Document["doors"].AsGodotArray();
         if (_campaignDoor >= 0 && _frame - _campaignDoorAt > 1800)
         {
-            GD.Print($"CAMPAIGN: door {_campaignDoor} in {_view.Zone},{_view.Map} was not reached from {ashley.Actor.Position}");
+            GD.Print($"CAMPAIGN: door {_campaignDoor} in {_view.Zone},{_view.Map} was not reached from {ashley.Actor.Position}; locks {Json.Stringify(_view.Document["locks"])}, flags 190/191 {_view.Flags[190]}/{_view.Flags[191]}");
             _campaignDoor = -1;
         }
         if (_campaignDoor < 0)
@@ -908,6 +935,12 @@ public partial class FieldContracts : Node
                 {
                     int next = _view.Map switch { 17 => 12, 12 => 11, 11 => 10, 10 => 13, 13 => 7, 7 => 6, 6 => 5, 5 => 4, 4 => 1, 1 => 2, 2 => 15, _ => -1 };
                     if (_view.Map == 15 ? zone != 11 : next >= 0 && (zone != 9 || candidate["map"].AsInt32() != next)) cost += 10000;
+                }
+                if (_view.Zone == 13 && _campaignCheckpoint is { Zone: 14 } or { Zone: 13, Map: 4 })
+                {
+                    int next = _view.Map switch { 0 => 1, 1 => 2, 2 => 3, 3 => 6, 6 => _campaignCheckpoint is { Zone: 13, Map: 4 } ? 4 : 8,
+                        8 => 10, 10 => 11, 11 => 12, 12 => 13, 13 => 15, 15 => 16, _ => -1 };
+                    if (_view.Map == 16 ? zone != 14 : next >= 0 && (zone != 13 || candidate["map"].AsInt32() != next)) cost += 10000;
                 }
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }
@@ -1026,6 +1059,45 @@ public partial class FieldContracts : Node
             } // The exit's event requires standing still, not another Cross press.
             float direction = (ashley.Actor.FacingToward(exit) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(direction), -Mathf.Cos(direction)));
+            return;
+        }
+        // Catacombs 13,10: carry two stone blocks to the east ledge, climb their stack and jump up.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (13, 10, 1) && _campaignPuzzle < 14)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: east stack step {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
+            if (_campaignPuzzle is 2 or 5 or 8 or 11)
+            {
+                Steer(Vector2.Zero);
+                int source = _view.Crates.Count(c => c.X == (_campaignPuzzle == 2 ? 6 : 5) && c.Z == 3);
+                int stack = _view.Crates.Count(c => c.X == 13 && c.Z == 3);
+                if ((_campaignPuzzle is 2 or 8) ? source == 0 : stack == (_campaignPuzzle == 5 ? 1 : 2))
+                { _campaignPuzzle++; _campaignPuzzleAt = _frame; return; }
+                if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(832, 0, 576), 1 => new Vector3(832, 0, 448),
+                3 or 9 => new Vector3(1600, 0, 448), 4 or 10 => new Vector3(1728, 0, 448),
+                6 => new Vector3(704, 0, 576), 7 => new Vector3(704, 0, 448),
+                12 => new Vector3(1728, -256, 448), _ => new Vector3(1856, -640, 448),
+            };
+            bool facing = _campaignPuzzle is 1 or 4 or 7 or 10;
+            if (facing && _frame - _campaignPuzzleAt >= 24)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            if (facing && _frame - _campaignPuzzleAt > 1 || _campaignPuzzle == 13 && _frame - _campaignPuzzleAt < 40)
+            { Steer(Vector2.Zero); return; }
+            var steps = facing || _campaignPuzzle >= 12 ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle == 13)
+            { Input.ActionRelease("ps_r2"); if ((_frame - _campaignPuzzleAt) % 60 == 41) Tap("ps_square"); }
+            else Input.ActionPress("ps_r2");
+            if (!facing && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }
         // Returning north through the lever room uses the two-block stack, then a jump to the 512-high doorway.
@@ -2060,8 +2132,34 @@ public partial class FieldContracts : Node
             container |= value.AsGodotDictionary()["index"].AsInt32() >= 0x40;
         if (!container) return "";
         var storable = _view.Storable();
-        foreach (var entry in storable)
-            if (entry["kind"].AsString() == "weapons" && entry["record"].AsGodotDictionary()["equipped"].AsBool()) return "the weapon in hand could be stored";
+        foreach (var weapon in _view.Weapons())
+            if (_view.Holds(weapon) && storable.Any(entry => entry.RecursiveEqual(weapon["entry"].AsGodotDictionary())))
+                return "the weapon in hand could be stored";
+        var source = _view.Weapons().FirstOrDefault();
+        if (source != null)
+        {
+            // An unequipped inventory-slot weapon changes representation in the box. Its gems must accompany it.
+            var bladeRecord = source["blade"].AsGodotDictionary().Duplicate(true); bladeRecord["slot"] = 200;
+            var gripRecord = source["grip"].AsGodotDictionary().Duplicate(true); gripRecord["slot"] = 200;
+            var bladePart = new Godot.Collections.Dictionary { ["kind"] = "blades", ["record"] = bladeRecord };
+            var gripPart = new Godot.Collections.Dictionary { ["kind"] = "grips", ["record"] = gripRecord };
+            var spare = new Godot.Collections.Dictionary { ["kind"] = "weapons", ["record"] = new Godot.Collections.Dictionary {
+                ["blade"] = 200, ["grip"] = 200, ["name"] = "Container fixture", ["equipped"] = false,
+                ["gems"] = new Godot.Collections.Array { new Godot.Collections.Dictionary { ["id"] = 269 } } } };
+            _view.Equipment.Add(bladePart); _view.Equipment.Add(gripPart); _view.Equipment.Add(spare);
+            int boxCount = _view.Stored.Count;
+            _view.Store(spare);
+            if (_view.Equipment.Contains(spare) || _view.Equipment.Contains(bladePart) || _view.Equipment.Contains(gripPart)
+                || _view.Stored.Count != boxCount + 1) return "storing a slot weapon did not move all its parts";
+            var stored = _view.Stored[boxCount].AsGodotDictionary();
+            if (stored["record"].AsGodotDictionary().GetValueOrDefault("gems", new Godot.Collections.Array()).AsGodotArray().Count != 1)
+                return "storing a slot weapon lost its attached gem";
+            _view.Retrieve(stored);
+            var returned = _view.Weapons().First(w => w["entry"].AsGodotDictionary().RecursiveEqual(stored));
+            if (FieldView.GemsOf(returned).Count != 1 || FieldView.GemsOf(returned)[0].AsGodotDictionary()["id"].AsInt32() != 269)
+                return "retrieving a slot weapon lost its attached gem";
+            _view.Equipment.Remove(stored);
+        }
         int carried = _view.Equipment.Count;
         var blade = new Godot.Collections.Dictionary { ["kind"] = "blade", ["record"] = new Godot.Collections.Dictionary { ["id"] = 3, ["category"] = 2 } };
         _view.Equipment.Add(blade);
@@ -2874,7 +2972,7 @@ public partial class FieldContracts : Node
         }
         // Point the stick along the route to the soldier, relative to the camera: up is the camera's yaw.
         var route = _view.Path(ashley.Actor.Position, nearest.Actor.Position, _campaign ? 256 : FieldPlayer.StepHeight);
-        if (_campaign && route.Count == 0 && !nearest.Marked && _frame - _fightProgressAt > 600)
+        if (_campaign && route.Count == 0 && !nearest.Marked && (_view.Zone, _view.Map) != (13, 4) && _frame - _fightProgressAt > 600)
         {
             // An optional enemy on another platform need not be slain to use an open exit (room 9,13's wolf).
             // Its flags, HP and AI remain untouched while the test player retreats through the normal door path.
@@ -2887,6 +2985,8 @@ public partial class FieldContracts : Node
         var waypoint = route.Count > 0 ? route[0] : nearest.Actor.Position;
         float heading = ashley.Actor.FacingToward(waypoint), angle = (heading - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
+        if (_campaign && _frame - _fightProgressAt > 120 && Math.Abs(waypoint.Y - ashley.Actor.Position.Y) > FieldPlayer.StepHeight && _frame % 120 == 60)
+            Tap("ps_square");
     }
 
     /// <summary>

@@ -538,7 +538,7 @@ public sealed partial class FieldMenu : PanelContainer
         string kind = entry["kind"].AsString();
         if (kind == "weapons")
             foreach (var weapon in _view.Weapons())
-                if (weapon["entry"].AsGodotDictionary() == entry) return WeaponRow(weapon) with { Badge = _storing && _view.Holds(weapon) ? 2 : 0 };
+                if (weapon["entry"].AsGodotDictionary().RecursiveEqual(entry)) return WeaponRow(weapon) with { Badge = _storing && _view.Holds(weapon) ? 2 : 0 };
         var record = entry["record"].AsGodotDictionary();
         var shown = _view.BagEntry(new GDictionary { ["kind"] = kind switch { "blades" => "blade", "grips" => "grip", _ => kind }, ["record"] = record });
         // Ashley's own things carry their SET and EQP badges (footage: the container's BLADES).

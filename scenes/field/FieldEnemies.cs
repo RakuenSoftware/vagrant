@@ -401,7 +401,7 @@ public sealed partial class FieldBattle
         }
         // One that has left the battle lets its token go and its icons (0x800d82cc, 0x800d821c).
         foreach (var c in Combatants.Values)
-            if (c.Mind != null && c != Ashley && (c.Dead || !c.Hostile || !c.Actor.Visible))
+            if (c.Mind != null && c != Ashley && (c.Dead || !c.Hostile || !fighters.Contains(c)))
             {
                 ReleaseToken(c);
                 Show(c, 0);

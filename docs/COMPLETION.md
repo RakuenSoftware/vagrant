@@ -10,7 +10,7 @@ verify each against the current owner before treating that historical list as a 
 |---|---|---|
 | 385 historical individual room runs, with failing rooms rerun after fixes | Room loading and entry events under each test's starting state | These preceded the normal-play mode flag fix and omitted mode-specific actors; they need repeating in normal mode, as well as a continuous campaign |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan and saves in zone 13 | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan and the optional Catacombs ghost, and saves after each | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -83,6 +83,16 @@ verify each against the current owner before treating that historical list as a 
 - **Particle motion at the camera plane, fixed in this audit.** Motion-aligned sprites now derive their angle
   through the same limited GTE projection as their corners. Godot's unprojection divided by zero when a particle
   crossed the camera plane during the prologue fight.
+- **Vanishing enemy bodies, fixed in this audit.** A ghost's warp reached invisible drawing mode 8, then the
+  hidden-enemy filter removed it from body updates before it could relocate and reappear. Enabled actors mid-warp
+  now continue their body update, matching BATTLE.PRG 0x800a29e8/0x800a2a50; script-hidden enemies remain stopped.
+  The campaign contract checks that a warp completes within 240 active frames (excluding paused actions and menus); the earned ghost fight and a separate
+  Goodwin regression verify warping and script-hidden enemies respectively; the ghost check also passes rendered.
+- **Container equipment continuity, fixed in this audit.** The storage filter now resolves the held weapon through
+  the equipment owner for inventory-slot and nested weapons alike. Its older test only excluded the starting
+  weapon before it had an explicit equipped reference. Storing an unequipped slot weapon also preserves its gems
+  while converting it to the box's assembled record. The container contract checks the parts and attached gem
+  through storage and retrieval.
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
   establish the prerequisites, persistent state or routing of a complete playthrough.
 
