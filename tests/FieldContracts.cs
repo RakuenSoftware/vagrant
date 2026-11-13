@@ -1562,7 +1562,7 @@ public partial class FieldContracts : Node
         GD.Print($"FIELD: workshop: {taken} {made}");
         return "";
     }
-    private int _battleFrame, _press, _wonFrame;
+    private int _battleFrame, _press, _wonFrame, _sphereClock = -1;
     private int _masterySpell = -1, _masteryAt;
     private bool _masteryDone;
 
@@ -1662,6 +1662,13 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the attack sphere reads \"{readout.Replace("\n", " | ")}\"");
             if (readout.Split('\n').Length != 2 || !readout.Contains("HP ", StringComparison.Ordinal)) { Finish($"the attack sphere's readout is \"{readout}\""); return; }
         }
+        // The battle clock stands while the sphere is up (an action is under way, BATTLE.PRG mode 2).
+        if (battle.Paused)
+        {
+            if (_sphereClock < 0) _sphereClock = _view.BattleClock;
+            else if (_view.BattleClock != _sphereClock) { Finish("the battle clock ran while the sphere was up"); return; }
+        }
+        else _sphereClock = -1;
         // The sphere as it opens (its lists sliding in) and once they are in.
         if (battle.Paused && ++_sphereFrames is 4 or 30 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture(_sphereFrames == 4 ? "battle_sphere_open" : "battle_sphere");
         // A chain ability to grade: given as the first battle starts, so her presses are graded about each hit.

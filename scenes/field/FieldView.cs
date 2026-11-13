@@ -594,6 +594,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public void LoadRoom(int zone, int map)
     {
+        // A room's start puts the frame step back to 2 (BATTLE.PRG 0x800742c4).
+        FrameStep = 2;
         var clock = System.Diagnostics.Stopwatch.StartNew();
         try
         {
@@ -1606,6 +1608,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             case "weather.set":
                 _rain.Set(args["type"].AsInt32(), args["intensity"].AsInt32(), args["direction"].AsInt32(), args.GetValueOrDefault("strength", 1024).AsInt32(), args["frames"].AsInt32());
+                return Error.Ok;
+            case "frame.step":
+                FrameStep = args["blanks"].AsInt32();
                 return Error.Ok;
             case "pad.vibrate":
                 foreach (int pad in Input.GetConnectedJoypads())
@@ -5234,6 +5239,20 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         if (_messageFrames > 0 && --_messageFrames == 0) SystemBox.Text = "";
     }
+
+    /// <summary>
+    /// BATTLE.PRG's resident clocks, which no room change resets (0 as the game starts): the battle clock ([0x800E8490],
+    /// 0 to 719), the limb whose turn it is to mend ([0x800E8494]) and the act clock ([0x800E8498], 0 to 29). The
+    /// battle runs them (<see cref="FieldBattle"/>).
+    /// </summary>
+    public int BattleClock, Mending, ActClock;
+
+    /// <summary>
+    /// The vertical blanks a retail frame takes ([0x8005E24C]): 2 (30 frames a second) unless an event's operation F1
+    /// sets 4 (0x8007c36c takes only 2 or 4); an action's end and a room's start put it back to 2 (0x8006fc90,
+    /// 0x800742c4). The port draws at its own rate; the battle's clocks keep to this one.
+    /// </summary>
+    public int FrameStep = 2;
 
     /// <summary>Whether the HUD shows (58): scenes hide it and bring it back, and the setting carries from room to room.</summary>
     /// <summary>Whether the HUD is drawn (opcode 58). A new game starts with it off, as the field engine clears it; the opening scene turns it on.</summary>

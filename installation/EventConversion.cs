@@ -1270,8 +1270,10 @@ public sealed class EventConversion
                 Command("actor.look", new JsonObject { ["actor"] = Actor(pc + 1), ["target"] = Actor(pc + 3), ["speed"] = Byte(pc + 5) });
                 return null;
             case 0xf1:
-                // Sets the frame step (0x8005e24c; 2 or 4): at 4 the game draws at 15 Hz and moves twice as far each
-                // frame, so its pace is the same. The field keeps its own rate.
+                // Sets the frame step (0x8005e24c, through 0x8007c36c, which takes only 2 or 4): at 4 the game draws at
+                // 15 Hz and moves twice as far each frame, so its pace is the same. The field keeps its own rate; the
+                // battle's clocks keep to the step.
+                if (Byte(pc + 1) is 2 or 4) Command("frame.step", new JsonObject { ["blanks"] = Byte(pc + 1) });
                 return null;
             case 0x61:
                 // Sets the depth (bit 15 on, low 11 bits; 0x200 by default) past which room polygons sample the

@@ -676,7 +676,8 @@ public sealed partial class FieldBattle
         _player = player;
         StepNumbers();
         if (_stagger > 0) _stagger--;
-        if (_phase != Phase.Sphere) Recover();
+        // Opening the sphere (Circle with the weapon drawn, not paralysed) launches Ashley's action this frame.
+        Clocks(_phase == Phase.Free && Drawn && !Ashley.Has(Paralysis) && _pressed("ps_circle"));
         switch (_phase)
         {
             case Phase.Free:
@@ -719,7 +720,8 @@ public sealed partial class FieldBattle
         bool acting = _phase is Phase.Striking or Phase.Casting || _enemyCast != null || _enemyRelease != null;
         int hostile = 0;
         foreach (var c in Combatants.Values) if (c != Ashley && c.Hostile && !c.Dead) hostile++;
-        if (!acting && _wasActing) Ended();
+        // An action's end puts the frame step back to 2 (0x8006fc90).
+        if (!acting && _wasActing) { _view.FrameStep = 2; Ended(); }
         else if (!acting && hostile != _hostileCount) Replan(null);
         _wasActing = acting;
         if (!acting) _hostileCount = hostile;
@@ -3671,58 +3673,94 @@ public sealed partial class FieldBattle
         }
     }
 
-    /// <summary>The battle clock (BATTLE.PRG [0x800E8490], 0 to 719) and the limb whose turn it is to mend ([0x800E8494]).</summary>
-    private int _clock, _mending;
-
     /// <summary>
-    /// How far the battle clock runs a frame ([0x8005E24C]): the vertical blanks a frame takes, 2 in play (30 frames a
-    /// second; 4 only in room changes and one script operation, at 15).
+    /// The vertical blanks gone since the battle's clocks last ran: they run once a retail frame, which takes
+    /// <see cref="FieldView.FrameStep"/> blanks ([0x8005E24C]) where a frame of the port takes 2.
     /// </summary>
-    private const int ClockStep = 2;
+    private int _blanks;
+    /// <summary>The frames the sphere has been up after the one it opened on (the act clock, set to 0 as the action is launched, first runs on the second, see <see cref="Clocks"/>).</summary>
+    private int _sphereUp;
 
     /// <summary>
-    /// The battle clock's step for every fighter (BATTLE.PRG 0x80088554): every 240 the next limb's turn to mend comes;
+    /// Runs the battle's clocks for this frame as BATTLE.PRG's main loop does (0x8007a408 to 0x8007a4a0), by the
+    /// battle's mode as the frame begins: not on the frame Ashley opens her sphere (the launch at 0x80079d88 sets the
+    /// loop's skip, sp+32); in play (mode 1, [0x800F196C]) the battle clock (<see cref="Recover"/>, via 0x80088b6c);
+    /// while an action is under way (mode 2, from the sphere's opening through the action's end, 0x80072ec4) the act
+    /// clock instead (0x80088b8c), which only counts while the sphere is up ([0x800F18F0] 1 to 3; the sphere's first
+    /// frame after its opening still has 0 there).
+    /// </summary>
+    private void Clocks(bool opening)
+    {
+        bool acting = _phase is Phase.Striking or Phase.Casting || EnemyActing;
+        if (_phase != Phase.Sphere) _tick++;
+        if (_phase == Phase.Sphere) { if (++_sphereUp == 1) _view.ActClock = 0; }
+        else _sphereUp = 0;
+        _blanks += 2;
+        int step = _view.FrameStep;
+        if (_blanks < step) return;
+        _blanks = 0;
+        if (opening) return;
+        if (_phase == Phase.Sphere) { if (_sphereUp >= 2) ActClock(step); return; }
+        if (!acting) Recover(step);
+    }
+
+    /// <summary>
+    /// The act clock (BATTLE.PRG 0x80088b8c, [0x800E8498], 0 to 29, set to 0 as an action is launched, 0x80088ca0):
+    /// while Ashley holds her sphere open with status bit 3 (her crippled body) and the action is hers, not a trap's
+    /// (state +0x4c 0), her RISK rises 1 (to 100) each time it is 0; then it runs on by the frame's step.
+    /// </summary>
+    private void ActClock(int step)
+    {
+        if (Ashley != null && (Ashley.Status & 8) != 0 && _view.ActClock == 0 && Ashley.Risk < 100) Ashley.Risk++;
+        _view.ActClock = (_view.ActClock + step) % 30;
+    }
+
+    /// <summary>
+    /// The battle clock's step for every fighter (BATTLE.PRG 0x80088554), read before it runs on by the frame's
+    /// <paramref name="step"/> ([0x800E8490], 0 to 719; every 240 the next limb's turn to mend comes, [0x800E8494]):
     /// every 30, a fighter with hit points recovers: with its weapon drawn RISK falls 1 every 120, magic points rise 1
     /// and its weapon and shield each lose a PP every 180, and hit points (and the limb whose turn it is) rise 1 every
     /// 240; sheathed RISK falls 1 every 30 (every 120 with status bit 3, Ashley's crippled body), magic points rise every
     /// 60 and hit points every 120. Every 60 the status tick runs (<see cref="Tick"/>), and one at no hit points dies
-    /// (0x800889d4).
+    /// (0x800889d4). The clocks are BATTLE.PRG's own, 0 as it loads and never set again, so they run on from room to
+    /// room (<see cref="FieldView.BattleClock"/>).
     /// </summary>
-    private void Recover()
+    private void Recover(int step)
     {
         if (Ashley == null || Ashley.Dead) return;
-        _tick++;
-        _clock = (_clock + ClockStep) % 720;
-        if (_clock % 240 == 0) _mending = (_mending + 1) % 6;
-        if (_clock % 30 != 0) return;
+        int clock = _view.BattleClock, mending = _view.Mending;
         foreach (var c in new List<Combatant>(Combatants.Values))
         {
+            if (clock % 30 != 0) break;
             if (c.Dead || c.Cube) continue;
             if (c.Hp != 0)
             {
-                var limb = _mending < c.Limbs.Count ? c.Limbs[_mending] : null;
+                var limb = mending < c.Limbs.Count ? c.Limbs[mending] : null;
                 bool drawn = c == Ashley ? Drawn : c.Drawn;
                 if (drawn)
                 {
-                    if (_clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
-                    if (_clock % 180 == 0)
+                    if (clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
+                    if (clock % 180 == 0)
                     {
                         c.Restore(1);
                         c.Blade.Lose(1);
                         c.Shield.Lose(1);
                     }
-                    if (_clock % 240 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
+                    if (clock % 240 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
                 }
                 else
                 {
-                    if ((c.Status & 8) == 0 || _clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
-                    if (_clock % 60 == 0) c.Restore(1);
-                    if (_clock % 120 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
+                    if ((c.Status & 8) == 0 || clock % 120 == 0) c.Risk = Math.Max(0, c.Risk - 1);
+                    if (clock % 60 == 0) c.Restore(1);
+                    if (clock % 120 == 0) { c.Heal(1); if (limb != null) limb.Hp = Math.Min(limb.MaxHp, limb.Hp + 1); }
                 }
-                if (_clock % 60 == 0) Tick(c);
+                if (clock % 60 == 0) Tick(c);
             }
-            if (_clock % 60 == 0 && c.Hp == 0) Die(c);
+            if (clock % 60 == 0 && c.Hp == 0) Die(c);
         }
+        clock = (clock + step) % 720;
+        if (clock % 240 == 0) _view.Mending = (mending + 1) % 6;
+        _view.BattleClock = clock;
     }
 
     /// <summary>
