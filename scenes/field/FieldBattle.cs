@@ -836,6 +836,8 @@ public sealed partial class FieldBattle
         public bool Void;
         public int Hp, Mp, Risk, Strength, Intelligence, Agility, MaxHp, MaxMp, BladeDp, BladePp, Wear, ShieldPp;
         public int HpMode, MpMode, RiskMode, StrengthMode, IntelligenceMode, AgilityMode, MaxHpMode, MaxMpMode, BladeDpMode, BladePpMode, WearMode, ShieldPpMode;
+        /// <summary>Mode bits 16 and 17: a status effect's showing, 1 harmful, 2 helpful (set by the status handlers, read only by <see cref="Showing"/>).</summary>
+        public int ClassMode;
         /// <summary>The status bits it sets (+0x14) and clears (+0x18).</summary>
         public uint Set, Clear;
         /// <summary>
@@ -847,13 +849,30 @@ public sealed partial class FieldBattle
         public readonly int[] LimbHp = new int[6], LimbWear = new int[6];
 
         public bool Nothing => HpMode == 0 && MpMode == 0 && RiskMode == 0 && StrengthMode == 0 && IntelligenceMode == 0 && AgilityMode == 0 && MaxHpMode == 0
-            && MaxMpMode == 0 && BladeDpMode == 0 && BladePpMode == 0 && WearMode == 0 && ShieldPpMode == 0 && !Marked && Set == 0 && Clear == 0;
+            && MaxMpMode == 0 && ClassMode == 0 && BladeDpMode == 0 && BladePpMode == 0 && WearMode == 0 && ShieldPpMode == 0 && !Marked && Set == 0 && Clear == 0;
+
+        /// <summary>
+        /// Settles how the entry shows as the resolve ends (BATTLE.PRG 0x80085a34), a place excepted: a chance left at
+        /// 255 becomes 0; then, while it is still 6, an entry with no mode and no status set or cleared becomes 4 (a miss,
+        /// chance 0), and otherwise the first of mode fields 0 to 8 (hit points, magic points, RISK, strength,
+        /// intelligence, agility, the most hit and magic points, the status showing) that is not 0 gives 0 for 1, 5 for 2
+        /// and 1 for 3.
+        /// </summary>
+        public void Showing()
+        {
+            if (Void) return;
+            if (Chance == 255) Chance = 0;
+            if (Kind != 6) return;
+            if (Nothing) { Kind = 4; Chance = 0; return; }
+            foreach (int mode in new[] { HpMode, MpMode, RiskMode, StrengthMode, IntelligenceMode, AgilityMode, MaxHpMode, MaxMpMode, ClassMode })
+                if (mode != 0) { Kind = mode switch { 1 => 0, 2 => 5, _ => 1 }; return; }
+        }
 
         /// <summary>Clears what it holds but its fighter and limb (0x80085718), as for a crate that takes nothing.</summary>
         public void Reset()
         {
             Hp = Mp = Risk = Strength = Intelligence = Agility = MaxHp = MaxMp = BladeDp = BladePp = Wear = ShieldPp = 0;
-            HpMode = MpMode = RiskMode = StrengthMode = IntelligenceMode = AgilityMode = MaxHpMode = MaxMpMode = BladeDpMode = BladePpMode = WearMode = ShieldPpMode = 0;
+            HpMode = MpMode = RiskMode = StrengthMode = IntelligenceMode = AgilityMode = MaxHpMode = MaxMpMode = ClassMode = BladeDpMode = BladePpMode = WearMode = ShieldPpMode = 0;
             Set = Clear = 0;
             Marked = false;
             Array.Clear(LimbHp);
@@ -950,9 +969,7 @@ public sealed partial class FieldBattle
         foreach (var entry in r.Self != null ? new List<Outcome>(r.Targets) { r.Self } : r.Targets)
         {
             Settle(entry);
-            if (entry.Chance == 255) entry.Chance = 0;
-            if (entry.Kind != 4 && entry.Nothing) { entry.Kind = 4; entry.Chance = 0; }
-            else if (entry.Kind != 4) entry.Kind = entry.HpMode switch { 1 => 0, 2 => 5, 3 => 1, _ => entry.Kind };
+            entry.Showing();
         }
         if (live && caster != null) r.Paid = Pay(record, caster, apply: true);
         return r;
@@ -1129,19 +1146,24 @@ public sealed partial class FieldBattle
     /// the bit, if the target is not immune and has it not already (or the status clears itself, and so starts again),
     /// and the statuses it clears.
     /// </summary>
-    private void Afflict(Outcome target, int bit)
+    private bool Afflict(Outcome target, int bit)
     {
         var c = target.Who;
         var rule = _view.Content.Field.Status(bit);
-        if (c.Object || (c.Status & rule.BlockedBy) != 0) return;
-        target.Set |= rule.Own & ~c.Immunity & (~c.Status | rule.Clears);
-        target.Clear |= rule.Clears & c.Status;
+        if (c.Object || (c.Status & rule.BlockedBy) != 0) return false;
+        uint set = rule.Own & ~c.Immunity & (~c.Status | rule.Clears), clear = rule.Clears & c.Status;
+        target.Set |= set;
+        target.Clear |= clear;
+        return (set | clear) != 0;
     }
 
-    /// <summary>Clears a status on an entry (BATTLE.PRG 0x800810cc), if the target has it.</summary>
-    private void Cure(Outcome target, int bit)
+    /// <summary>Clears a status on an entry (BATTLE.PRG 0x800810cc), if the target has it; whether it did.</summary>
+    private bool Cure(Outcome target, int bit)
     {
-        if (!target.Who.Object) target.Clear |= _view.Content.Field.Status(bit).Own & target.Who.Status;
+        if (target.Who.Object) return false;
+        uint clear = _view.Content.Field.Status(bit).Own & target.Who.Status;
+        target.Clear |= clear;
+        return clear != 0;
     }
 
     /// <summary>
@@ -1164,18 +1186,23 @@ public sealed partial class FieldBattle
         switch (effect.Effect)
         {
             case >= 1 and <= 26:
-                Afflict(t, StatusBits[effect.Effect]);
+                // A status set or cleared marks the entry harmful (1) or helpful (2) in its mode bits 16 and 17 (each
+                // handler's own constant): lowering, slowing, silence, paralysis, poison, numbness and curse harm;
+                // raising, quickening and regeneration help; the ward, Analyze and the fusions and guards neither.
+                if (Afflict(t, StatusBits[effect.Effect]) && effect.Effect is not (12 or 14 or >= 19)) t.ClassMode = effect.Effect is >= 6 and <= 10 or 13 ? 2 : 1;
                 if (effect.Effect == 14 && live) who.Analyzed = true;
                 break;
             case 33 or 36 or 39:
                 if (r.Self != null) r.Self.Marked = true;
                 break;
-            case 27: Cure(t, 13); break;
-            case 28: Cure(t, 14); break;
-            case 29: Cure(t, 16); break;
-            case 30: Cure(t, 15); break;
+            case >= 27 and <= 30:
+                if (Cure(t, effect.Effect switch { 27 => 13, 28 => 14, 29 => 16, _ => 15 })) t.ClassMode = 2;
+                break;
             case 31: t.Clear |= who.Status & 0x1ffe1fe0; break;
-            case 32: t.Clear |= who.Status & 0xe000; break;
+            case 32:
+                t.Clear |= who.Status & 0xe000;
+                if ((who.Status & 0xe000) != 0) t.ClassMode = 2;
+                break;
             case 34:
                 Cure(t, 30);
                 t.HpMode = 1;
@@ -3646,14 +3673,26 @@ public sealed partial class FieldBattle
             _popups.Add((target.Actor.Position + new Vector3(0, -150, 0), value, 0));
             return;
         }
+        Popup(target.Actor.Node.GetParent(), target.Actor.Position + new Vector3(0, -150, 0), text, target == Ashley);
+    }
+
+    /// <summary>A popup's text (BATTLE.PRG's popup of kind 3, "Miss") at a point of the room.</summary>
+    private void Popup(Node parent, Vector3 at, string text, bool ashley)
+    {
         var label = new Label3D
         {
             Text = text, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, FontSize = 48, OutlineSize = 12,
-            Modulate = target == Ashley ? new Color(1, 0.5f, 0.5f) : Colors.White,
+            Modulate = ashley ? new Color(1, 0.5f, 0.5f) : Colors.White,
         };
-        target.Actor.Node.GetParent().AddChild(label);
-        label.GlobalPosition = EventActor.RetailSpace * (target.Actor.Position + new Vector3(0, -150, 0));
+        parent.AddChild(label);
+        label.GlobalPosition = EventActor.RetailSpace * at;
         _numbers.Add((label, 40));
+    }
+
+    /// <summary>An action that came to nothing on a place of the room, as Unlock's on a seal it does not break (0x80093b04: popup kind 3 at the place).</summary>
+    public void Missed(Vector3 at)
+    {
+        if (_view.Field?.Geometry is { } room) Popup(room, at, "Miss", false);
     }
 
     /// <summary>Ages the damage numbers by a frame, rising as they go; each lasts 40 frames.</summary>
@@ -3695,7 +3734,8 @@ public sealed partial class FieldBattle
     /// </summary>
     private void Clocks(bool opening)
     {
-        bool acting = _phase is Phase.Striking or Phase.Casting || EnemyActing;
+        // An item's or a room spell's effect (Eureka, Fixate) is an action under way as well (<see cref="HideHudFor"/>).
+        bool acting = _phase is Phase.Striking or Phase.Casting || EnemyActing || _castEffect != null && GodotObject.IsInstanceValid(_castEffect) && !_castEffect.Finished;
         if (_phase != Phase.Sphere) _tick++;
         if (_phase == Phase.Sphere) { if (++_sphereUp == 1) _view.ActClock = 0; }
         else _sphereUp = 0;

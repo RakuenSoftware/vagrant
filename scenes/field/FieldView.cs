@@ -4976,11 +4976,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>
     /// A kill by Ashley's own hand counts towards the arts of her weapon's category, once the story has reached flag
     /// 0x82 = 10, up to the kills its next art takes (BATTLE.PRG 0x80085500); the art is reclaimed after her action.
+    /// The row is her data's category byte (+0x25) mod 10 (0x80085640), so with no weapon (category 0) the kill counts
+    /// for row 0, the tenth category's.
     /// </summary>
     public void CountKill()
     {
-        if (Battle?.Ashley is not { } ashley || FlagValue(0x82) < 10 || ashley.Category <= 0) return;
-        int category = ashley.Category, row = category % 10, learned = ArtsLearned(category);
+        if (Battle?.Ashley is not { } ashley || FlagValue(0x82) < 10) return;
+        int row = ashley.Category % 10, category = row == 0 ? 10 : row, learned = ArtsLearned(category);
         if (learned >= 4) return;
         var thresholds = _content.Data("spells")["art_kills"].AsGodotArray()[row].AsGodotArray();
         if (ArtKills[row] < thresholds[learned].AsInt32()) ArtKills[row]++;
@@ -5029,7 +5031,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             int cost = action["cost"].AsInt32();
             if (seer.Mp < cost) return "Not enough MP.";
             seer.Mp -= cost;
-            SeeTraps(action.GetValueOrDefault("visual", 0).AsInt32(), ashley);
+            // Its effects are the action under way, as Fixate's are.
+            foreach (var effect in SeeTraps(action.GetValueOrDefault("visual", 0).AsInt32(), ashley)) Battle.HideHudFor(effect);
             confirmed?.Invoke();
             return "";
         }
@@ -5065,9 +5068,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Breaks a magic seal (lock 2 or 3) on the door or the chest facing Ashley, for the spell's magic points, with
-    /// resident sound 126 (BATTLE.PRG 0x8006ce70), when the roll on Ashley's risk allows (<see cref="FieldBattle.Unseals"/>);
-    /// else it fails as with no seal there.
+    /// Unlock on the door or the chest facing Ashley, for the spell's magic points (BATTLE.PRG 0x8006ce70, the effect's
+    /// callback on the place): a door (the room's 20-byte lock records, 0x8008e3b8) whose lock is 2 or 3, or a chest
+    /// (its 564-byte records, 0x8008e370) whose lock is 2 or 3 and that has not been opened (flag 0x3c0 + its index), is
+    /// unsealed when the roll on Ashley's RISK allows (0x8007f434, <see cref="FieldBattle.Unseals"/>): its lock becomes
+    /// 0 and resident sounds 63 and 64 play (0x80045988). Otherwise the place shows a miss (0x80093b04).
     /// </summary>
     private string Unseal(EventActor ashley, int cost)
     {
@@ -5076,25 +5081,36 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (caster.Has(FieldBattle.Silence)) return "Ashley cannot cast while silenced.";
         var (x, z, quadrant) = Front(ashley);
         GDictionary? seal = null;
+        bool breakable = false;
         foreach (var value in Document.GetValueOrDefault("locks", new GArray()).AsGodotArray())
         {
             var record = value.AsGodotDictionary();
             var tile = record["tile"].AsGodotArray();
-            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && record["lock"].AsInt32() is 2 or 3) seal = record;
+            if (tile[0].AsInt32() != x || tile[1].AsInt32() != z) continue;
+            seal = record;
+            breakable = record["lock"].AsInt32() is 2 or 3;
         }
         foreach (var value in Document.GetValueOrDefault("chests", new GArray()).AsGodotArray())
         {
             var chest = value.AsGodotDictionary();
             var tile = chest["tile"].AsGodotArray();
-            if (tile[0].AsInt32() == x && tile[1].AsInt32() == z && chest["lock"].AsInt32() is 2 or 3 && chest["facing"].AsInt32() / 1024 == quadrant) seal = chest;
+            if (tile[0].AsInt32() != x || tile[1].AsInt32() != z || chest["facing"].AsInt32() / 1024 != quadrant) continue;
+            seal = chest;
+            breakable = chest["lock"].AsInt32() is 2 or 3 && FlagValue(0x3c0 + chest["index"].AsInt32()) == 0;
         }
         if (seal == null) return "There is no magic seal here.";
         caster.Mp -= cost;
-        if (!Battle.Unseals(caster)) return "There is no magic seal here.";
-        // The seal is gone; whatever key the lock also names still holds it.
-        seal["lock"] = seal["key"].AsInt32() > 0 ? 1 : 0;
-        PlaySound("effect_126_p128", 127);
-        return "The magic seal was broken.";
+        if (!breakable || !Battle.Unseals(caster))
+        {
+            var place = new Vector3(x * 128 + 64, 0, z * 128 + 64);
+            place.Y = FloorAt(place) ?? 0;
+            Battle.Missed(place);
+            return "";
+        }
+        seal["lock"] = 0;
+        PlaySound("effect_63_p128", 127);
+        PlaySound("effect_64_p128", 127);
+        return "";
     }
     public readonly GArray Equipment = new();
     private bool _inventoryLoaded;

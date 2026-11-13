@@ -1428,6 +1428,20 @@ public partial class FieldContracts : Node
             return $"OPTIONS reads {Entry(4)} {Entry(30)}/{Entry(32)}, {Entry(6)} {Entry(34)}/{Entry(36)}";
         if ((_view.Options & 0xC0) != 0) return $"a new game's options word is 0x{_view.Options:x}";
         GD.Print($"FIELD: OPTIONS offers \"{Entry(4)}\" ({Entry(5).Replace("\n", " ")}) and \"{Entry(6)}\", {Entry(30)} or {Entry(32)}");
+        // How an entry shows (0x80085a34): the first of mode fields 0 to 8 that is set, the status showing (bits 16
+        // and 17) last; nothing at all is a miss.
+        var shown = new (System.Action<FieldBattle.Outcome> Set, int Kind)[]
+        {
+            (o => { o.MpMode = 2; o.ClassMode = 1; }, 5), (o => o.ClassMode = 1, 0), (o => o.ClassMode = 2, 5), (o => { o.RiskMode = 3; o.HpMode = 1; }, 0),
+            (o => o.BladeDpMode = 2, 6), (o => o.Set = 0x20, 6), (_ => { }, 4),
+        };
+        foreach (var (set, kind) in shown)
+        {
+            var entry = new FieldBattle.Outcome { Who = _view.Battle!.Ashley! };
+            set(entry);
+            entry.Showing();
+            if (entry.Kind != kind) return $"an entry showed as {entry.Kind}, not {kind}";
+        }
         if (_view.Battle is { } battle)
         {
             battle.MarkTrap(31, 31);
