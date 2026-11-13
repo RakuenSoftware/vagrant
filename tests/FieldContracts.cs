@@ -20,7 +20,7 @@ public partial class FieldContracts : Node
     /// <summary>With --near-enemy, Ashley is set down beside the room's first hostile character as she gets control.</summary>
     private bool _nearEnemy;
     /// <summary>A continuous New Game run using pad input, without the focused checks' state grants.</summary>
-    private bool _campaign;
+    private bool _campaign, _campaignBypassEnemies;
     private string _campaignSave = "", _campaignLoad = "";
     private (int Zone, int Map)? _campaignCheckpoint;
     private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt;
@@ -33,6 +33,10 @@ public partial class FieldContracts : Node
     private int _fightLastHp = -1, _fightStalls;
     private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount;
     private bool _repairAllCheck;
+    private bool _combineCheck;
+    private int _combineFrame;
+    private string _combineBefore = "";
+    private Godot.Collections.Dictionary? _combineFirst, _combineSecond, _combinePreview;
     private int _repairFrame, _repairDp, _repairPp, _repairWait;
     private Godot.Collections.Dictionary? _repairLoose, _repairAccessory, _repairStored, _repairShield, _repairArmour;
     private readonly Dictionary<string, Vector3> _campaignHiddenPositions = new();
@@ -135,6 +139,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
+            if (argument == "--workshop-combine") _combineCheck = true;
             if (argument == "--defeat") _defeat = true;
             if (argument == "--remember") _remember = true;
             if (argument == "--skip") _skip = true;
@@ -307,6 +312,7 @@ public partial class FieldContracts : Node
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
         if (_campaign) { StepCampaign(); return; }
         if (_repairAllCheck) { StepWorkshopRepair(); return; }
+        if (_combineCheck) { StepWorkshopCombine(); return; }
         if (_room != null) { StepRoom(); return; }
         if (_battleFrame != 0) { StepBattle(); return; }
         if (_controlFrame != 0) { StepControl(); return; }
@@ -333,6 +339,98 @@ public partial class FieldContracts : Node
 
     private int _controlFrame;
     private Vector3 _start, _startEye;
+
+    /// <summary>Combining must show a preview and preserve both inputs until YES, including NO, Cross and CANCEL COMBINE.</summary>
+    private void StepWorkshopCombine()
+    {
+        if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (!_view.Controlled) { if (_frame % 30 == 0) Tap("ps_circle"); return; }
+        if (!_view.Workshop) { Finish("combine check needs a workshop"); return; }
+        switch (++_combineFrame)
+        {
+            case 1:
+                _combineFirst = _view.Parts(null, includeSet: true)[0];
+                var record = _combineFirst["record"].AsGodotDictionary().Duplicate(true);
+                record["slot"] = 13;
+                _combineSecond = new Godot.Collections.Dictionary { ["kind"] = "blade", ["record"] = record };
+                _view.Equipment.Add(_combineSecond);
+                _combineBefore = Json.Stringify(_view.Equipment);
+                _view.Combine(_combineFirst!, _combineSecond!, out _combinePreview, commit: false);
+                if (_combinePreview == null) { Finish("combine fixture has no valid result"); return; }
+                Tap("ps_triangle");
+                break;
+            case 20:
+                if (!_view.MenuOpen) { _combineFrame--; if (_frame % 20 == 0) Tap("ps_triangle"); }
+                break;
+            case 30 or 80 or 190 or 210 or 230 or 250 or 290 or 330 or 370 or 410 or 430 or 450 or 470 or 510: Tap("ps_circle"); break;
+            case 60 or 110 or 125 or 140 or 155 or 170 or 390: Tap("ps_down"); break;
+            case 350: Tap("ps_cross"); break;
+            case 490: Tap("ps_up"); break;
+            case 270:
+            case 345:
+            case 385:
+                if (Json.Stringify(_view.Equipment) != _combineBefore || _view.Unarmed) { Finish("combining consumed or unequipped an input before YES"); return; }
+                if (!_view.ItemRows.Select(r => r.Name).SequenceEqual(new[] { "YES", "NO", "CANCEL COMBINE" }))
+                { Finish($"combining did not show the result confirmation: {string.Join(';', _view.ItemRows.Select(r => r.Name))}"); return; }
+                Capture("combine_preview_" + _combineFrame);
+                break;
+            case 530:
+                if (_view.Equipment.Contains(_combineFirst!) || _view.Equipment.Contains(_combineSecond!)
+                    || !_view.Unarmed || _view.Weapons().Count != 0
+                    || !_view.Equipment.Any(v => v.AsGodotDictionary().RecursiveEqual(_combinePreview!)))
+                { Finish($"YES did not consume both inputs, disassemble the equipped weapon and keep the previewed result: first {_view.Equipment.Contains(_combineFirst!)}, second {_view.Equipment.Contains(_combineSecond!)}, unarmed {_view.Unarmed}"); return; }
+                // A weapon found whole uses nested parts rather than inventory slots. Its gem and grip must
+                // return to the bag when that blade is combined, with no dismantling during preview.
+                var bladeEntry = _view.Parts(null)[0];
+                var gripEntry = _view.Equipment.Select(v => v.AsGodotDictionary()).First(e => e["kind"].AsString() == "grips");
+                _view.Assemble(bladeEntry, gripEntry);
+                var holder = _view.Weapons()[0];
+                holder["grip"].AsGodotDictionary()["gem_slots"] = 1;
+                var gem = new Godot.Collections.Dictionary { ["kind"] = "gem", ["record"] = new Godot.Collections.Dictionary { ["id"] = 269 } };
+                _view.Equipment.Add(gem); _view.Attach(holder, gem); _view.Equip(holder);
+                var nested = _view.Parts(null, includeSet: true).First(e => e.ContainsKey("assembly"));
+                var other = new Godot.Collections.Dictionary { ["kind"] = "blade", ["record"] = nested["record"].AsGodotDictionary().Duplicate(true) };
+                other["record"].AsGodotDictionary()["slot"] = 14;
+                _view.Equipment.Add(other);
+                string intact = Json.Stringify(_view.Equipment);
+                _view.Combine(nested, other, out var nestedPreview, commit: false);
+                if (nestedPreview == null || _view.Unarmed || Json.Stringify(_view.Equipment) != intact)
+                { Finish("preview dismantled a nested equipped weapon"); return; }
+                _view.Combine(nested, other, out var nestedMade);
+                if (!_view.Unarmed || _view.Weapons().Count != 0 || _view.Gems().Count != 1
+                    || _view.Equipment.Contains(holder["entry"]) || nestedMade == null || !nestedMade.RecursiveEqual(nestedPreview))
+                { Finish("combining a nested equipped blade lost its gem/grip or differed from preview"); return; }
+                foreach (var (kind, id) in new[] { ("shield", 127), ("armour", 159) })
+                {
+                    var kinds = _view.Content.Data("combining")[kind == "shield" ? "shields" : "armour"].AsGodotDictionary()["kinds"].AsGodotArray();
+                    var a = kinds[id - 126].AsGodotDictionary().Duplicate(true);
+                    a["id"] = id; a["material"] = 3; a["dp"] = a["max_dp"] = 1000; a["gem_slots"] = 1;
+                    var first = new Godot.Collections.Dictionary { ["kind"] = kind, ["record"] = a };
+                    var second = new Godot.Collections.Dictionary { ["kind"] = kind, ["record"] = a.Duplicate(true) };
+                    second["record"].AsGodotDictionary()["slot"] = 15;
+                    _view.Equipment.Add(first); _view.Equipment.Add(second); _view.Wear(a);
+                    int gems = _view.Gems().Count;
+                    if (kind == "shield")
+                    {
+                        var jewel = new Godot.Collections.Dictionary { ["kind"] = "gem", ["record"] = new Godot.Collections.Dictionary { ["id"] = 270 } };
+                        _view.Equipment.Add(jewel);
+                        _view.Attach(new Godot.Collections.Dictionary { ["entry"] = first, ["shield"] = true, ["name"] = "test" }, jewel);
+                    }
+                    string untouched = Json.Stringify(_view.Equipment);
+                    _view.Combine(first, second, out var shown, commit: false);
+                    if (shown == null || !_view.IsWorn(first) || Json.Stringify(_view.Equipment) != untouched)
+                    { Finish($"preview changed equipped {kind}"); return; }
+                    _view.Combine(first, second, out var made);
+                    if (_view.IsWorn(first) || _view.Equipment.Contains(first) || _view.Equipment.Contains(second)
+                        || made == null || !made.RecursiveEqual(shown) || _view.Gems().Count != gems + (kind == "shield" ? 1 : 0))
+                    { Finish($"combining equipped {kind} did not unequip, return gems and commit its preview"); return; }
+                }
+                GD.Print("FIELD: Combine preview, NO, Cross, CANCEL COMBINE and YES transaction, including an equipped weapon's disassembly, passed");
+                Finish("");
+                break;
+        }
+        if (_frame > 1800) Finish("combine menu did not settle");
+    }
 
     /// <summary>Repair's confirmation, cancellation and all-carried transaction through SETUP's pad controls.</summary>
     private void StepWorkshopRepair()
@@ -419,12 +517,17 @@ public partial class FieldContracts : Node
     /// <summary>Explores doors and fights through the normal pad path, preserving one New Game's earned state.</summary>
     private void StepCampaign()
     {
+        if (_frame == 1 && _campaignLoad.Length == 0 && (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1))
+        { Finish("campaign: New Game did not initialize retail's normal-play flags"); return; }
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         if (_capture.Length != 0 && _frame % 120 == 0) Capture($"campaign_frame_{_frame:d7}");
         if (_view.Rooms.Count != _campaignRooms)
         {
             _campaignRooms = _view.Rooms.Count;
             _campaignHiddenPositions.Clear();
+            _campaignBypassEnemies = false;
+            _fightTargetId = "";
+            _fightProgressAt = _frame;
             _campaignDoor = -1;
             _campaignPuzzle = 0;
             _campaignHallAt = 0;
@@ -449,13 +552,13 @@ public partial class FieldContracts : Node
                 }
                 else _campaignHiddenPositions.Remove(c.Actor.Id);
             if (_frame % 600 == 0)
-                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}"))}");
+                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}"))}");
         }
         if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
         // Recovery uses the earned inventory through ITEMS, USE and the normal targeting sphere. No HP or item
         // count is written by this driver. The starting Cure Roots are the first option, then any bulbs/tonics found.
-        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp / 4 || patient.Risk > 60))
-            foreach (int item in patient.Hp < patient.MaxHp / 4 ? new[] { 323, 324, 325 } : new[] { 331, 332, 333 })
+        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp / 2 || patient.Risk > 60))
+            foreach (int item in patient.Hp < patient.MaxHp / 2 ? new[] { 323, 324, 325 } : new[] { 331, 332, 333 })
                 if (_view.Items.GetValueOrDefault(item) > 0)
                 {
                     (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealItem, _campaignHealCount) = (1, _frame, _frame, item, _view.Items[item]);
@@ -512,7 +615,47 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
-        if (battle.HostileCount() > 0)
+        // The western branch of room 9,13 is reached from the southwest 256-high step: a running jump grabs
+        // the 640-high central platform, then Ashley can drop west to the wolf and the story route.
+        if ((_view.Zone, _view.Map) == (9, 13) && ashley.Actor.Position.X >= 768 && _campaignPuzzle < 5
+            && _campaignCheckpoint is { Zone: 9, Map: 9 }
+            && !battle.Combatants.Values.Any(c => c.Targetable && c.Actor.Position.X >= 768))
+        {
+            if (battle.Paused) { Tap("ps_cross"); return; }
+            if (battle.Busy) { Steer(Vector2.Zero); return; }
+            if (battle.Drawn) { Tap("ps_cross"); return; }
+            if (_campaignHallAt == 0) _campaignHallAt = _frame;
+            if (_frame - _campaignHallAt > 1800) { Finish($"campaign: western platform step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle <= 1 ? new Vector3(832, -256, 1600)
+                : _campaignPuzzle <= 3 ? new Vector3(832, -640, 1344) : new Vector3(576, -448, 1088);
+            if (_campaignPuzzle == 0 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && ashley.Actor.Position.Y <= -256)
+            { _campaignPuzzle = 1; _campaignPuzzleAt = _frame; }
+            if (_campaignPuzzle == 1)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt < 40) return;
+                _campaignPuzzle = 2; _campaignPuzzleAt = _frame;
+                point = new Vector3(832, -640, 1344);
+            }
+            if (_campaignPuzzle == 2 && ashley.Actor.Position.Y <= -640)
+            { _campaignPuzzle = 3; _campaignPuzzleAt = _frame; }
+            if (_campaignPuzzle == 3)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt < 40) return;
+                _campaignPuzzle = 4; point = new Vector3(576, -448, 1088);
+            }
+            if (_campaignPuzzle == 2 && _frame - _campaignPuzzleAt > 120 && ashley.Actor.Position.Y > -384)
+            { _campaignPuzzle = 0; _campaignPuzzleAt = _frame; return; }
+            var steps = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle == 2 && (_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square");
+            return;
+        }
+        if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
             // jumping platform; attacking his limbs through the barrier correctly fails the line-of-fire test.
@@ -560,9 +703,25 @@ public partial class FieldContracts : Node
             Fight(battle, ashley, _frame);
             return;
         }
+        // Room 9,12's three-high stack has no adjacent raised floor from which to lift its top block.
+        // Break one through the targeting sphere, then carry the two surviving blocks to the south ledge.
+        if ((_view.Zone, _view.Map) == (9, 12) && battle.HostileCount() == 0 && _view.Crates.Count(c => c.X == 0 && c.Z == 7) == 3)
+        {
+            if (battle.Paused) { Steer(Vector2.Zero); Tap("ps_circle"); return; }
+            if (battle.Busy) { Steer(Vector2.Zero); return; }
+            var point = new Vector3(192, 0, 960);
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 20)
+            { Steer(Vector2.Zero); if (_frame % 20 == 0) Tap("ps_circle"); return; }
+            var steps = _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            return;
+        }
         if (battle.Busy) { Steer(Vector2.Zero); return; }
         if (battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map))
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0)
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
@@ -634,6 +793,14 @@ public partial class FieldContracts : Node
                 if (zone == 0) zone = _view.Zone;
                 int cost = _campaignAttempts.GetValueOrDefault((_view.Zone, _view.Map, i)) * 1000 + _campaignVisits.GetValueOrDefault((zone, candidate["map"].AsInt32()));
                 if (_campaignCheckpoint is { } destination && zone == destination.Zone) cost += 20 * Math.Abs(candidate["map"].AsInt32() - destination.Map);
+                // A checkpoint in another zone needs the connecting route, rather than treating every local
+                // exit as equally useful and walking back to the prologue. This is the test player's route only.
+                if (_view.Zone == 9 && (_campaignCheckpoint is { Zone: 12 } || _campaignCheckpoint == null && _view.Flags[130] <= 8))
+                {
+                    int next = _view.Map switch { 0 => 16, 16 => 3, 3 => 4, 4 => 5, 5 => 6, 6 => 7,
+                        7 => _view.Flags[180] >= 2 ? 13 : 8, 8 => 10, 13 => 10, 10 => 11, 11 => 12, 12 => 17, _ => -1 };
+                    if (_view.Map == 17 ? zone != 12 : next >= 0 && (zone != 9 || candidate["map"].AsInt32() != next)) cost += 10000;
+                }
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }
             if (_campaignDoor < 0) { Finish($"campaign: no available door in {_view.Zone},{_view.Map}, story {_view.Flags[0x82]}"); return; }
@@ -659,6 +826,56 @@ public partial class FieldContracts : Node
             if (_campaignPuzzle == 1 && (_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square");
             return;
         }
+        // The south exit in room 9,10 is 512 units above the floor. Carry two of the north stack's blocks
+        // to its foot, then climb their 256-unit stack. Only pad input moves and places the blocks.
+        if (((_view.Zone, _view.Map, _campaignDoor) == (9, 10, 2) || (_view.Zone, _view.Map, _campaignDoor) == (9, 12, 1)) && _campaignPuzzle < 12)
+        {
+            bool south = _view.Map == 12;
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800)
+            { Finish($"campaign: south ledge puzzle step {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
+            var point = south ? _campaignPuzzle switch
+            {
+                0 or 1 or 5 or 6 => new Vector3(192, 0, 960),
+                3 or 8 => new Vector3(448, -128, 1600),
+                10 => new Vector3(448, -384, 1728), _ => new Vector3(448, -640, 1984),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(64, -256, 960), 1 => new Vector3(64, -256, 832),
+                3 or 8 => new Vector3(320, 0, 1472),
+                5 => new Vector3(192, 0, 704), 6 => new Vector3(192, 0, 704),
+                10 => new Vector3(320, -256, 1600), _ => new Vector3(320, -512, 1792),
+            };
+            if (_campaignPuzzle is 2 or 4 or 7 or 9)
+            {
+                Steer(Vector2.Zero);
+                int source = _view.Crates.Count(c => c.X == 0 && c.Z == (south ? 7 : 5));
+                int placed = _view.Crates.Count(c => c.X == (south ? 3 : 2) && c.Z == (south ? 13 : 12));
+                if ((_campaignPuzzle == 2 && source == (south ? 1 : 2)) || (_campaignPuzzle == 4 && placed == 1)
+                    || (_campaignPuzzle == 7 && source == (south ? 0 : 1)) || (_campaignPuzzle == 9 && placed == 2))
+                { _campaignPuzzle++; _campaignPuzzleAt = _frame; return; }
+                if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
+                return;
+            }
+            // Face the interaction tile before stopping; turning takes twelve field frames.
+            if (_campaignPuzzle == 6 || south && _campaignPuzzle == 1)
+            {
+                point = new Vector3(64, 0, south ? 960 : 704);
+                if (_frame - _campaignPuzzleAt >= 24)
+                { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (_frame - _campaignPuzzleAt > 1) { Steer(Vector2.Zero); return; }
+            }
+            var steps = _campaignPuzzle == 6 || south ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionPress("ps_r2");
+            if (_campaignPuzzle != 6 && !(south && _campaignPuzzle == 1) && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+            return;
+        }
         var tile = doors[_campaignDoor].AsGodotDictionary()["tile"].AsGodotArray();
         var goal = new Vector3(tile[0].AsInt32() * 128 + 64, ashley.Actor.Position.Y, tile[1].AsInt32() * 128 + 64);
         var route = _view.Path(ashley.Actor.Position, goal, _campaign ? 256 : FieldPlayer.StepHeight);
@@ -667,8 +884,9 @@ public partial class FieldContracts : Node
         float angle = (ashley.Actor.FacingToward(waypoint) - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
         // At a blocked edge, try the player's interaction and jump controls; never move the actor or set a flag.
-        if (_frame % 120 == 0) Tap("ps_cross");
-        if (_frame % 120 == 60) Tap("ps_square");
+        bool atDoor = new Vector2(goal.X - ashley.Actor.Position.X, goal.Z - ashley.Actor.Position.Z).Length() < 200;
+        if (_frame % (atDoor ? 20 : 120) == 0) Tap("ps_cross");
+        if (!atDoor && _frame % 120 == 60) Tap("ps_square");
     }
 
     /// <summary>
@@ -2060,7 +2278,11 @@ public partial class FieldContracts : Node
             _view.Equipment.Add(first);
             _view.Equipment.Add(second);
             int expected = table["results"].AsGodotArray()[1 * 96 + 2].AsInt32(), metal = table["materials"].AsGodotArray()[(metalA - 3) * 500 + 1 * 50 + (metalB - 3) * 10 + 1].AsInt32();
-            string fused = _view.Combine(first, second);
+            string before = Json.Stringify(_view.Equipment);
+            _view.Combine(first, second, out var preview, commit: false);
+            if (Json.Stringify(_view.Equipment) != before) return "previewing a combination changed the inventory";
+            string fused = _view.Combine(first, second, out var combined);
+            if (preview == null || combined == null || !preview.RecursiveEqual(combined)) return "the committed combination differs from its preview";
             var fusedBlade = _view.Parts(null).Find(part => part["record"].AsGodotDictionary()["id"].AsInt32() == expected && part["record"].AsGodotDictionary()["material"].AsInt32() == metal);
             if (expected != 0 && (fusedBlade == null || _view.Equipment.Contains(first) || _view.Equipment.Contains(second))) return $"combining failed: {fused}";
             if (fusedBlade != null && fusedBlade["record"].AsGodotDictionary()["max_dp"].AsInt32() != 80) return "a combined blade's DP is not the mean";
@@ -2487,6 +2709,15 @@ public partial class FieldContracts : Node
         }
         // Point the stick along the route to the soldier, relative to the camera: up is the camera's yaw.
         var route = _view.Path(ashley.Actor.Position, nearest.Actor.Position, _campaign ? 256 : FieldPlayer.StepHeight);
+        if (_campaign && route.Count == 0 && !nearest.Marked && _frame - _fightProgressAt > 600)
+        {
+            // An optional enemy on another platform need not be slain to use an open exit (room 9,13's wolf).
+            // Its flags, HP and AI remain untouched while the test player retreats through the normal door path.
+            GD.Print($"CAMPAIGN: leaving unreachable optional {nearest.Name} alive in {_view.Zone},{_view.Map}");
+            _campaignBypassEnemies = true;
+            Steer(Vector2.Zero);
+            return;
+        }
         while (route.Count > 1 && new Vector2(route[0].X - ashley.Actor.Position.X, route[0].Z - ashley.Actor.Position.Z).Length() < 24) route.RemoveAt(0);
         var waypoint = route.Count > 0 ? route[0] : nearest.Actor.Position;
         float heading = ashley.Actor.FacingToward(waypoint), angle = (heading - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;

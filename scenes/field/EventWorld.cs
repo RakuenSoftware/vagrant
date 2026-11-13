@@ -35,6 +35,9 @@ public sealed class EventWorld : FlowStateSchema<EventWorld, EventCommand>, IFlo
 
     public EventWorld()
     {
+        // TITLE.PRG 0x8007137c clears game data, then 0x80071254 initializes these two flags to one
+        // (0x8007130c). Flag 1 selects normal-play room actors, including the first Minotaur.
+        Flags[1] = Flags[0x11C] = 1;
         IntegerSequence("flags", _ => FlagCount, (world, index) => world.Flags[index], (world, index, value) => world.Flags[index] = (int)value);
         for (int index = 0; index < FlagCount; index++) IntegerElement($"flags/{index}", "flags", index);
         IntegerSequence("loops", _ => 256, (world, index) => world.Loops[index], (world, index, value) => world.Loops[index] = (int)value);

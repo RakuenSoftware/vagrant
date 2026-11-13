@@ -3657,7 +3657,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
         Crate? target = null;
         foreach (var crate in _crates)
-            if (!crate.Carried && crate.X == front.X && crate.Z == front.Z && (target == null || crate.Bottom < target.Bottom)) target = crate;
+            if (!crate.Carried && !crate.Broken && !crate.Gone && float.IsNaN(crate.FallTo)
+                && crate.X == front.X && crate.Z == front.Z && (target == null || crate.Bottom < target.Bottom)) target = crate;
         if (target == null || target.Bottom < ashley.Position.Y - 128 || target.Bottom > ashley.Position.Y + 64) return false;
         int lift = (int)((ashley.Position.Y - target.Bottom) / 64) + 1;
         if (target.Kind >= 4)
@@ -4198,7 +4199,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             return;
         }
         // Cross with the weapon sheathed acts on what is in front of Ashley.
-        if (_presses.Contains("ps_cross") && Battle is { Drawn: false, Busy: false } && !_control.Busy) { _presses.Remove("ps_cross"); Interact(player); }
+        if (_presses.Contains("ps_cross") && Battle is { Drawn: false, Busy: false } && !_control.Busy)
+        {
+            _presses.Remove("ps_cross"); Interact(player);
+            if (!Controlled || _pendingChain.Length != 0) { _presses.Clear(); return; }
+        }
         if (Battle is { } battle)
         {
             battle.Step(_control, button => !_control.Busy && _presses.Contains(button));
@@ -4280,7 +4285,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (Battle?.Ashley is not { } ashley) return;
         Battle.EquipWeapon(ashley, weapon["blade"].AsGodotDictionary(), weapon["grip"].AsGodotDictionary(), weapon.ContainsKey("entry") ? GemsOf(weapon) : null);
         // Taking up a two-handed weapon sets the shield aside.
-        if (TwoHanded && EquippedArmour.Remove(-3)) { FieldBattle.EquipArmour(ashley, -3, new GDictionary()); Arm(ashley, "", shield: true); }
+        if (TwoHanded) TakeOff(-3);
         if (_control != null && Battle.Drawn) _control.Set = ashley.BattleSet;
         ashley.OwnWeapon = weapon["blade"].AsGodotDictionary().GetValueOrDefault("asset", "").AsString();
         Arm(ashley, ashley.OwnWeapon);
@@ -4323,6 +4328,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (limb == -3) { Arm(ashley, record.GetValueOrDefault("asset", "").AsString(), shield: true); Battle.ShowWeapons(); }
         }
         return $"Ashley put on the {ItemName(id)}.";
+    }
+
+    /// <summary>Sets aside the armour worn on a limb, updating battle and the held shield together.</summary>
+    public void TakeOff(int limb)
+    {
+        if (!EquippedArmour.Remove(limb) || Battle?.Ashley is not { } ashley) return;
+        FieldBattle.EquipArmour(ashley, limb, new GDictionary());
+        if (limb == -3) { Arm(ashley, "", shield: true); Battle.ShowWeapons(); }
     }
 
     /// <summary>The room's own record in its area map, or null.</summary>
@@ -4389,7 +4402,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// The loose blades Ashley carries, or with a blade picked, the loose grips that fit it: each the equipment entry.
     /// A carried weapon's own parts are not loose.
     /// </summary>
-    public List<GDictionary> Parts(GDictionary? blade)
+    public List<GDictionary> Parts(GDictionary? blade, bool includeSet = false)
     {
         var used = SetParts();
         int family = blade == null ? 0 : GripFamily(blade["record"].AsGodotDictionary()["category"].AsInt32());
@@ -4399,9 +4412,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             var entry = value.AsGodotDictionary();
             string kind = entry["kind"].AsString();
             var record = entry["record"].AsGodotDictionary();
-            if (kind is "blades" or "grips" && used.Contains((kind, record.GetValueOrDefault("slot", 0).AsInt32()))) continue;
+            if (!includeSet && (kind is "blades" or "grips") && used.Contains((kind, record.GetValueOrDefault("slot", 0).AsInt32()))) continue;
             if (blade == null ? kind is "blade" or "blades" : kind is "grip" or "grips" && record["category"].AsInt32() == family) list.Add(entry);
         }
+        if (includeSet && blade == null)
+            foreach (var weapon in Weapons())
+                if (weapon["entry"].AsGodotDictionary()["kind"].AsString() == "weapon")
+                    list.Add(new GDictionary { ["kind"] = "blade", ["record"] = weapon["blade"], ["assembly"] = weapon });
         return list;
     }
 
@@ -4414,8 +4431,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// DP (and a blade's PP) the mean of the two, and class and affinity values mixed (a shield's or armour's types
     /// too). A blade or shield is drawn in its material's palette. The two are used up.
     /// </summary>
-    public string Combine(GDictionary first, GDictionary second)
+    public string Combine(GDictionary first, GDictionary second, out GDictionary? result, bool commit = true)
     {
+        result = null;
         if (!_content.Has("combining")) return "Nothing can be combined in this installation.";
         var table = _content.Data("combining");
         var a = first["record"].AsGodotDictionary();
@@ -4455,6 +4473,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var kind = kinds[Math.Clamp(blades ? id : id - 126, 0, kinds.Count - 1)].AsGodotDictionary();
         var bonus = table["material_stats"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsGodotArray();
         var made = (GDictionary)a.Duplicate(true);
+        made.Remove("gems");
         made["id"] = id;
         made["material"] = material;
         foreach (string key in blades ? new[] { "model", "category", "cost", "cost_kind", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
@@ -4481,9 +4500,29 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             int palette = table["palettes"].AsGodotArray()[Math.Clamp(material, 0, 7)].AsInt32();
             made["asset"] = Int(made, "model") > 0 && _content.Has($"weapon_{Int(made, "model"):X2}_{palette}") ? $"weapon_{Int(made, "model"):X2}_{palette}" : "";
         }
-        Equipment.Remove(first);
-        Equipment.Remove(second);
-        Equipment.Add(new GDictionary { ["kind"] = blades ? "blade" : first["kind"], ["record"] = made });
+        result = new GDictionary { ["kind"] = blades ? "blade" : first["kind"], ["record"] = made };
+        if (commit)
+        {
+            foreach (var input in new[] { first, second })
+            {
+                var record = input["record"].AsGodotDictionary();
+                if (input.ContainsKey("assembly")) Disassemble(input["assembly"].AsGodotDictionary(), input);
+                else if (input["kind"].AsString() == "blades")
+                {
+                    var assembled = Weapons().Find(weapon => weapon["blade"].AsGodotDictionary().RecursiveEqual(record));
+                    if (assembled != null) Disassemble(assembled);
+                }
+                else if (input["kind"].AsString() is "armour" or "shield")
+                {
+                    foreach (int limb in new List<int>(EquippedArmour.Keys))
+                        if (EquippedArmour[limb].RecursiveEqual(record)) TakeOff(limb);
+                    var holder = new GDictionary { ["entry"] = input, ["shield"] = true, ["name"] = EquipmentName(input) };
+                    while (GemsOf(holder).Count > 0) Detach(holder);
+                }
+                Equipment.Remove(input);
+            }
+            Equipment.Add(result);
+        }
         return $"The {ItemName(Int(a, "id"))} and the {ItemName(Int(b, "id"))} made a {ItemName(id)}.";
     }
 
@@ -4748,15 +4787,16 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
     }
 
-    public string Disassemble(GDictionary weapon)
+    public string Disassemble(GDictionary weapon, GDictionary? detachedBlade = null)
     {
         var entry = weapon["entry"].AsGodotDictionary();
+        while (GemsOf(weapon).Count > 0) Detach(weapon);
         if (Holds(weapon)) Unequip();
         Equipment.Remove(entry);
         // An inventory weapon's parts stay where they are, now loose; one found whole leaves its parts behind.
         if (entry["kind"].AsString() == "weapon")
         {
-            Equipment.Add(new GDictionary { ["kind"] = "blade", ["record"] = weapon["blade"] });
+            Equipment.Add(detachedBlade ?? new GDictionary { ["kind"] = "blade", ["record"] = weapon["blade"] });
             Equipment.Add(new GDictionary { ["kind"] = "grip", ["record"] = weapon["grip"] });
         }
         return $"The {weapon["name"]} was taken apart.";
@@ -5462,15 +5502,26 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public void Interact(EventActor ashley)
     {
         var (x, z, quadrant) = Front(ashley);
+        // BATTLE.PRG 0x80074860 tests type-4 events against the tile ahead before doors and chests.
+        CheckConditions(0x04, (x, z));
+        if (!Controlled || _pendingChain.Length != 0) return;
         if (MoveCrate(ashley, (x, z, quadrant))) return;
         foreach (var value in Document.GetValueOrDefault("locks", new GArray()).AsGodotArray())
         {
             var record = value.AsGodotDictionary();
             var tile = record["tile"].AsGodotArray();
-            if (tile[0].AsInt32() != x || tile[1].AsInt32() != z || record.GetValueOrDefault("opened", false).AsBool()) continue;
-            if (!Unlock(record, true, out string message)) { Message(message); return; }
+            int tx = tile[0].AsInt32(), tz = tile[1].AsInt32(), span = record["kind"].AsInt32();
+            var second = span switch { 4 => (tx, tz - 1), 5 => (tx + 1, tz), 6 => (tx, tz + 1), 7 => (tx - 1, tz), _ => (tx, tz) };
+            if ((tx, tz) != (x, z) && second != (x, z) || record.GetValueOrDefault("opened", false).AsBool()) continue;
+            if (!Unlock(record, true, out string message))
+            {
+                Message(message);
+                PlaySound("effect_101_p128", 127); PlaySound("effect_102_p128", 127);
+                return;
+            }
             if (message.Length > 0) Message(message);
             record["lock"] = 0;
+            PlaySound("effect_29_p128", 127); PlaySound("effect_30_p128", 127);
             // Lock 0 means unlocked, not physically open (0x80073b9c). Byte 9 names a room animation,
             // not a geometry group (0x8008bf98); collision changes after that animation ends (0x8008c200).
             var locks = Document["locks"].AsGodotArray();
@@ -5773,7 +5824,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// event whose tests all hold: one of the room's own, or an event file. Type 0x20 is tested every frame of play,
     /// 0x08 when an enemy falls, 0x10 when the puzzle timer runs out.
     /// </summary>
-    private void CheckConditions(int type)
+    private void CheckConditions(int type, (int X, int Z)? interaction = null)
     {
         if (!Controlled || _pendingChain.Length != 0 || Battle?.GameOver == true) return;
         foreach (var value in Document.GetValueOrDefault("conditions", new GArray()).AsGodotArray())
@@ -5784,7 +5835,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             foreach (var test in record["tests"].AsGodotArray())
             {
                 var entry = test.AsGodotDictionary();
-                if (Condition(entry["op"].AsInt32(), entry["bytes"].AsGodotArray()) == entry["negate"].AsBool()) { holds = false; break; }
+                if (Condition(entry["op"].AsInt32(), entry["bytes"].AsGodotArray(), interaction) == entry["negate"].AsBool()) { holds = false; break; }
             }
             if (!holds) continue;
             int id = record["event"].AsInt32();
@@ -5806,7 +5857,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </list>
     /// Other tests do not hold yet.
     /// </summary>
-    private bool Condition(int op, GArray bytes)
+    private bool Condition(int op, GArray bytes, (int X, int Z)? interaction)
     {
         int B(int i) => bytes[i].AsInt32();
         int U16(int i) => B(i) | B(i + 1) << 8;
@@ -5839,6 +5890,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 if (flag != 0) { Store(flag, percent); return true; }
                 return percent != 0;
             }
+            // 0x800bf258 requires the interaction-position argument, then compares its x/z bytes.
+            case 8: return interaction == (B(0), B(1));
             case 9: return _control != null && !_control.Moving && Battle is not { Busy: true };
             case 16: return Battle != null && Battle.Combatants.TryGetValue(Reference(U16(0)), out var marked) && marked.Marked;
             default: return false;

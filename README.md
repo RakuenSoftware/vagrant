@@ -42,6 +42,8 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # SETUP's Repair: YES/NO, Cross cancellation, all carried equipment, PP cost, accessories and storage.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-repair
+# COMBINE's preview/cancellation/confirmation and equipped/nested parts, shields and armour transactions.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-combine
 # Continuous New Game exploration using pad controls and earned state; this driver is still being extended.
 # An optional --campaign-checkpoint=ZONE,MAP guides the route and stops at that checkpoint, not a full-campaign verdict.
 # --campaign-save=/tmp/checkpoint.json exports the earned state there; --campaign-load=PATH resumes it.

@@ -622,8 +622,10 @@ A room's event conditions start events during play. They are in the MPD section 
   - 4 an actor present;
   - 5 living characters of a class (4 is hostile), and 7 an actor's hit-point percentage. Either can instead store its value in a flag, and then holds;
   - 9 Ashley standing still;
+  - 8 the tile in front of Ashley on interaction (only with an interaction-position argument, BATTLE.PRG 0x800bf258);
   - 16 an actor marked by its room record (byte 0x24).
 - **When they are tested.** Type 0x20 is tested every frame of play, 0x08 when an enemy falls, and 0x10 when the puzzle timer runs out.
+- **Cross.** Type 0x04 is tested against the tile in front of Ashley before doors and chests (0x80074860), and an event that starts takes control before that frame's remaining movement.
 - **MAP003.**
   - Each soldier's fall plays a local event (with flags 40 and 41 as guards), and both falling plays a third.
   - With no hostile character left and Ashley still, EVENT 0003 plays. It heals her, sheathes her weapon and walks her to zone 4, room 0.

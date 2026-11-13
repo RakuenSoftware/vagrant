@@ -287,11 +287,12 @@ public sealed partial class ItemMenu : RetailScreen
     /// or things with their icons from x 169 (<paramref name="icons"/>), the pointer at the chosen one (footage:
     /// SETUP's six commands; SETUP and ATTACH GEMS over WEAPONS and SHIELDS; "ATTACH: Weapon" over the weapons).
     /// </summary>
-    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons, int rowTop = -1, string caution = "")
+    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons, int rowTop = -1, string caution = "", Stats? stats = null)
     {
         if (_mode != Mode.Setup) Enter(Mode.Setup);
         (_headers, _rows, _chosen, _browsing, _iconRows) = (headers, rows, chosen, false, icons);
         (_setupRowTop, _setupCaution) = (rowTop, caution);
+        _stats = stats;
         if (_chosen < _first) _first = Math.Max(0, _chosen);
         if (_chosen >= _first + 8) _first = _chosen - 7;
         if (_first > Math.Max(0, rows.Count - 8)) _first = Math.Max(0, rows.Count - 8);
@@ -846,6 +847,7 @@ public sealed partial class ItemMenu : RetailScreen
         }
         else if (_mode == Mode.Setup)
         {
+            if (_stats is { } stats) { Side(0); DrawStats(stats, unit, (text, x, y, right) => Text(text, x, y, right), Bar); }
             for (int h = 0; h < _headers.Count; h++)
             {
                 Bar(180 + slide, 18 + 16 * h, 140, MenuList.HeaderLight, MenuList.HeaderDark);

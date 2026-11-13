@@ -8,9 +8,9 @@ verify each against the current owner before treating that historical list as a 
 
 | Check | What it establishes | What remains unverified |
 |---|---|---|
-| 385 individual room runs, with failing rooms rerun after fixes | Room loading and entry events complete under each test's starting state | One continuous campaign with earned keys, story flags, inventory, puzzles and boss outcomes |
+| 385 historical individual room runs, with failing rooms rerun after fixes | Room loading and entry events under each test's starting state | These preceded the normal-play mode flag fix and omitted mode-specific actors; they need repeating in normal mode, as well as a continuous campaign |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Fresh New Game campaign checkpoint | Eighteen room entries through the prologue, the Wine Cellar block puzzle, Goodwin and the following Silver Wolf/Bat encounter, using pad controls and earned state; that state is exported through the real save serializer, then resumes through the closed door, Hall of Struggle crate barrier and bowman to room 9,8 | The Minotaur and remaining campaign, workshop parity and save-point menu coverage along the route |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Wine Cellar and Goodwin; route verification continues | The first Minotaur and remaining normal-mode campaign, workshop assembly/naming parity and save-point menu coverage |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -32,8 +32,24 @@ verify each against the current owner before treating that historical list as a 
   equipment unchanged. MENUC 0x8010740c deducts one PP per hundred DP restored, clamps PP at zero, excludes
   accessories and storage, and does not apply the combining-material mask. Headless and rendered checks cover
   equipped and spare equipment, shields, armour, Iron at Work of Art, cancellation and the completion screen.
-- **Workshop assembly and combination remain incomplete.** Those paths still use text panels; executing their
-  underlying operations does not establish retail layout, animation, confirmation or navigation parity.
+- **Workshop Combine, improved in this audit.** SETUP now offers BLADE, SHIELD and ARMOR, component lists with
+  material refusals and SET/EQP badges, a result and stat preview, and YES/NO/CANCEL COMBINE. Preview never changes
+  inventory or equipment; the same owner computes and commits the result. The first selection is excluded from
+  the second list by record identity/content rather than its temporary C# wrapper. Only YES dismantles an assembled
+  weapon or unequips worn armour, returning gems and preserving grips. Headless and rendered checks cover cancellation
+  and confirmation, with transaction checks for inventory-slot and nested weapons, shields and armour. Exact retail
+  animation and every preview layout still need comparison.
+- **Workshop assembly and naming remain incomplete.** Assembly still uses a text panel and naming a LineEdit;
+  their native component workbench, confirmation and controller keyboard remain to be finished.
+- **Normal-play mode flags, fixed in this audit.** Fresh event worlds now initialize flags 1 and 0x11c to one,
+  matching TITLE.PRG 0x8007137c/0x80071254. Leaving flag 1 at zero excluded normal-play-only room actors, including
+  the first Minotaur. Earlier campaign checkpoints and room sweeps cannot establish normal-mode encounter coverage.
+- **Interaction events, fixed in this audit.** Cross now tests type-4 room conditions before doors and chests.
+  Condition 8 compares the interaction tile, as BATTLE.PRG 0x80074860/0x800bf258 do. Previously these scripted gates
+  never responded. An interaction that starts an event also stops that frame's player movement.
+- **Destroyed blocks remaining interactive, fixed in this audit.** The block lookup now excludes destroyed,
+  collapsing and falling records. A real route through room 9,12 previously picked an invisible destroyed block
+  instead of the survivor; breaking, lifting, stacking and leaving through room 9,17 now passes through pad controls.
 - **Climbing probe, fixed in this audit.** With two puzzle blocks stacked in the Wine Cellar, the body collision
   could stop Ashley before the ground climbing probe reached the stack. The ground solver now probes the proposed
   movement position, as retail's 0x800a7818 does. The campaign route can pick up, stack and climb those blocks and
