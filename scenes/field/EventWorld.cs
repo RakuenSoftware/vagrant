@@ -46,9 +46,18 @@ public sealed class EventWorld : FlowStateSchema<EventWorld, EventCommand>, IFlo
         ReadOnlyInteger("skip", world => world.Skip);
     }
 
-    /// <summary>Clears what a new script starts without: the switch, the loop counters and any skip. The flags carry on.</summary>
+    /// <summary>Room loading clears the room variables; a disk resume preserves them (0x800be98c, 0x800beb9c).</summary>
+    public void BeginRoom(bool resume)
+    {
+        Flags[0xA9] = 0;
+        if (!resume) Array.Clear(Flags, 0x20, 0x60);
+    }
+
+    /// <summary>Clears a new script's variables 0x10..0x1f and 0xa8 (0x800bf6dc/0x800bf7dc), switch, loops and skip.</summary>
     public void BeginScript()
     {
+        Array.Clear(Flags, 0x10, 0x10);
+        Flags[0xA8] = 0;
         Switch = 0;
         Array.Clear(Loops);
         Skip = -1;

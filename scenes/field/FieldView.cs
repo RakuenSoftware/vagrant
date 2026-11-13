@@ -594,14 +594,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         Gameplay.Distance = Gameplay.TargetDistance = save["distance"].AsSingle();
         var tile = save["tile"].AsGodotArray();
         _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), save["facing"].AsSingle());
-        LoadRoom(save["zone"].AsInt32(), save["map"].AsInt32());
+        LoadRoom(save["zone"].AsInt32(), save["map"].AsInt32(), resume: true);
     }
 
     /// <summary>
     /// Presents a room (zone, map index) and starts its event. Anything the previous room's events created is
     /// released; the music, the screen fade and the event clock carry over, as they do on the retail transition.
     /// </summary>
-    public void LoadRoom(int zone, int map)
+    public void LoadRoom(int zone, int map, bool resume = false)
     {
         // A room's start puts the frame step back to 2 (BATTLE.PRG 0x800742c4).
         FrameStep = 2;
@@ -616,6 +616,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 _events = null;
                 return;
             }
+            _world.BeginRoom(resume);
             if (Field != null)
             {
                 RememberEnemies();

@@ -44,6 +44,8 @@ public partial class SaveResumeContracts : Node
                 (_dp, _pp, _hp, _mp, _strength, _maxHp, _maxMp) = (ashley.Blade.Dp, ashley.Blade.Pp, ashley.Hp, ashley.Mp, ashley.Strength, ashley.MaxHp, ashley.MaxMp);
                 _equipment = _view.Equipment.Count;
                 _view.Flags[700] = 37;
+                _view.Flags[60] = 9;
+                _view.Flags[126] = 23;
                 _view.Options = 0xc0;
                 _view.Visited.Add((24, 5));
                 _view.StoredItems[1] = 3;
@@ -69,6 +71,8 @@ public partial class SaveResumeContracts : Node
                 throw new InvalidOperationException($"phase {_phase}: HP/MP/STR/max HP/max MP {_hp}/{_mp}/{_strength}/{_maxHp}/{_maxMp} became {ashley.Hp}/{ashley.Mp}/{ashley.Strength}/{ashley.MaxHp}/{ashley.MaxMp}");
             if (_view.Equipment.Count != _equipment || _view.StoredItems.GetValueOrDefault(1) != 3 || _view.Flags[700] != 37 || _view.Options != 0xc0 || !_view.Visited.Contains((24, 5)))
                 throw new InvalidOperationException($"phase {_phase}: inventory, story, map or options changed");
+            if (_view.Flags[60] != (_phase == 1 ? 9 : 0) || _view.Flags[126] != (_phase == 1 ? 23 : 0))
+                throw new InvalidOperationException($"phase {_phase}: room variables were not preserved on resume and cleared on crossing a room");
             if (_phase == 1)
             {
                 // Later wear must update the carried weapon too, after JSON has broken object identity.
@@ -80,7 +84,7 @@ public partial class SaveResumeContracts : Node
                 _view.ProcessMode = ProcessModeEnum.Disabled;
                 return;
             }
-            GD.Print("SAVE_RESUME_CONTRACTS_OK: weapon wear/PP, permanent stats, HP/MP, inventory, storage, story flags, map and options survive disk resume and a room change");
+            GD.Print("SAVE_RESUME_CONTRACTS_OK: weapon wear/PP, permanent stats, HP/MP, inventory, storage, story flags, map and options survive disk resume; room variables reset only at a room change");
             FieldView.ReleaseSaves();
             GetTree().Quit();
         }

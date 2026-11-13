@@ -27,7 +27,7 @@ public partial class FieldContracts : Node
     private int _campaignPuzzle, _campaignPuzzleAt, _campaignHallAt;
     private string _campaignTargetText = "";
     private int _campaignCubePicks, _campaignWaitForEnemyUntil, _emptyLimbPicks, _fightCloseUntil;
-    private bool _fightWasPaused, _fightNextPart;
+    private bool _fightWasPaused, _fightNextPart, _fightLinked;
     private string _fightPreferredPart = "", _fightTargetId = "";
     private int _fightPartSearch, _fightProgressAt;
     private int _fightLastHp = -1, _fightStalls;
@@ -636,7 +636,8 @@ public partial class FieldContracts : Node
         {
             // A room script may hide a live enemy (Sackheim during Goodwin's encounter). Its AI must stop too.
             foreach (var c in observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead))
-                if (!c.Actor.Visible && c.HopState == 0 && !_view.Materialising(c.Actor))
+                if (!c.Actor.Visible && c.HopState == 0 && !_view.Materialising(c.Actor)
+                    && (c.Actor.Waiting & (EventActor.Routing | EventActor.Moving)) == 0 && c.Mind?.Script == null)
                 {
                     if (_campaignHiddenPositions.TryGetValue(c.Actor.Id, out var held) && held.DistanceTo(c.Actor.Position) > 0.01f)
                     { Finish($"campaign: hidden {c.Name} moved from {held} to {c.Actor.Position}"); return; }
@@ -759,6 +760,20 @@ public partial class FieldContracts : Node
         }
         if ((_view.Zone, _view.Map) == (9, 17) && _view.Flags[130] >= 10
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => c.Name == "Dummy")) _campaignBypassEnemies = true;
+        // The north end of 14,0 starts the Lizardman encounter only after Ashley stops there.
+        if ((_view.Zone, _view.Map) == (14, 0) && _view.Flags[60] == 0)
+        {
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: north encounter approach stalled at {ashley.Actor.Position}"); return; }
+            var point = new Vector3(832, 0, 448);
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
+            { Steer(Vector2.Zero); return; }
+            var steps = _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            return;
+        }
         // The Catacombs ghost appears when Ashley stops in its western hall; running around the room misses it.
         if ((_view.Zone, _view.Map) == (13, 4) && _view.Flags[191] == 0)
         {
@@ -2507,8 +2522,8 @@ public partial class FieldContracts : Node
             if (value.AsGodotDictionary()["kind"].AsString() == "weapons" && value.AsGodotDictionary()["record"].AsGodotDictionary()["equipped"].AsBool())
             {
                 var held = value.AsGodotDictionary();
-                var weapon = new Godot.Collections.Dictionary { ["blade"] = new Godot.Collections.Dictionary(), ["grip"] = new Godot.Collections.Dictionary(), ["name"] = held["record"].AsGodotDictionary()["name"], ["entry"] = held };
-                if (!_view.Holds(weapon)) return "Ashley did not hold the inventory's equipped weapon";
+                var weapon = _view.Weapons().Find(candidate => candidate["entry"].AsGodotDictionary().RecursiveEqual(held));
+                if (weapon == null || !_view.Holds(weapon)) return "Ashley did not hold the inventory's equipped weapon";
                 _view.Disassemble(weapon);
                 // Taken from her hand, it leaves her bare-handed: battle set 10.
                 if (!_view.Unarmed || _view.Battle?.Ashley is { } fighter && (fighter.Category != 10 || fighter.BattleSet != "btA")) return "taking apart the weapon in hand did not leave Ashley bare-handed";
@@ -2909,6 +2924,10 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
+        // After the Minotaur, use the chain ability actually earned and assigned to Circle, once per attack.
+        if (battle.AshleyStrikeFrame is not { } timing) _fightLinked = false;
+        else if (_campaign && !_fightLinked && timing is >= 0 and <= 2 && battle.ChainSlots[0] != 0 && ashley.Risk < 60)
+        { Tap("ps_circle"); _fightLinked = true; }
         bool opened = battle.Paused && !_fightWasPaused;
         _fightWasPaused = battle.Paused;
         if (opened)
