@@ -33,6 +33,7 @@ public sealed class FieldContent
     private const int ViewCones = 0x88FB8;       // BATTLE.PRG 0x800F17B8
     private const int TurnRates = 0x88FD8;       // BATTLE.PRG 0x800F17D8
     private const int WanderTimes = 0x143C;      // BATTLE.PRG 0x80069C3C
+    private const int PatrolOdds = 0x1408;       // BATTLE.PRG 0x80069C08
     private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
@@ -576,6 +577,12 @@ public sealed class FieldContent
         int row = WanderTimes + (int)(ai >> 4 & 7) * 6;
         return (BitConverter.ToUInt16(_battle, row), BitConverter.ToUInt16(_battle, row + 2), _battle[row + 4]);
     }
+
+    /// <summary>
+    /// A patroller's odds of turning back on its route each frame between points, one in two to the power of this
+    /// (BATTLE.PRG's bytes at 0x80069C08, by its room record's +0x14 bit 14, 0x800e5dd4; 9 and 7).
+    /// </summary>
+    public int PatrolTurns(int bit) => _battle[PatrolOdds + (bit & 1)];
 
     /// <summary>
     /// The enemy planner's three passes (BATTLE.PRG 0x80069BF0 and 0x80069BFC, read by 0x800de3e4): how far ahead

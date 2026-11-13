@@ -23,6 +23,11 @@ public sealed partial class FieldBattle
         public int Telegraph => Mind?.Token ?? 0;
         /// <summary>The frames left after it let a token go (its AI's +0x9a), while its jagged balloon stands.</summary>
         public int Alert => Mind?.AfterRelease ?? 0;
+        /// <summary>
+        /// Where its body stands as the AI measures it (its object's +28 to +32): a crate's base, 64 under its middle
+        /// (the crate's stand-in, which Ashley aims at, stands 150 under it).
+        /// </summary>
+        public Vector3 Origin => Cube ? Actor.Position + new Vector3(0, 64 - 150, 0) : Actor.Position;
     }
 
     /// <summary>The behaviour routines of BATTLE.PRG's table at 0x800F1790, by a room actor record's bits 4 to 8.</summary>
@@ -133,6 +138,13 @@ public sealed partial class FieldBattle
         /// <summary>The wander (0x800e1eac): its frame count (+0xc2), sub-state (+0xc0), heading or last step (+0xd0, -1 none), stall timer (+0xd2), and the random walk's tile and steps (+0x11c, +0x15d).</summary>
         public int WanderCount, WanderState, WanderHeading = -1, Stall, WalkSteps;
         public (int X, int Z) WalkTile;
+        /// <summary>Whether it goes to the room's nearest special spot before a long-reaching harmful move (+0x2d: AI word bit 12, in a room with a spot), and the spot chosen (+0x134).</summary>
+        public bool UsesSpots;
+        public (int X, int Z) Spot;
+        /// <summary>The patrol (0x800e23ac): its route (+0x101), its odds of turning back, one in two to this power (+0x102), the point it walks for (+0x100), its way along the route (+0x103: 1 or -1) and the frames before it may turn back (+0x104).</summary>
+        public int Route, PatrolTurns, PatrolPoint, PatrolStep = 1, PatrolTimer;
+        /// <summary>The move it falls back on against the room's breakable crates (+0x140, built at every replan by 0x800dd604): the usable action able to hit objects with the longest reach; null with none.</summary>
+        public PlanEntry? Fallback;
     }
 
     /// <summary>The actors holding a token, newest first (BATTLE.PRG's list at +0x1c of the battle AI block, and its count at +0x12).</summary>
@@ -142,6 +154,12 @@ public sealed partial class FieldBattle
     private int _engagers;
     /// <summary>The actor index perceived in turn after Ashley (0x800f58d4).</summary>
     private int _rotating;
+    /// <summary>The room's crates as actors (BATTLE.PRG's objects at 0x800f45e0, each in an actor slot of its own), and the four breakable ones the enemies may strike (the battle AI block's +0x28 to +0x34).</summary>
+    private readonly List<Combatant> _objects = new();
+    private readonly Combatant?[] _breakables = new Combatant?[4];
+    /// <summary>The room's special spots ([0x800f58c8]) and patrol routes ([0x800f58d8]), as halfwords (see <see cref="Installation.MapConversion"/>).</summary>
+    private int[]? _spots;
+    private int[][]? _routes;
     /// <summary>The action under way and who made it, heeded as it ends.</summary>
     private Acted? _acted;
 
@@ -155,7 +173,7 @@ public sealed partial class FieldBattle
     private int Roll(int range) => (int)(_random.Randi() & (uint)(range - 1));
     private static (int X, int Z) TileOf(Combatant c) => ((int)Mathf.Floor(c.Actor.Position.X / 128), (int)Mathf.Floor(c.Actor.Position.Z / 128));
     private static Vector3 Centre((int X, int Z) tile, float y) => new(tile.X * 128 + 64, y, tile.Z * 128 + 64);
-    private Combatant? At(int index) => index is >= 0 and < 16 ? Fighters().Find(c => c.Index == index) : null;
+    private Combatant? At(int index) => index is >= 0 and < 16 ? Fighters().Find(c => c.Index == index) ?? _objects.Find(o => o.Index == index) : null;
 
     /// <summary>
     /// Gives an actor its AI record as it joins the battle (BATTLE.PRG 0x800e6178 with the AI word's decoding,
@@ -168,6 +186,7 @@ public sealed partial class FieldBattle
         if (c.Cube) return;
         var taken = new HashSet<int>();
         foreach (var other in Combatants.Values) if (other != c && !other.Dead && other.Mind != null) taken.Add(other.Index);
+        foreach (var crate in _objects) taken.Add(crate.Index);
         if (c.Actor.Id == "slot:0") c.Index = 0;
         else if (c.Actor.Id.StartsWith("slot:", StringComparison.Ordinal) && int.TryParse(c.Actor.Id[5..], out int slot) && slot is > 0 and < 16 && !taken.Contains(slot)) c.Index = slot;
         else for (c.Index = 1; c.Index < 16 && taken.Contains(c.Index); c.Index++) { }
@@ -188,6 +207,9 @@ public sealed partial class FieldBattle
             Behaviour = (Behaviour)Math.Min(stats.GetValueOrDefault("behaviour", 0).AsInt32(), (int)Behaviour.None),
             Group = stats.GetValueOrDefault("group", 0).AsInt32(), LeaderGroup = stats.GetValueOrDefault("leader", 0).AsInt32(),
             HomeRadius = stats.GetValueOrDefault("home_radius", 0).AsInt32(), Dormant = stats.GetValueOrDefault("dormant", false).AsBool() ? 1 : 0,
+            UsesSpots = (ai >> 12 & 1) != 0 && Array.Exists(Spots, spot => (spot & 0x8000) != 0),
+            Route = stats.GetValueOrDefault("route", 0).AsInt32() & 3,
+            PatrolTurns = _view.Content.Field.PatrolTurns(stats.GetValueOrDefault("patrol_turns", 0).AsInt32()),
         };
         if (stats.GetValueOrDefault("home", new Godot.Collections.Array()).AsGodotArray() is { Count: 2 } home) m.Home = (home[0].AsInt32(), home[1].AsInt32());
         (m.MoveFrames, m.IdleFrames, m.Chance) = _view.Content.Field.WanderPace(ai);
@@ -274,11 +296,16 @@ public sealed partial class FieldBattle
         _engagers = 0;
         if (_planClock < 0xFFFE) _planClock++;
         foreach (var c in Combatants.Values) c.Recovery = c.Recovery >= 36 ? c.Recovery - 35 : 0;
+        PlaceObjects();
         var fighters = Fighters();
+        // The crates are perceived in turn too (their nodes' +0x1c has 0x10, which puts them in the mask at
+        // 0x800f590c), and stand in lines of fire.
+        var actors = new List<Combatant>(fighters);
+        foreach (var crate in _objects) if (crate.Index < 16) actors.Add(crate);
         for (int i = 0; i < 16; i++)
         {
             _rotating = (_rotating + 1) & 15;
-            if (fighters.Exists(f => f.Index == _rotating && f.Mind != null)) break;
+            if (actors.Exists(f => f.Index == _rotating && (f.Mind != null || f.Cube))) break;
         }
         // One that has left the battle lets its token go and its icons (0x800d82cc, 0x800d821c).
         foreach (var c in Combatants.Values)
@@ -288,7 +315,7 @@ public sealed partial class FieldBattle
                 Show(c, 0);
                 Show(c, 0x40);
             }
-        foreach (var c in fighters) if (Acts(c)) Tick(c, fighters);
+        foreach (var c in fighters) if (Acts(c)) Tick(c, actors);
         foreach (var c in fighters) if (Acts(c)) Decide(c, fighters);
         foreach (var c in fighters) if (Acts(c)) Drive(c);
     }
@@ -371,7 +398,7 @@ public sealed partial class FieldBattle
         }
         else m.RingFill = 0;
         Perceive(c, Ashley!, fighters);
-        if (_rotating != 0 && fighters.Find(f => f.Index == _rotating) is { Mind: not null } other) Perceive(c, other, fighters);
+        if (_rotating != 0 && fighters.Find(f => f.Index == _rotating && (f.Mind != null || f.Cube)) is { } other) Perceive(c, other, fighters);
         if (Recheck(c)) { KeepChase(c); m.Skip = true; return; }
         // Whether it retreats (0x800d93ac): never; under a quarter or half its hit points; or while it has fled lately
         // or knows of a foe; any rule also with no plan and foes about.
@@ -408,12 +435,13 @@ public sealed partial class FieldBattle
         var om = other.Mind;
         int o = other.Index;
         var me = self.Actor.Position;
-        var them = other.Actor.Position;
+        var them = other.Origin;
         uint d2 = Distance(me, m.Height, them, om?.Height ?? -64);
         m.Distances[o] = d2;
         uint rel = m.Relations[o];
         var theirs = TileOf(other);
-        if (theirs == m.Tile) rel |= 0x40000004;
+        // A crate (one of the objects at 0x800f45e0) or one on its tile is always in its line of sight.
+        if (theirs == m.Tile || other.Cube) rel |= 0x40000004;
         else
         {
             m.Sightings = (m.Sightings + 1) & 0xFF;
@@ -525,13 +553,107 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Tries to launch a planned move (BATTLE.PRG 0x800dad9c): each in turn (<see cref="TryLaunch"/>). The fallback
-    /// entry (+0x140) needs targets BATTLE.PRG fills from a table not yet read (its +0x28 to +0x34), and is not tried.
+    /// Tries to launch a planned move (BATTLE.PRG 0x800dad9c): each in turn (<see cref="TryLaunch"/>); then its
+    /// fallback move (<see cref="BuildFallback"/>) on each of the room's four breakable crates in turn, one Ashley is
+    /// not carrying that rests (its target stays the last crate tried).
     /// </summary>
     private bool Launch(Combatant c)
     {
         foreach (var entry in c.Plans.ToArray()) if (TryLaunch(c, entry)) return true;
+        if (c.Mind!.Fallback is not { } fallback) return false;
+        foreach (var crate in _breakables)
+        {
+            if (crate == null) continue;
+            fallback.Target = crate;
+            if (Resting(crate) && TryLaunch(c, fallback)) return true;
+        }
         return false;
+    }
+
+    /// <summary>
+    /// Builds an enemy's fallback move (BATTLE.PRG 0x800dd604, at every replan): of its usable actions (0x800e4df8) able
+    /// to hit objects (0x800e5710's bit 6: the room lets its enemies strike crates, the action costs neither magic nor
+    /// hit points, and its target kind is 14), the one with the longest reach, the first of equals; at weight 128, due
+    /// now, with no margin, minding the line of fire, and needing a line of sight unless its action does not.
+    /// </summary>
+    private void BuildFallback(Combatant c)
+    {
+        var m = c.Mind!;
+        m.Fallback = null;
+        if (!_view.Document.GetValueOrDefault("crate_attacks", false).AsBool()) return;
+        uint longest = 0;
+        for (int slot = 0; slot < Math.Min(6, c.Limbs.Count); slot++)
+            for (int i = 0; i < 4; i++)
+            {
+                int action = c.Limbs[slot].Actions[i];
+                if (action == 0 || !Usable(c, slot, action)) continue;
+                var record = _view.Content.Field.Action(action);
+                if (record.CostKind is 1 or 3 || record.TargetKind != 14) continue;
+                uint reach2 = Reach2(c, action);
+                if (reach2 <= longest) continue;
+                longest = reach2;
+                m.Fallback = new PlanEntry { Action = action & 0xFF, Slot = slot, Index = i, Limb = -1, Weight = 128, Target = c };
+            }
+    }
+
+    /// <summary>
+    /// Keeps the room's crates as actors (BATTLE.PRG's objects at 0x800f45e0): each the room holds takes the first free
+    /// actor index from 2 as it is first seen (0x800765b0), and the breakable ones (kinds 2 and 4) the first free of
+    /// four places the enemies strike them from (0x800e6178); one gone gives both up (0x800e7454). Each stands for the
+    /// AI where the crate stands, its stand-in 150 under the crate's middle.
+    /// </summary>
+    private void PlaceObjects()
+    {
+        if (_view.Field == null) return;
+        var present = new Dictionary<string, (int Kind, int X, int Z, float Bottom)>();
+        foreach (var (id, kind, x, z, bottom, _) in _view.CrateObjects) present[id] = (kind, x, z, bottom);
+        for (int i = _objects.Count - 1; i >= 0; i--)
+        {
+            if (present.ContainsKey(_objects[i].Actor.Id)) continue;
+            int slot = Array.IndexOf(_breakables, _objects[i]);
+            if (slot >= 0) _breakables[slot] = null;
+            _objects.RemoveAt(i);
+        }
+        foreach (var (id, (kind, x, z, bottom)) in present)
+        {
+            var crate = _objects.Find(o => o.Actor.Id == id);
+            if (crate == null)
+            {
+                if (!_view.Field.Actors.TryGetValue(id, out var node)) continue;
+                crate = new Combatant
+                {
+                    Actor = new EventActor(id, -1, node),
+                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = kind,
+                };
+                var taken = new HashSet<int>();
+                foreach (var other in Combatants.Values) if (!other.Dead && other.Mind != null) taken.Add(other.Index);
+                foreach (var other in _objects) taken.Add(other.Index);
+                for (crate.Index = 2; crate.Index < 16 && taken.Contains(crate.Index); crate.Index++) { }
+                _objects.Add(crate);
+                int free = Array.IndexOf(_breakables, null);
+                if (kind is 2 or 4 && crate.Index < 16 && free >= 0) _breakables[free] = crate;
+            }
+            crate.Actor.Position = new Vector3(x * 128 + 64, bottom - 64 + 150, z * 128 + 64);
+        }
+    }
+
+    /// <summary>Whether a crate rests where it stands: not carried, breaking or falling (its object's +18 not Ashley and +26 at 0).</summary>
+    private bool Resting(Combatant crate)
+    {
+        foreach (var (id, _, _, _, _, resting) in _view.CrateObjects) if (id == crate.Actor.Id) return resting;
+        return false;
+    }
+
+    /// <summary>Whether no foe of an enemy stands beside a crate (BATTLE.PRG 0x800dbcec): none within a squared tile distance under 3.</summary>
+    private bool Unguarded(Combatant c, Combatant crate)
+    {
+        var tile = TileOf(crate);
+        foreach (var k in Fighters())
+        {
+            var at = TileOf(k);
+            if (Relation(c, k) == 3 && (at.X - tile.X) * (at.X - tile.X) + (at.Z - tile.Z) * (at.Z - tile.Z) < 3) return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -572,19 +694,35 @@ public sealed partial class FieldBattle
     /// A planned move's reach and flags (BATTLE.PRG 0x800e5710, copied into the entry by 0x800dd918): its reach squared
     /// (0x800e5698: the action's range, or its user's weapon's, 32 less past 32), the margin it keeps out of
     /// (0x800e5600), and its flags: 2 keeps that margin (action flags 0x2080), 4 needs no line of sight (0x1000), 8 needs
-    /// no clear line of fire (its target kinds 2, 4, 6 and 8), 16 harm (it cools) and 32 help.
+    /// no clear line of fire (its target kinds 2, 4, 6 and 8), 16 harm (it cools), 32 help, and 1 a harmful move reaching
+    /// past 0x51000 squared without action flag 0x2000 (0x800dd918), which sends one that uses special spots to one
+    /// first (<see cref="Choose"/>). The fallback move (<see cref="BuildFallback"/>) keeps no margin and has flag 4 at
+    /// most.
     /// </summary>
     private (uint Reach2, int Margin, int Flags) Measure(Combatant c, PlanEntry e)
     {
         var record = _view.Content.Field.Action(e.Action);
-        int reach = record.Range[0] == 255 ? (int)c.Range.Z * Math.Abs(Cos((c.Tilt >> 3) * 128)) >> 12 : RangeReach(record.Range);
-        uint reach2 = reach > 32 ? (uint)((reach - 32) * (reach - 32)) : (uint)(reach * reach);
+        uint reach2 = Reach2(c, e.Action);
+        if (e == c.Mind?.Fallback) return (reach2, 0, (record.Flags & 0x1000) != 0 ? 4 : 0);
         int root = Root(reach2), margin = 0;
         if ((record.Flags & 0x2000) != 0) margin = _view.Content.Field.NearRange(e.Action)[1] * 32;
         else if ((record.Flags & 0x80) != 0 && RangeReach(_view.Content.Field.NearRange(e.Action)) is var near && near < root) margin = near;
+        bool harms = Harms(record, e.Action, e.Target, help: false);
         int flags = ((record.Flags & 0x2080) != 0 ? 2 : 0) | ((record.Flags & 0x1000) != 0 ? 4 : 0) | ((1 << record.TargetKind & 0x154) != 0 ? 8 : 0)
-            | (Harms(record, e.Action, e.Target, help: false) ? 16 : 0) | (Harms(record, e.Action, e.Target, help: true) ? 32 : 0);
+            | (harms ? 16 : 0) | (Harms(record, e.Action, e.Target, help: true) ? 32 : 0)
+            | (harms && reach2 > 0x51000 && (record.Flags & 0x2000) == 0 ? 1 : 0);
         return (reach2, margin, flags);
+    }
+
+    /// <summary>
+    /// An action's reach squared for its user (BATTLE.PRG 0x800e5698): its range (<see cref="RangeReach"/>), or its
+    /// user's weapon's for a range of 255, less 32 past 32.
+    /// </summary>
+    private uint Reach2(Combatant c, int action)
+    {
+        var record = _view.Content.Field.Action(action);
+        int reach = record.Range[0] == 255 ? (int)c.Range.Z * Math.Abs(Cos((c.Tilt >> 3) * 128)) >> 12 : RangeReach(record.Range);
+        return reach > 32 ? (uint)((reach - 32) * (reach - 32)) : (uint)(reach * reach);
     }
 
     /// <summary>
@@ -605,9 +743,9 @@ public sealed partial class FieldBattle
     /// <summary>
     /// Whether a planned move may be launched now (BATTLE.PRG 0x800dbd80): it has weight; the planner's clock has come
     /// to it; its user is ready (<see cref="Ready"/>); its target is within its reach and, for one that keeps a margin,
-    /// beyond it; its target perceived for targeting; Ashley not in an action; a line of sight unless it needs none,
-    /// and no one in the line of fire unless it does not mind. Nothing else may be under way (the port makes one move at
-    /// a time).
+    /// beyond it; a crate within 320, its user not won over and no foe beside it (<see cref="Unguarded"/>); its target
+    /// perceived for targeting; Ashley not in an action; a line of sight unless it needs none, and no one in the line of
+    /// fire unless it does not mind. Nothing else may be under way (the port makes one move at a time).
     /// </summary>
     private bool Gate(Combatant c, PlanEntry e)
     {
@@ -616,6 +754,7 @@ public sealed partial class FieldBattle
         if (_phase != Phase.Free || _enemyCast != null || _enemyRelease != null || Ashley!.Mover is { Busy: true }) return false;
         var (reach2, margin, flags) = Measure(c, e);
         uint d = m.Distances[e.Target.Index], rel = m.Relations[e.Target.Index];
+        if (e.Target.Cube && (d > 0x19000 || m.Converted || !Unguarded(c, e.Target))) return false;
         if (d > reach2) return false;
         if (margin > 0 && (flags & 2) != 0 && d < (uint)(margin * margin)) return false;
         if ((rel >> 31 & 1) == 0) return false;
@@ -626,8 +765,8 @@ public sealed partial class FieldBattle
     /// <summary>Whether an enemy is ready to make a move (BATTLE.PRG 0x800dbcb4): not recovering, and past its cooldown for a move that cools.</summary>
     private bool Ready(Combatant c, PlanEntry e) => c.Recovery == 0 && (!Cooled(c, e) || c.Cooldown == 0);
 
-    /// <summary>Whether a move cools (BATTLE.PRG 0x800dbc60): any, for one won over; else one that harms.</summary>
-    private bool Cooled(Combatant c, PlanEntry e) => c.Mind!.Converted || (Measure(c, e).Flags & 16) != 0;
+    /// <summary>Whether a move cools (BATTLE.PRG 0x800dbc60): any, for one won over; else one that harms, not on a crate.</summary>
+    private bool Cooled(Combatant c, PlanEntry e) => c.Mind!.Converted || (Measure(c, e).Flags & 16) != 0 && !e.Target.Cube;
 
     /// <summary>
     /// Takes a token, the right to telegraph and act (BATTLE.PRG 0x800d836c): one held stays; otherwise none while the
@@ -735,10 +874,63 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>
-    /// Chooses an enemy's state for its first planned move (BATTLE.PRG 0x800d9dd8): 1, approach its target. (State 2,
-    /// a special spot first, needs the room's spots, which are not yet read.)
+    /// Chooses an enemy's state for its first planned move (BATTLE.PRG 0x800d9dd8): a patroller's is 1, approach its
+    /// target; one that uses special spots takes 2 for a long-reaching harmful move (its flag 1, <see cref="Measure"/>)
+    /// and picks the nearest spot (<see cref="NearestSpot"/>); any other 1.
     /// </summary>
-    private static void Choose(Combatant c) => c.Mind!.State = 1;
+    private void Choose(Combatant c)
+    {
+        var m = c.Mind!;
+        if (m.Behaviour != Behaviour.Patroller && m.UsesSpots && c.Plans.Count > 0 && (Measure(c, c.Plans[0]).Flags & 1) != 0)
+        {
+            m.State = 2;
+            NearestSpot(c);
+        }
+        else m.State = 1;
+    }
+
+    /// <summary>
+    /// The room's special spot nearest an enemy (BATTLE.PRG 0x800dd7cc): of the eight in use (bit 15), the one at the
+    /// least squared distance from its position to the tile's centre at its floor (the sight floor, which BATTLE.PRG
+    /// puts in place for this), the first of equals; with none in use the spot stays.
+    /// </summary>
+    private void NearestSpot(Combatant c)
+    {
+        var m = c.Mind!;
+        uint least = uint.MaxValue;
+        foreach (int spot in Spots)
+        {
+            if ((spot & 0x8000) == 0) continue;
+            int x = (spot & 31) * 128 + 64, z = (spot >> 5 & 31) * 128 + 64;
+            uint d = Distance(c.Actor.Position, 0, new Vector3(x, _view.SightFloor(x, z), z), 0);
+            if (d >= least) continue;
+            least = d;
+            m.Spot = (spot & 31, spot >> 5 & 31);
+        }
+    }
+
+    /// <summary>The room's eight special spots ([0x800f58c8], room sub-section 5 at 0x440): tile x bits 0-4, z bits 5-9, bit 15 in use.</summary>
+    private int[] Spots => _spots ??= Halfwords(_view.Document.GetValueOrDefault("special_spots", new Godot.Collections.Array()).AsGodotArray());
+
+    /// <summary>The room's four patrol routes of eight points ([0x800f58d8], room sub-section 5 at 0x400), as the spots.</summary>
+    private int[][] Routes
+    {
+        get
+        {
+            if (_routes != null) return _routes;
+            var routes = _view.Document.GetValueOrDefault("patrol_routes", new Godot.Collections.Array()).AsGodotArray();
+            _routes = new int[routes.Count][];
+            for (int r = 0; r < routes.Count; r++) _routes[r] = Halfwords(routes[r].AsGodotArray());
+            return _routes;
+        }
+    }
+
+    private static int[] Halfwords(Godot.Collections.Array values)
+    {
+        var words = new int[values.Count];
+        for (int i = 0; i < words.Length; i++) words[i] = values[i].AsInt32();
+        return words;
+    }
 
     /// <summary>
     /// The behaviour routine (BATTLE.PRG's table at 0x800f1790, its AI +0x68): returns whether it gave an order.
@@ -944,8 +1136,10 @@ public sealed partial class FieldBattle
     /// Runs an enemy's state for a planned move (BATTLE.PRG 0x800d9e18). State 1 approaches: to the move's reach when
     /// its target is an ally or it may engage (<see cref="MayEngage"/>), counting itself an engager and taking a token
     /// once within its token radius (the reach and its reach extension, 8064 for a hopper) seeing the target; else it
-    /// hovers at that radius, 640 at least. State 7 (nothing planned) lets its token go and keeps 640 from Ashley if she
-    /// is a foe.
+    /// hovers at that radius, 640 at least. State 2 goes to its special spot first: ready to make the move, and unless
+    /// the move keeps a margin and the spot is already within its reach less the margin of the target (then as 1), it
+    /// wanders within 2 tiles of the spot facing the target once its goal is within 255 of it, else runs for the spot
+    /// (to within 256). State 7 (nothing planned) lets its token go and keeps 640 from Ashley if she is a foe.
     /// </summary>
     private bool RunState(Combatant c, PlanEntry e)
     {
@@ -954,6 +1148,23 @@ public sealed partial class FieldBattle
         var t = e.Target;
         switch (m.State)
         {
+            case 2:
+            {
+                if (!Ready(c, e)) goto case 1;
+                var (reach2, margin, flags) = Measure(c, e);
+                var spot = Centre(m.Spot, 0) with { Y = _view.SightFloor(m.Spot.X * 128 + 64, m.Spot.Z * 128 + 64) };
+                if ((flags & 2) != 0 && Root(Distance(spot, m.Height, t.Origin, t.Mind!.Height)) < Root(reach2) - margin) goto case 1;
+                var goal = Centre(m.Goal, 0) with { Y = _view.SightFloor(m.Goal.X * 128 + 64, m.Goal.Z * 128 + 64) };
+                if (Distance(c.Actor.Position, 0, goal, 0) <= 0xFFFF)
+                {
+                    m.FaceTarget = t.Index;
+                    WanderAround(c, m.Spot, 2);
+                    return true;
+                }
+                m.Run = true;
+                GoTo(c, m.Spot, 256);
+                return true;
+            }
             case 1:
             {
                 int reach = Reach(c, e);
@@ -1389,11 +1600,53 @@ public sealed partial class FieldBattle
         return radius < m.WalkSteps ? 1 : 0;
     }
 
-    /// <summary>Walks its patrol route (BATTLE.PRG 0x800db5fc, mode 5). The room's routes are not yet read; it stands.</summary>
-    private static void Patrol(Combatant c)
+    /// <summary>
+    /// Walks its patrol route (BATTLE.PRG 0x800db5fc and 0x800e23ac, mode 5). Taking up the patrol it makes for the
+    /// route's point in use nearest its tile (Manhattan distance, the first of equals; 0x800db4ac) and may turn back at
+    /// once. On its point it goes on to the next in use along its way; between points, once its 10 frames since the last
+    /// are out, a roll of one in two to its odds turns it back (the roll is made every frame). It walks for its point,
+    /// and on it faces about.
+    /// BATTLE.PRG skips the patrol (without moving, reporting movement) when its third argument is 0, which behaviour 6
+    /// (0x800daa6c) never sets: it holds what the calls before it left there, the target's half-tile z from the chase's
+    /// last step (0x800e4904), 1024 from an arctangent (SLUS 0x8004137c) or the look-around's kind 1 (0x800e2c68) after
+    /// one that holds range, or for one with no plan and no foe a value carried over from the actor decided before it.
+    /// None of these is 0 but by coincidence, so the port always patrols. A route with no point in use (retail would
+    /// search it forever) has it face about.
+    /// </summary>
+    private void Patrol(Combatant c)
     {
+        var m = c.Mind!;
+        int[] route = m.Route < Routes.Length ? Routes[m.Route] : Array.Empty<int>();
+        static (int X, int Z) Point(int word) => (word & 31, word >> 5 & 31);
+        if (m.Mode != 5)
+        {
+            int least = int.MaxValue;
+            for (int i = 0; i < route.Length; i++)
+            {
+                if ((route[i] & 0x8000) == 0) continue;
+                var p = Point(route[i]);
+                int d = Math.Abs(p.X - m.Tile.X) + Math.Abs(p.Z - m.Tile.Z);
+                if (d < least) { least = d; m.PatrolPoint = i; }
+            }
+            m.PatrolTimer = 0;
+        }
         SetMode(c, 5);
-        c.Mind!.Order = Order.Stand;
+        if (!Array.Exists(route, word => (word & 0x8000) != 0) || m.PatrolPoint >= route.Length) { Face(c); return; }
+        bool advance = Point(route[m.PatrolPoint]) == m.Tile;
+        if (!advance)
+        {
+            if (m.PatrolTimer != 0) m.PatrolTimer--;
+            if (Roll(1 << m.PatrolTurns) == 0 && m.PatrolTimer == 0) { m.PatrolStep = -m.PatrolStep; advance = true; }
+        }
+        if (advance)
+        {
+            do m.PatrolPoint = (m.PatrolPoint + m.PatrolStep + 8) & 7;
+            while ((route[m.PatrolPoint] & 0x8000) == 0);
+            m.PatrolTimer = 10;
+        }
+        m.Goal = Point(route[m.PatrolPoint]);
+        if (m.Goal == m.Tile) Face(c);
+        else m.Order = Order.Path;
     }
 
     /// <summary>

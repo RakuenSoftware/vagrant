@@ -212,7 +212,7 @@ public sealed class MapConversion
             ["room_actors"] = RoomActors(),
             ["crates"] = crates,
             ["crate_turns"] = CrateTurns(), ["crate_rolls"] = CrateRolls(),
-            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["cooldown"] = Cooldown(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
+            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["cooldown"] = Cooldown(room), ["crate_attacks"] = CrateAttacks(room), ["patrol_routes"] = PatrolRoutes(room), ["special_spots"] = SpecialSpots(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
             ["conditions"] = Conditions(),
         };
     }
@@ -258,6 +258,50 @@ public sealed class MapConversion
     {
         int at = SubSection(room, 5, out int length);
         return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 21 & 0xFF) : 150;
+    }
+
+    /// <summary>
+    /// Whether the room's enemies may strike its breakable crates (the battle AI block's +10, which BATTLE.PRG 0x800e6f9c
+    /// sets from bit 20 of the word at 0x450 of room sub-section 5; 0x800e5710 then marks the actions able to hit
+    /// objects); false in a room without the section.
+    /// </summary>
+    private bool CrateAttacks(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        return length >= 0x454 && (BitConverter.ToUInt32(_map, at + 0x450) >> 20 & 1) != 0;
+    }
+
+    /// <summary>
+    /// The room's four patrol routes (room sub-section 5 at 0x400, BATTLE.PRG's [0x800f58d8]): 16 bytes each, eight
+    /// halfword points of a tile x (bits 0 to 4) and z (5 to 9), bit 15 set on a point in use; kept as the halfwords.
+    /// Empty for a room without the section.
+    /// </summary>
+    private JsonArray PatrolRoutes(int room)
+    {
+        var routes = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x440) return routes;
+        for (int r = 0; r < 4; r++)
+        {
+            var points = new JsonArray();
+            for (int i = 0; i < 8; i++) points.Add((int)BitConverter.ToUInt16(_map, at + 0x400 + r * 16 + i * 2));
+            routes.Add(points);
+        }
+        return routes;
+    }
+
+    /// <summary>
+    /// The room's eight special spots (room sub-section 5 at 0x440, BATTLE.PRG's [0x800f58c8]): halfwords of a tile x
+    /// (bits 0 to 4) and z (5 to 9), bit 15 set on one in use, where an enemy with a long-reaching harmful move goes
+    /// before making it (0x800dd7cc). Empty for a room without the section.
+    /// </summary>
+    private JsonArray SpecialSpots(int room)
+    {
+        var spots = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x450) return spots;
+        for (int i = 0; i < 8; i++) spots.Add((int)BitConverter.ToUInt16(_map, at + 0x440 + i * 2));
+        return spots;
     }
 
     /// <summary>The area the room belongs to: the scene id in room sub-section 10 (section B), at 0x50; -1 without one.</summary>
@@ -1170,6 +1214,8 @@ public sealed class MapConversion
             uint planning = BitConverter.ToUInt32(_map, record + 0x14);
             if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
             stats["last_resorts"] = (planning >> 13 & 1) != 0;
+            // Bit 14 chooses how often a patroller turns back on its route (BATTLE.PRG's table at 0x80069C08, 0x800e5dd4).
+            stats["patrol_turns"] = (int)(planning >> 14 & 1);
             stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
             // The record's word at 0x10 goes to the actor's +0x30: bits 4 to 8 choose its behaviour routine (BATTLE.PRG's
             // table at 0x800F1790, 0x800e5e70), bits 0 to 3 are its group and bits 9 to 13 the group of the leader it
@@ -1178,6 +1224,8 @@ public sealed class MapConversion
             stats["behaviour"] = (int)(behaviour >> 4 & 0x1F);
             stats["group"] = (int)(behaviour & 0xF);
             stats["leader"] = (int)(behaviour >> 9 & 0x1F);
+            // Bits 14 and 15 are the room's patrol route it walks (0x800e5e04).
+            stats["route"] = (int)(behaviour >> 14 & 3);
             // Bits 22 to 26 and 27 to 31 are the home tile it wanders about and bits 16 to 21 how far (0x800e5e14, 63 a
             // free wander); byte 0x26 has it lie dormant until stirred (0x800e6538).
             stats["home"] = new JsonArray { (int)(behaviour >> 22 & 0x1F), (int)(behaviour >> 27) };

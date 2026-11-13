@@ -3434,6 +3434,16 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
     private Crate? _carried;
 
+    /// <summary>
+    /// Every crate the room still holds, as BATTLE.PRG keeps them among its objects (0x800f45e0, until 0x80099d6c
+    /// takes one away): its id, kind, tile and base, and whether it rests (its motion, the object's +26, at 0: not
+    /// carried, breaking or falling).
+    /// </summary>
+    public IEnumerable<(string Id, int Kind, int X, int Z, float Bottom, bool Resting)> CrateObjects
+    {
+        get { foreach (var crate in _crates) if (!crate.Gone) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, !crate.Carried && !crate.Broken && float.IsNaN(crate.FallTo)); }
+    }
+
     /// <summary>The tile of the room's crate <paramref name="index"/> (in the room's order), or null while carried or past the last.</summary>
     public (int X, int Z)? CrateTile(int index) => index >= 0 && index < _crates.Count && !_crates[index].Carried && !_crates[index].Gone ? (_crates[index].X, _crates[index].Z) : null;
 
