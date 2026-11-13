@@ -3280,6 +3280,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
     }
 
+    /// <summary>
+    /// The points of the room's platforms that are switched on (BATTLE.PRG 0x8008d2c0 lists them from 0x800f1ca0: its
+    /// place with its dip), which stop a missile (0x800e6ba0) and which Fixate is cast on (0x80070cac).
+    /// </summary>
+    public List<Vector3> PlatformPoints()
+    {
+        var points = new List<Vector3>();
+        foreach (var platform in _platforms) if (!platform.Off) points.Add(platform.Position + new Vector3(0, PlatformDip[platform.Dip], 0));
+        return points;
+    }
+
     /// <summary>The top of a platform under a position (y down), if one is there and no more than 160 above it.</summary>
     private float? PlatformTop(Vector3 position)
     {
@@ -4872,6 +4883,27 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (seer.Mp < cost) return "Not enough MP.";
             seer.Mp -= cost;
             SeeTraps(action.GetValueOrDefault("visual", 0).AsInt32(), ashley);
+            confirmed?.Invoke();
+            return "";
+        }
+        // Effect 36 (Fixate) is cast on every platform switched on (BATTLE.PRG 0x80070cac with 0x8008d2c0's list): its
+        // effect plays at each, and as it lands (0x8006cdd8) the trap on that platform's tile is revealed (0x8008deac)
+        // and the tile marked in the AI's grid (0x800e68ec sets 0x400 at [0x800F58B8]; nothing in BATTLE.PRG reads
+        // that bit, so it is not kept).
+        if (effects.Count > 0 && effects[0].AsGodotDictionary()["effect"].AsInt32() == 36)
+        {
+            if (Battle.Ashley is not { } fixer) return "Not now.";
+            int cost = action["cost"].AsInt32();
+            if (fixer.Mp < cost) return "Not enough MP.";
+            if (fixer.Has(FieldBattle.Silence)) return "Ashley is silenced.";
+            var platforms = PlatformPoints();
+            if (platforms.Count == 0) return RetailMessage(0);
+            fixer.Mp -= cost;
+            foreach (var point in platforms)
+            {
+                // The effect's action 2 at the point reveals the trap there (FieldEffect.RevealTrap), as Eureka's does.
+                Battle.HideHudFor(PlayEffect(action.GetValueOrDefault("visual", 0).AsInt32(), ashley, null, false, -1, point: point));
+            }
             confirmed?.Invoke();
             return "";
         }

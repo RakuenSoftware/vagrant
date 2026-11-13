@@ -109,8 +109,8 @@ public sealed class FieldBattle
         /// of 0 to 255 is no more than 70 less a quarter of it and 100; only then each of <paramref name="lowered"/>
         /// above -100 falls by 1 when a roll is no more than a quarter of it and 100, and 20.
         /// </summary>
-        /// <remarks>Retail tells Ashley of each change (0x80096768); those messages are not shown here.</remarks>
-        public void Drift(bool affinity, int raised, int[] lowered, Func<int, int> random)
+        /// <remarks><paramref name="told"/> hears each change, by its message index (a class, or an affinity and 6) and whether it rose.</remarks>
+        public void Drift(bool affinity, int raised, int[] lowered, Func<int, int> random, Action<int, bool>? told = null)
         {
             var values = affinity ? Affinities : Classes;
             var own = Record?.GetValueOrDefault(affinity ? "affinities" : "classes", new Godot.Collections.Array()).AsGodotArray();
@@ -123,10 +123,13 @@ public sealed class FieldBattle
             int value = Base(raised);
             if (value >= 100 || random(256) > 70 - (value + 100) / 4) return;
             Move(raised, 1);
+            told?.Invoke(affinity ? raised + 6 : raised, true);
             foreach (int other in lowered)
             {
                 int was = Base(other);
-                if (was >= -99 && random(256) <= (was + 100) / 4 + 20) Move(other, -1);
+                if (was < -99 || random(256) > (was + 100) / 4 + 20) continue;
+                Move(other, -1);
+                told?.Invoke(affinity ? other + 6 : other, false);
             }
         }
     }
@@ -187,6 +190,8 @@ public sealed class FieldBattle
         /// battle (0x8007d08c). Actions take those of the sides their target kind names (0x800E81D4).
         /// </summary>
         public int Side;
+        /// <summary>Its model's girth and height (the header's 0x54 and 0x56, its actor's +0x63c and +0x63e).</summary>
+        public int Girth = 63, Height = 128;
         /// <summary>Whether Ashley's kill tally has counted it (its actor's +0x29, 0x8008554c).</summary>
         public bool Tallied;
         /// <summary>Whether Analyze has been cast on it (its data's +0x954 bit 17, 0x80083d7c).</summary>
@@ -534,6 +539,9 @@ public sealed class FieldBattle
             if (_view.FloorAt(actor.Position) is { } under) combatant.Altitude = under - actor.Position.Y;
         }
         combatant.Centre = _view.Content.Character(actor.Character).GetValueOrDefault("centre", -200).AsInt32() * Installation.CharacterConversion.ModelScale;
+        // Its girth and height from its model (actor +0x63c and +0x63e), which size it in a line of fire.
+        combatant.Girth = _view.Content.Character(actor.Character).GetValueOrDefault("girth", 63).AsInt32();
+        combatant.Height = _view.Content.Character(actor.Character).GetValueOrDefault("height", 128).AsInt32();
         combatant.Reaching(range);
         // Ashley fights by the set for her weapon's category; others by their one battle set.
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
@@ -1486,11 +1494,11 @@ public sealed class FieldBattle
     private void WeaponDrift(ActionRecord record, Combatant c, int classArg, int affinityArg)
     {
         if (record.CostKind == 1 || c.Blade.Id == 0) return;
-        if (classArg != 0) ClassDrift(c.Blade, classArg - 1);
+        if (classArg != 0) ClassDrift(c, c.Blade, classArg - 1);
         int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
         if (affinityArg == 0 || index is < 0 or > 6) return;
         int raised = new[] { 0, 3, 4, 1, 2, 6, 5 }[index];
-        c.Blade.Drift(true, raised, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, index }, Random);
+        c.Blade.Drift(true, raised, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, index }, Random, Told(c));
     }
 
     /// <summary>
@@ -1522,20 +1530,44 @@ public sealed class FieldBattle
         }
         if (pieces.Count == 0) return;
         var piece = pieces[Random(pieces.Count)];
-        if (classArg != 0) ClassDrift(piece, classArg - 1);
+        if (classArg != 0) ClassDrift(c, piece, classArg - 1);
         int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
         if (affinityArg == 0 || index is < 0 or > 6) return;
-        piece.Drift(true, index, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, new[] { 0, 3, 4, 1, 2, 6, 5 }[index] }, Random);
+        piece.Drift(true, index, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, new[] { 0, 3, 4, 1, 2, 6, 5 }[index] }, Random, Told(c));
     }
 
     /// <summary>
-    /// A class value learnt (BATTLE.PRG 0x80080a9c): classes 0 to 5 rise with the next two round them falling; for
-    /// classes 6 and 7 retail's fallers are whatever its registers held, so only the rise is kept.
+    /// A class value learnt (BATTLE.PRG 0x80080a9c): classes 0 to 5 rise with the next two round them falling.
     /// </summary>
-    private void ClassDrift(Gear gear, int c)
+    /// <remarks>
+    /// For classes 6 and 7 the switch sets no fallers, and 0x80080a9c reads its s1 and s2 as left by its caller: from
+    /// 0x80080f78 the weapon record's address and the action record's, from 0x80080c9c the chosen limb's offset (its
+    /// index times 0xdc, or none for the shield) and the piece's index. Its "fallers" are then bytes that far past the
+    /// record, outside it, so only the rise is kept.
+    /// </remarks>
+    private void ClassDrift(Combatant owner, Gear gear, int c)
     {
         if (c is < 0 or > 7) return;
-        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random);
+        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random, Told(owner));
+    }
+
+    /// <summary>
+    /// What tells of a change to a piece's class or affinity value (BATTLE.PRG 0x80096768: a popup of kind 7 over Ashley,
+    /// only for her own gear, 0x80080a9c's last argument): the class's or affinity's name with +1 or -1.
+    /// </summary>
+    /// <remarks>Retail shows a weapon's changes only with option bit 0x40 of [0x80060020] and armour's with 0x80; the
+    /// port has no such options, so both show. Its popup draws the piece's and value's icons; here it is their names.</remarks>
+    private Action<int, bool>? Told(Combatant owner)
+    {
+        if (owner != Ashley || !_view.Content.Has("battle_text")) return null;
+        return (index, raised) =>
+        {
+            var text = _view.Content.Data("battle_text");
+            var list = text[index < 6 ? "classes" : "affinities"].AsGodotArray();
+            int at = index < 6 ? index : index - 6;
+            string name = at < list.Count ? list[at].AsGodotDictionary()["text"].AsString() : "";
+            Number(owner, name + (raised ? " +1" : " -1"));
+        };
     }
 
     /// <summary>
@@ -1737,6 +1769,12 @@ public sealed class FieldBattle
         var c = t.Who;
         if (t.Void) return;
         var rules = _view.Content.Field;
+        // A crate a spell or a turned missile reaches breaks when it takes its hit point (0x80074a20).
+        if (c.Cube)
+        {
+            if (t.HpMode is 1 or 3) { c.Hp = 0; _view.BreakCrate(c.Actor.Id); }
+            return;
+        }
         if (t.Kind == 4) { if (!c.Cube) Number(c, "Miss"); return; }
         switch (t.HpMode)
         {
@@ -1940,8 +1978,9 @@ public sealed class FieldBattle
     /// way takes the entry, at its own limb, unless it is the target (the result is marked redirected, +0x48); the floor
     /// makes the entry a place (+0x40), which every effect passes by.
     /// </summary>
-    /// <remarks>Retail sizes Ashley's box from her record (+0x63c, +0x63e), not kept here, and also stops at room
-    /// objects listed by 0x8008d2c0 (0x800e6ba0), not modelled.</remarks>
+    /// <remarks>A fighter's box is its model's girth across and height high (actor +0x63c, +0x63e) on its feet; a crate,
+    /// whose actor has no model, is taken as its own 128-unit cube. Then the room's moving platforms stop it within 64
+    /// across and 32 under their point (0x800e6ba0, the list of 0x8008d2c0).</remarks>
     private void LineOfFire(Resolution r, Outcome entry)
     {
         if (entry.Void || r.Caster is not { } caster) return;
@@ -1956,11 +1995,24 @@ public sealed class FieldBattle
             {
                 if (c == caster || c.Dead || c.Cube || !c.Actor.Visible || (c.Side & 0xFFEA) != 0) continue;
                 var at = c.Actor.Position;
-                if (Math.Abs(at.X - point.X) >= 63 || Math.Abs(at.Y - 64 - point.Y) >= 64 || Math.Abs(at.Z - point.Z) >= 63) continue;
+                int half = c.Height / 2;
+                if (Math.Abs(at.X - point.X) >= c.Girth || Math.Abs(at.Y - half - point.Y) >= half || Math.Abs(at.Z - point.Z) >= c.Girth) continue;
                 if ((at.X - from.X) * step.X + (at.Z - from.Z) * step.Z < 0) continue;
                 if (c != entry.Who) { entry.Who = c; entry.Limb = c.Struck; }
                 return;
             }
+            foreach (var crate in _view.Crates)
+            {
+                var at = new Vector3(crate.X * 128 + 64, crate.Bottom, crate.Z * 128 + 64);
+                if (Math.Abs(at.X - point.X) >= 64 || Math.Abs(at.Y - 64 - point.Y) >= 64 || Math.Abs(at.Z - point.Z) >= 64) continue;
+                if ((at.X - from.X) * step.X + (at.Z - from.Z) * step.Z < 0) continue;
+                // The crate takes the entry, whole.
+                if (Crate(crate.Id, crate.Kind, at - new Vector3(0, 64, 0)) is { } cube) { entry.Who = cube; entry.Limb = -1; }
+                else entry.Void = true;
+                return;
+            }
+            foreach (var at in _view.PlatformPoints())
+                if (Math.Abs(at.X - point.X) < 64 && Math.Abs(at.Y + 32 - point.Y) < 32 && Math.Abs(at.Z - point.Z) < 64) { entry.Void = true; return; }
             if (_view.FloorAt(point) is { } floor && point.Y >= floor) { entry.Void = true; return; }
         }
     }
@@ -2060,7 +2112,7 @@ public sealed class FieldBattle
         (Combatant Who, int Limb)? aim = null;
         foreach (var c in Combatants.Values)
         {
-            if (!c.Targetable || !InSphere(Ashley, c)) continue;
+            if (!Takes(c, _view.Content.Field.TargetKind(_view.Content.Field.Action(id).TargetKind).Sides) || !InSphere(Ashley, c)) continue;
             if (aim == null || (c.Actor.Position - Ashley.Actor.Position).Length() < (aim.Value.Who.Actor.Position - Ashley.Actor.Position).Length())
                 aim = (c, c.Limbs.FindIndex(limb => limb.MaxHp > 0));
         }
@@ -2973,7 +3025,8 @@ public sealed class FieldBattle
         _targets.Clear();
         foreach (var c in Combatants.Values)
         {
-            if (!c.Targetable) continue;
+            // What the attack (target kind 14) takes: sides 1, 2, 4 and 0x10 (0x800E81D4), never Ashley herself.
+            if (c == Ashley || !Takes(c, _view.Content.Field.TargetKind(_view.Content.Field.Action(1).TargetKind).Sides)) continue;
             // Its parts are the limbs the sphere reaches, whether or not its body is in (retail footage: the Minotaur,
             // well within reach, offers HEAD and R.LEG, or L.ARM, BODY and L.LEG; a soldier at the edge only L.ARM). A
             // character without limbs is one target, reached by its body.
@@ -2991,12 +3044,7 @@ public sealed class FieldBattle
             foreach (var crate in _view.Crates)
             {
                 var middle = new Vector3(crate.X * 128 + 64, crate.Bottom - 64, crate.Z * 128 + 64);
-                if (!_view.Field.Actors.TryGetValue(crate.Id, out var node) || !Reaches(Ashley!, middle)) continue;
-                var cube = new Combatant
-                {
-                    Actor = new EventActor(crate.Id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
-                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = crate.Kind,
-                };
+                if (!Reaches(Ashley!, middle) || Crate(crate.Id, crate.Kind, middle) is not { } cube) continue;
                 _targets.Add((cube, new List<int> { -1 }));
             }
         // With nothing in range the sphere still shows, for as long as the message under CAUTION (retail footage).
@@ -3188,6 +3236,20 @@ public sealed class FieldBattle
         _hud?.Targets(chosenLeft ? other : mine, chosenLeft ? -1 : _part, chosenLeft ? mine : other, chosenLeft ? _part : -1);
         _hud?.AimedAt(Aim(who, limb), Project);
         Highlight(who, limb);
+    }
+
+    /// <summary>
+    /// A crate as a fighter (BATTLE.PRG gives each its actor and the fighter record "Cube", 0x8007647C), standing in 150
+    /// under its middle, where an actor without bones is aimed at and struck; null when it has no node.
+    /// </summary>
+    private Combatant? Crate(string id, int kind, Vector3 middle)
+    {
+        if (_view.Field == null || !_view.Field.Actors.TryGetValue(id, out var node)) return null;
+        return new Combatant
+        {
+            Actor = new EventActor(id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
+            Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = kind,
+        };
     }
 
     /// <summary>Whether a target stands left of Ashley on the screen (the side its parts are listed on); a crate by its middle.</summary>
@@ -3481,11 +3543,14 @@ public sealed class FieldBattle
     /// </summary>
     private void Land(Combatant attacker, Combatant target)
     {
-        target.Engaged = true;
         var blow = _blow;
         _blow = null;
-        var entry = blow?.Targets.Find(t => t.Who == target);
-        if (blow == null || entry == null) return;
+        // The blow's entry; its line of fire may have turned it onto another fighter or a crate.
+        if (blow == null || blow.Targets.Count == 0) return;
+        var entry = blow.Targets[0];
+        target = entry.Who;
+        target.Engaged = true;
+        if (entry.Void) { _view.PlayResident(0x27, attacker.Actor, target.Actor); return; }
         // A crate takes no number (0x80087578) and does not move. One whose record has +0x954 bit 16 (every kind but 2
         // and 4) has its blow's result cleared (0x80085f0c): the flash and nothing else (footage, 6:02). A kind 2 or 4
         // crate is always hit for 999 (0x8007f28c, 0x800838ec) and breaks (0x80074a20).

@@ -1932,7 +1932,9 @@ public sealed partial class FieldMenu : PanelContainer
         var menu = _view.Content.Data("status_menu");
         var strings = menu["strings"].AsGodotArray();
         var ashley = StatusWho!;
-        bool known = ashley == _view.Battle?.Ashley;
+        // An enemy's hit points, magic points and RISK show only once Analyze has been cast on it (MENU4 0x80103c68,
+        // 0x80103de8: its data's +0x954 bit 17); else their placeholder (0x8010399c).
+        bool known = ashley == _view.Battle?.Ashley || ashley.Analyzed;
         var limbs = StatusLimbs(ashley);
         var icons = StatusIcons(ashley);
         var conditions = menu["conditions"].AsStringArray();
