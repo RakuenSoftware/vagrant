@@ -620,6 +620,25 @@ public sealed class FieldContent
     /// </summary>
     public int Sine(int angle, bool cosine) => BitConverter.ToUInt16(_executable, SineTable + angle * 4 + (cosine ? 2 : 0));
 
+    /// <summary>
+    /// The executable's sine of an angle, 4096 a turn and 4096 a whole (SLUS_010.40 0x80040f28): the angle reflected
+    /// into the table's first eighth by its bits (a quarter turn exactly is 4096; past it the angle is taken from a half
+    /// turn; its second eighth reads the cosine column), negative when the angle's bit 0x800 is set.
+    /// </summary>
+    public int Sin(int angle)
+    {
+        if ((angle & 0x400) != 0)
+        {
+            if ((angle & 0x3FF) == 0) return (angle & 0x800) != 0 ? -4096 : 4096;
+            angle = 2048 - angle;
+        }
+        int t = angle & 0x1FF, v = (angle & 0x200) != 0 ? Sine(512 - t, cosine: true) : Sine(t, cosine: false);
+        return (angle & 0x800) != 0 ? -v : v;
+    }
+
+    /// <summary>The executable's cosine (SLUS_010.40 0x80040f24): the sine a quarter turn on.</summary>
+    public int Cos(int angle) => Sin(angle + 1024);
+
     /// <summary>The executable's arctangent table (SLUS_010.40 0x80040A14, read by its ratan2 0x8004137c): for a ratio 0 to 512 (512 a whole), its angle, 512 an eighth of a turn.</summary>
     public int Arctangent(int ratio) => _executable[ArctangentTable + ratio];
 

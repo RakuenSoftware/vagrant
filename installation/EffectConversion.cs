@@ -412,6 +412,23 @@ public static class EffectConversion
             }
         }
         effect["envelopes"] = envelopes;
+        // The same entries as the pad's vibration reads them (SLUS_010.40 0x800436B4): from the entry's start, its
+        // small motor's pairs from byte 1 and its large motor's from the skip, each ending with a duration of 0.
+        var rumbles = new JsonArray();
+        if (blocks.TryGetValue(11, out var rumbleBlock))
+        {
+            int b = rumbleBlock.At, count = S32(b);
+            for (int i = 0; i < count; i++)
+            {
+                int start = U16(b + 4 + i * 2), end = start + p[b + start];
+                // The large motor's track ends the entry.
+                while (end + 1 < rumbleBlock.Length && p[b + end] != 0) end += 2;
+                var bytes = new JsonArray();
+                for (int at = start; at <= Math.Min(end + 1, rumbleBlock.Length - 1); at++) bytes.Add((int)p[b + at]);
+                rumbles.Add(bytes);
+            }
+        }
+        effect["rumbles"] = rumbles;
 
         // The PLG renderers (track 4 starts renderer n with an emitter record), the standard colours, and for grids
         // (which texture straight from VRAM) each page they read: page n of the effect's slots at x 512 + 64 n,

@@ -129,6 +129,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private EventRain _rain = null!;
     /// <summary>The game's own sound driver, playing the disc's sequences and banks live.</summary>
     private SoundDriver _driver = null!;
+
+    /// <summary>The pad's vibration, stepped each frame of play.</summary>
+    public readonly VibrationDriver Vibration = new();
     /// <summary>The sounds playing by name (without their pan), each with its full key.</summary>
     private readonly Dictionary<string, string> _sounds = new();
     /// <summary>The music's volume (0 to 1) as fades move it.</summary>
@@ -1133,17 +1136,26 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var data = _content.Data($"effect_{id:d3}");
         Texture2D? atlas = data.ContainsKey("atlas") ? _content.Texture(data["atlas"].AsString()) : null;
         // An event's effect comes from the point (0, 0, 0) rather than from an actor, at the actor it was requested on
-        // (BATTLE.PRG 0x8007BDC4; the other characters it lists are bystanders, whose shifts are not followed).
+        // (BATTLE.PRG 0x8007BE20; every other character in the actor table is a bystander).
         var source = fromOrigin ? new FieldEffect.Entity { Point = Vector3.Zero } : new FieldEffect.Entity { Actor = caster };
         var targets = new List<FieldEffect.Entity> { point is { } at ? new() { Point = at } : new() { Actor = target ?? caster, Bone = bone } };
         var effect = new FieldEffect(data, atlas, source, targets, resident >= 0 ? resident * 3 : 0, name => _content.Texture(name), armed: fromOrigin)
         {
-            Caster = fromOrigin ? caster : null,
+            Content = _content.Field,
             Mode = mode,
             Slot = slot => Actors.GetValueOrDefault("slot:" + slot),
             Bystanders = () => Actors.Values,
             ColourShift = (actor, operation, change, fade) => TransformPalette(actor?.Id ?? "room", operation, change, fade),
-            Sound = (key, at) => PlaySound(key, 127, at is { } place ? PlacedPan(Field.Geometry.ToGlobal(EventActor.RetailSpace * place)) : -1),
+            Sound = (key, at) =>
+            {
+                if (at is not { } place) { PlaySound(key, 127); return; }
+                // A placed sound (SLUS_010.40 0x80045A58) is not played where it would be silent.
+                var (pan, volume) = Placement(Field.Geometry.ToGlobal(EventActor.RetailSpace * place));
+                if (volume > 0) PlaySound(key, volume, pan);
+            },
+            Camera = () => Controlled
+                ? (Gameplay.Eye, Gameplay.LookAt, Gameplay.Projection)
+                : (EventActor.RetailSpace.AffineInverse() * Field.CameraEye, EventActor.RetailSpace.AffineInverse() * Field.CameraTarget, EventProjection),
             Sequence = id => _driver.PlaySequence(_content.EffectSequence(id)),
             SequenceEnded = () => _driver.StopSequence(),
             SkyShift = (operation, change, fade) => TransformPalette("sky", operation, change, fade),
@@ -1152,7 +1164,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             WeaponGlow = (actor, grey) => actor?.GlowWeapon(grey),
             HoldPlatforms = frames => { if (_platforms.Count > 0) _platformHold = frames; },
             ActorSound = (actor, number) => { if (actor != null) PlayActorSound(actor, $"c{actor.Character:X2}_{number}_p128"); },
-            Rumble = (_, strength) => { foreach (int pad in Input.GetConnectedJoypads()) Input.StartJoyVibration(pad, Math.Min(1f, strength / 255f), Math.Min(1f, strength / 128f), 0.3f); },
+            Rumble = envelope => Vibration.Start(envelope, 1),
         };
         effect.Scene = Field;
         Field.Geometry.AddChild(effect);
@@ -2400,12 +2412,22 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>The pan an actor's place on screen gives its sounds: 0 at the left edge to 255 at the right, centred when out of sight behind.</summary>
     private int PlacedPan(EventActor speaker) => PlacedPan(speaker.Node.GlobalPosition);
 
-    /// <summary>The pan a place on screen gives a sound: 0 at the left edge to 255 at the right, centred when out of sight behind.</summary>
-    private int PlacedPan(Vector3 place)
+    private int PlacedPan(Vector3 place) => Placement(place).Pan;
+
+    /// <summary>
+    /// The pan and volume a place gives a sound (SLUS_010.40 0x800459AC on the GTE's projection of it, 0x80041814):
+    /// pan 128 plus three tenths of its screen x from the middle, held within 96 either way; volume 127 less its
+    /// depth over four, past 768 and held below 4096, over 32.
+    /// </summary>
+    private (int Pan, int Volume) Placement(Vector3 place)
     {
-        if (Field?.Camera is not { } camera || !camera.IsInsideTree() || camera.IsPositionBehind(place)) return 0x80;
-        float across = camera.UnprojectPosition(place).X / Math.Max(1, GetViewport().GetVisibleRect().Size.X);
-        return Math.Clamp((int)(across * 255), 0, 255);
+        if (Field?.Camera is not { } camera || !camera.IsInsideTree()) return (0x80, 127);
+        bool staged = _eventCamera && !Controlled;
+        float projection = staged ? EventProjection : Gameplay.Projection, far = staged ? _eventFar : 4096;
+        var local = camera.GlobalTransform.AffineInverse() * place * Installation.MapConversion.UnitsPerMetre;
+        var (screen, _) = EventActor.GteProjection(local, projection, projection / 2 * 4096 / far, 1);
+        int depth = Math.Clamp((int)(-local.Z * 4096 / far), 0, 65535) >> 2;
+        return (Math.Clamp(3 * (int)screen.X / 10, -96, 96) + 128, 127 - Math.Clamp(depth - 768, 0, 4095) / 32);
     }
 
     /// <summary>The resident sounds the menus play: the cursor's change, a choice made, leaving, a refusal and a file written.</summary>
@@ -3937,6 +3959,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         foreach (string button in BattleButtons) if (Input.IsActionJustPressed(button)) _presses.Add(button);
         if (_events != null && _oddFrame) StepEvent();
         if (_oddFrame) _rain.Step();
+        if (_oddFrame) Vibration.Step();
         if (_oddFrame)
             foreach (var effect in _effects.ToArray())
             {
@@ -4174,10 +4197,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (_carried != null) ShowCrate(_carried, player.Position + new Vector3(0, -460, 0));
         }
         int turn = (Input.IsActionPressed("ps_l1") ? 1 : 0) - (Input.IsActionPressed("ps_r1") ? 1 : 0);
-        // An effect may have the camera look at one of its anchors for a while.
-        Vector3? focus = null;
-        foreach (var effect in _effects) focus ??= effect.Focus;
-        Gameplay.Step(focus ?? player.Position, turn, _zoomPressed);
+        Gameplay.Step(player.Position, turn, _zoomPressed);
         _zoomPressed = false;
         // The timer counts two sixtieths a frame of retail's 30 Hz play.
         if (_oddFrame) StepTimer();
@@ -5971,6 +5991,16 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // The gameplay projection: H 512 on the 320-pixel screen, near 64 and far 4096.
             Field.CameraEye = EventActor.RetailSpace * Gameplay.Eye;
             Field.CameraTarget = EventActor.RetailSpace * Gameplay.LookAt;
+            float projection = Gameplay.Projection;
+            // An effect's camera move sets the camera while it runs and leaves it where it ends (BATTLE.PRG 0x800D1B80).
+            foreach (var effect in _effects)
+                if (effect.View is { } view)
+                {
+                    Field.CameraEye = EventActor.RetailSpace * view.Eye;
+                    Field.CameraTarget = EventActor.RetailSpace * view.Target;
+                    projection = view.Projection;
+                    break;
+                }
             if (_lookAround && Player is { } viewer)
             {
                 // Through her eyes: the facing she had, turned and tilted by the stick (y down, so up is negative).
@@ -5983,7 +6013,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // Retail's screen shows 224 lines about the projection centre; a window wider than 4:3 sees more to the
             // sides rather than less above and below.
             Field.Camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
-            Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / Gameplay.Projection));
+            Field.Camera.Fov = Mathf.RadToDeg(2 * Mathf.Atan(VisibleLines / 2f / projection));
             Field.Camera.Near = 64 / Installation.MapConversion.UnitsPerMetre;
             Field.Camera.Far = 32768 / Installation.MapConversion.UnitsPerMetre;
             // The engine's points stand with the gameplay camera while she plays, so an event that eases from them or
