@@ -1089,6 +1089,26 @@ public sealed partial class FieldBattle
         m.Raised = false;
     }
 
+    /// <summary>
+    /// Marks the tile of a trap an effect has shown (0x400, BATTLE.PRG 0x800e68ec from 0x8006cdd8). The grid's high
+    /// byte is tested against the marks an enemy shuns (its AI +0x32: 4, 5, 5 or 7 by AI word bits 30 and 31, table
+    /// 0x80069C18, left unset when its moves (+0x15e) have 0xC0; 0x800d954c and 0x800d9b6c), all four have 4, so a walker
+    /// with them keeps off it.
+    /// </summary>
+    public void MarkTrap(int x, int z)
+    {
+        if (_cells == null) Survey();
+        if ((uint)x >= 32 || (uint)z >= 32) return;
+        _cells![z * 32 + x] |= 0x400;
+    }
+
+    /// <summary>Whether a tile carries a mark (its grid word, BATTLE.PRG [0x800F58B8]).</summary>
+    public bool Marked((int X, int Z) tile, int mark)
+    {
+        if (_cells == null) Survey();
+        return (Cell(tile) & mark) != 0;
+    }
+
     /// <summary>Marks a tile taken (0x80, BATTLE.PRG 0x800e4c1c) or frees it (0x800e4c28).</summary>
     private void Reserve((int X, int Z) t, bool taken)
     {

@@ -936,7 +936,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     private sealed class TrapPanel
     {
-        public int X, Z, Type, Fade;
+        public int X, Z, Level, Type, Fade;
         public bool Revealed;
     }
 
@@ -966,7 +966,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             var trap = value.AsGodotDictionary();
             var tile = trap["tile"].AsGodotArray();
             int type = trap["type"].AsInt32();
-            _trapPanels.Add(new TrapPanel { X = tile[0].AsInt32(), Z = tile[1].AsInt32(), Type = type, Revealed = type < 16 && trap["location"].AsInt32() != 0 });
+            _trapPanels.Add(new TrapPanel { X = tile[0].AsInt32(), Z = tile[1].AsInt32(), Level = trap["level"].AsInt32(), Type = type, Revealed = type < 16 && trap["location"].AsInt32() != 0 });
         }
         _trapPanelTexture = null;
         _trapPanelTiles = Array.Empty<Rect2>();
@@ -1003,8 +1003,23 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Reveals the trap on a tile (BATTLE.PRG 0x8008deac): one that has been sprung (0x80074314), or that an effect's
-    /// action 2 lands on (0x8006cdd8). Its floor panel then fades in.
+    /// What an effect's action 2 does where it lands (BATTLE.PRG 0x8006cdd8; Eureka's and Fixate's effects use it): the
+    /// point's tile (its x and z over 128, toward zero) names the room's first trap there at level 0 (0x8008d438), none
+    /// if that one is a trap (type under 16) while the traps are cleared; that trap is revealed (0x8008deac) and its tile
+    /// marked 0x400 in the enemies' grid (0x800e68ec), which keeps them off it (<see cref="FieldBattle.MarkTrap"/>).
+    /// </summary>
+    public void TrapSeen(Vector3 point)
+    {
+        int x = (short)(int)point.X / 128, z = (short)(int)point.Z / 128;
+        var trap = _trapPanels.Find(t => t.X == x && t.Z == z && t.Level == 0);
+        if (trap == null || TrapsCleared && trap.Type < 16) return;
+        trap.Revealed = true;
+        Battle?.MarkTrap(trap.X, trap.Z);
+    }
+
+    /// <summary>
+    /// Reveals the trap on a tile (BATTLE.PRG 0x8008deac): one that has been sprung (0x80074314). Its floor panel then
+    /// fades in.
     /// </summary>
     public void RevealTrap(int x, int z)
     {
@@ -1130,7 +1145,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             SequenceEnded = () => _driver.StopSequence(),
             SkyShift = (operation, change, fade) => TransformPalette("sky", operation, change, fade),
             Trail = (actor, part, style, on) => SetTrail(actor, part, style, on),
-            RevealTrap = point => RevealTrap((int)Mathf.Floor(point.X / 128), (int)Mathf.Floor(point.Z / 128)),
+            RevealTrap = TrapSeen,
             WeaponGlow = (actor, grey) => actor?.GlowWeapon(grey),
             HoldPlatforms = frames => { if (_platforms.Count > 0) _platformHold = frames; },
             ActorSound = (actor, number) => { if (actor != null) PlayActorSound(actor, $"c{actor.Character:X2}_{number}_p128"); },
@@ -5014,8 +5029,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
         // Effect 36 (Fixate) is cast on every platform switched on (BATTLE.PRG 0x80070cac with 0x8008d2c0's list): its
         // effect plays at each, and as it lands (0x8006cdd8) the trap on that platform's tile is revealed (0x8008deac)
-        // and the tile marked in the AI's grid (0x800e68ec sets 0x400 at [0x800F58B8]; nothing in BATTLE.PRG reads
-        // that bit, so it is not kept).
+        // and the tile marked in the AI's grid (0x800e68ec sets 0x400 at [0x800F58B8]), which the enemies then keep off
+        // (FieldView.TrapSeen).
         if (effects.Count > 0 && effects[0].AsGodotDictionary()["effect"].AsInt32() == 36)
         {
             if (Battle.Ashley is not { } fixer) return "Not now.";
