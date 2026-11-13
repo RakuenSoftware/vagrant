@@ -1551,7 +1551,7 @@ public partial class FieldContracts : Node
             if (_masterySpell < 0) { Finish("no healing spell was found to cast"); return true; }
             ashley.Mp = ashley.MaxMp;
             // The enemies wait while she casts, so that no move of theirs speaks over the message looked for.
-            foreach (var c in battle.Combatants.Values) if (c != ashley) c.Timer = int.MaxValue / 2;
+            foreach (var c in battle.Combatants.Values) if (c != ashley && c.Mind != null) c.Mind.Held = true;
             string note = _view.Cast(_masterySpell);
             if (note.Length != 0) { Finish($"the healing spell {_masterySpell} could not be cast: {note}"); return true; }
             // It is aimed first: the sphere on Ashley, her name and hit points and "TARGET:", and Circle casts it.
@@ -1569,7 +1569,7 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: spell {_masterySpell} cast to its end: \"{_view.SystemBox.Text}\" under header {_view.SystemBox.Header}; the HUD is {(battle.Hud is { Acting: true } ? "still away" : "back")} {elapsed - _masteryAt} frames on");
             _masteryDone = true;
             ashley.Mp = ashley.MaxMp;
-            foreach (var c in battle.Combatants.Values) if (c != ashley) c.Timer = c.Pause;
+            foreach (var c in battle.Combatants.Values) if (c != ashley && c.Mind != null) c.Mind.Held = false;
             if (!_view.Mastered.Contains(_masterySpell) || _view.SystemBox.Header != 3) Finish("the mastered spell was not kept, or not under CHECK");
             else if (battle.Hud is { Acting: true }) Finish("the HUD was still put away as the spell's action ended");
             return true;

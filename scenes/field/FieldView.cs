@@ -2522,8 +2522,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { Fail(error.Message); }
     }
 
-    /// <summary>A remembered room character: its hit and magic points, limbs' hit points, place and facing, and whether it fell.</summary>
-    private sealed record EnemyState(int Hp, int Mp, int[] Limbs, Vector3 Position, float Facing, bool Dead);
+    /// <summary>
+    /// A remembered room character: its hit and magic points, limbs' hit points, place and facing, whether it fell, and
+    /// how it stood to Ashley (BATTLE.PRG 0x800e6694's halfword, <see cref="FieldBattle.Bearing"/>).
+    /// </summary>
+    private sealed record EnemyState(int Hp, int Mp, int[] Limbs, Vector3 Position, float Facing, bool Dead, int Standing);
 
     /// <summary>
     /// The characters of the last four rooms Ashley was in (BATTLE.PRG's zone enemy cache, four rooms of eight
@@ -2545,7 +2548,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 var limbs = new int[c.Limbs.Count];
                 for (int i = 0; i < limbs.Length; i++) limbs[i] = c.Limbs[i].Hp;
-                states[index] = new EnemyState(c.Hp, c.Mp, limbs, c.Actor.Position, c.Actor.Facing, c.Dead);
+                states[index] = new EnemyState(c.Hp, c.Mp, limbs, c.Actor.Position, c.Actor.Facing, c.Dead, Battle.Bearing(c));
             }
     }
 
@@ -2604,6 +2607,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 actor.Position = state.Position;
                 actor.Facing = state.Facing;
             }
+            Battle.Restore(combatant, state?.Standing ?? -1);
             combatant.OwnWeapon = entry["stats"].AsGodotDictionary()["weapon"].AsGodotDictionary().GetValueOrDefault("asset", "").AsString();
             Arm(combatant, combatant.OwnWeapon);
             Arm(combatant, entry["stats"].AsGodotDictionary().GetValueOrDefault("shield", new GDictionary()).AsGodotDictionary().GetValueOrDefault("asset", "").AsString(), shield: true);

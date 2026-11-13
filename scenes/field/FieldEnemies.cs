@@ -1,0 +1,1743 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+using System;
+using System.Collections.Generic;
+using Godot;
+using GDictionary = Godot.Collections.Dictionary;
+
+namespace Wol.Games.Vagrant.Scenes.Field;
+
+/// <summary>
+/// The enemies' AI, as BATTLE.PRG runs it each battle frame: the tick (0x800d8ef4: timers, perception, plan upkeep),
+/// then the decision pass (0x800daed0: launch, unstick, behaviour routine, wander). Moves come from the planner
+/// (<see cref="PlanMoves"/>); the body carries out the orders the AI gives it (<see cref="Drive"/>).
+/// </summary>
+public sealed partial class FieldBattle
+{
+    public sealed partial class Combatant
+    {
+        /// <summary>Its AI record (BATTLE.PRG's 0x484 bytes, 0x800f5878 by actor index); null for a crate.</summary>
+        public Mind? Mind;
+        /// <summary>Its actor index (the node's +4): 0 for Ashley, 16 for none.</summary>
+        public int Index = 16;
+        /// <summary>How long it has held a token (its AI's +0x8e), 0 with none: the frames of its telegraph.</summary>
+        public int Telegraph => Mind?.Token ?? 0;
+        /// <summary>The frames left after it let a token go (its AI's +0x9a), while its jagged balloon stands.</summary>
+        public int Alert => Mind?.AfterRelease ?? 0;
+    }
+
+    /// <summary>The behaviour routines of BATTLE.PRG's table at 0x800F1790, by a room actor record's bits 4 to 8.</summary>
+    public enum Behaviour { Fighter, KeepsDistance, FollowsAlly, Escort, PackHunter, Bodyguard, Patroller, ScaredEscort, Berserk, None }
+
+    /// <summary>
+    /// What the AI has an enemy's body do this frame (the actor command it writes, 0x800deefc): stand (0), turn to a
+    /// facing (4), walk for its goal (6, by way of 0x800e50a0), or step along a heading while facing elsewhere (5/7).
+    /// </summary>
+    public enum Order { Stand, Turn, Path, Away }
+
+    /// <summary>An action made: who made it, which, and on whom (the action block BATTLE.PRG hands its replan, 0x800dec88).</summary>
+    public sealed record Acted(Combatant Caster, int Action, Combatant Target);
+
+    /// <summary>
+    /// An actor's AI record (BATTLE.PRG, 0x484 bytes): what it perceives of every actor, how it stands to them, its
+    /// token, state, plan phase, chase, memory and the order it gives its body. Offsets are the record's.
+    /// </summary>
+    public sealed class Mind
+    {
+        /// <summary>Its word for each actor index (+0x1a4): bit 0 sees it, 1 just lost it, 2 low line of sight, 3 in its view cone, 5 aware of it, 6-7 the relation (3 foe, 2 ally, 1 neither), 8-14 frames a foe went unseen, 15-19 frames it is seen regardless, 20-26 frames a relation is overridden, 27 another stands in the line of fire, 28-29 the relation restored, 30 high line of sight, 31 perceived for targeting.</summary>
+        public readonly uint[] Relations = new uint[16];
+        /// <summary>The squared distance to each actor index (+0x1e4).</summary>
+        public readonly uint[] Distances = new uint[16];
+        /// <summary>Its reference height (+0x82, the centre, negative above the feet), eye height (+0xb8) and girth (+0x92).</summary>
+        public int Height, Head, Radius = 63;
+        /// <summary>How far it sees and hears, squared (+0xac, +0xa4), and the cosine (4096 a whole) its view cone opens to (+0xa8).</summary>
+        public uint SightSquared, HearingSquared;
+        public int ConeCosine = -4096;
+        /// <summary>Calls of the line-of-sight test (+0x12b): odd ones test at eye height, even ones at the centre.</summary>
+        public int Sightings;
+        /// <summary>AI word bits: sees without a line of sight (15, +0x25), searches where it lost a foe (13, +0x24), keeps facing the point it backs off from (7, +0x33), forgets a foe unseen 120 frames (23, +0x22), defends allies (24, +0x21), turns on whoever harms it (25, +0x30) and how (26, +0x20), and may be won over by Ashley's help (27, +0x27).</summary>
+        public bool BlindSight, SearchesLost, KeepsFacing, Forgets, Defends, Retaliates, Avenges, Convertible;
+        /// <summary>When it retreats (AI word bits 28 and 29, +0x2f), and whether it does this frame (+0x0e).</summary>
+        public int FleeRule;
+        public bool Retreating;
+        /// <summary>Won over to Ashley's side (+0x13), the help that counted toward it (+0x126), and the routine it had before (+0x6c).</summary>
+        public bool Converted;
+        public int Conversions;
+        public Behaviour Behaviour = Behaviour.Fighter;
+        public Behaviour? Calmed;
+        /// <summary>Its group and the group of the leader it keeps by (the record's +0x30 bits 0-3 and 9-13), and that leader's index (+0x16, 16 none).</summary>
+        public int Group, LeaderGroup = -1, Leader = 16;
+        /// <summary>Its state for its first planned move (+0x12e: 1 approach, 2 special spot, 7 nothing planned) and its plan phase (+0x131).</summary>
+        public int State = 7, Phase = 3;
+        /// <summary>Its token's age (+0x8e), the refractory frames before it may take one again (+0x98), the frames after a release (+0x9a).</summary>
+        public int Token, Refractory, AfterRelease;
+        /// <summary>The icon shown over it (the byte at 0x800f2260), and an icon held for a time (+0x138, +0x12a).</summary>
+        public int Shown, Icon, IconTimer;
+        /// <summary>Frames before it may voice another reaction (+0x155).</summary>
+        public int VoiceLockout;
+        /// <summary>Its movement profiles' flags (+0x15e), its reach extension in 32-unit steps (+0xb3), its turn speed in range (+0xba) and its usual turn speed (+0x13c).</summary>
+        public int Moves, ReachBonus, TurnSpeed, DefaultTurn = 128;
+        /// <summary>Its two movement profiles, flags and speed in units a frame (+0x224 to +0x227: data +0x30, +0x32, +0x31, +0x33), and its hop's reach (+0xb4).</summary>
+        public int FlagsA, FlagsB, SpeedA, SpeedB, HopReach;
+        /// <summary>The chase (0x800e24ec): its target (+0xe5), stop distance (+0xdc), range band (+0xe9: 0 far, 1 in range, 2 too close), the last stop, target and flag (+0xe0, +0xeb, +0xea), the frames all stayed (+0xf8), the face latch (+0xe8), the search (+0xe4, +0xe6) for the last known tile (+0xec), and the target's half-tile (+0xf4).</summary>
+        public int ChaseTarget = 16, Stop, Band, LastStop, LastChaseTarget = 16, Unchanged, SearchTimer;
+        public bool LastFlag, FaceLatch, Searching;
+        public (int X, int Z) LastKnown, TargetHalf;
+        /// <summary>Its tile last frame (+0x34), frames it stood on it (+0x46, from 2700), and whether it is stuck (+0x1c) with the 40-frame cycle (+0x45).</summary>
+        public (int X, int Z) Tile = (-1, -1);
+        public int SameTile = 2700, Cycle;
+        public bool Stuck, Still;
+        /// <summary>The tile it remembers failing on (+0x38, null none), whom it failed on and where they stood (+0x3b, +0x3c), and for how long (+0x40).</summary>
+        public (int X, int Z)? Memory;
+        public int MemoryTarget = 16, MemoryTimer;
+        public (int X, int Z) MemoryTargetTile;
+        /// <summary>The unstick step (+0xfa), its four directions (+0x118) and whom it faces as it steps (+0xfb).</summary>
+        public int Unstick, UnstickFace = 16;
+        public readonly int[] UnstickDirections = new int[4];
+        /// <summary>The flee memory (+0x114) and the threats' tile (+0x110).</summary>
+        public int FleeTimer;
+        public (int X, int Z) Threat;
+        /// <summary>The ring of its last eight positions' low bytes (+0x70, +0x78), its index and fill (+0x80, +0x81), and the pause an oscillation earns (+0x19a).</summary>
+        public readonly byte[] RingX = new byte[8], RingZ = new byte[8];
+        public int RingIndex, RingFill, Pause;
+        /// <summary>Its movement mode (+0x8a: 1 chase, 2 go to, 3 wander, 4 flee, 5 patrol, 6 hold in range).</summary>
+        public int Mode;
+        /// <summary>The mode-6 turn: the tile it turned for (+0x108), whether it is turning (+0x10c) and to what facing (+0x18a).</summary>
+        public (int X, int Z) TurnGoal = (-1, -1);
+        public bool TurnLatch;
+        public float TurnAngle;
+        /// <summary>The look-around timers by mode (+0x474): frames left and kind.</summary>
+        public readonly (int Ticks, int Kind)[] Looks = new (int, int)[8];
+        /// <summary>The bodyguard's latches: its protectee was an ally (+0x0f), the intercept timer (+0x44), and its protectee lost (+0x18).</summary>
+        public bool Protecting, Lost;
+        public int Intercept;
+        /// <summary>Its AI is held (+0x18c): it neither perceives nor decides.</summary>
+        public bool Held;
+        /// <summary>This frame: skips its decision (+0x14), and perceived although it skips (+0x1d).</summary>
+        public bool Skip, Refreshed;
+        /// <summary>Whom it faces (+0x15c, 16 none), the point it keeps facing (+0x158), its goal tile (+0x168), whether to run (+1), the heading it steps along and the order.</summary>
+        public int FaceTarget = 16;
+        public Vector3? FacePoint;
+        public (int X, int Z) Goal;
+        public bool Run;
+        public float Heading, TurnTo, TurnRate = 128;
+        public Order Order;
+        /// <summary>The move it set out to make (+0x22c).</summary>
+        public PlanEntry? Executing;
+        /// <summary>How it stood to Ashley when last in this room (+0x42, 0x800e6694's halfword), -1 none.</summary>
+        public int Saved = -1;
+        /// <summary>Dormant (+0x12d): 0 awake, 1 lying still, 2 stirring.</summary>
+        public int Dormant;
+        /// <summary>Its home tile and how far it wanders about it (+0xcc, +0xc8: 63 a free wander), and its pace: frames moving and idling and its odds of a new heading, one in two to the power (+0xd6, +0xd4, +0xd8).</summary>
+        public (int X, int Z) Home;
+        public int HomeRadius, MoveFrames, IdleFrames, Chance;
+        /// <summary>The wander (0x800e1eac): its frame count (+0xc2), sub-state (+0xc0), heading or last step (+0xd0, -1 none), stall timer (+0xd2), and the random walk's tile and steps (+0x11c, +0x15d).</summary>
+        public int WanderCount, WanderState, WanderHeading = -1, Stall, WalkSteps;
+        public (int X, int Z) WalkTile;
+    }
+
+    /// <summary>The actors holding a token, newest first (BATTLE.PRG's list at +0x1c of the battle AI block, and its count at +0x12).</summary>
+    private readonly List<Combatant> _holders = new();
+    /// <summary>Whether an actor launched an action this frame (0x800f58e0), and how many engaged this frame (the block's +0x24).</summary>
+    private bool _launched;
+    private int _engagers;
+    /// <summary>The actor index perceived in turn after Ashley (0x800f58d4).</summary>
+    private int _rotating;
+    /// <summary>The action under way and who made it, heeded as it ends.</summary>
+    private Acted? _acted;
+
+    /// <summary>How many may hold a token at once less one (the battle AI block's +0x0d: the room's word at 0x450 of sub-section 5, bits 29 to 31).</summary>
+    private int TokenLimit => Math.Max(0, _view.Document.GetValueOrDefault("telegraphs", 1).AsInt32() - 1);
+
+    private static int Sin(int angle) => (int)Math.Round(4096 * Math.Sin(angle * Math.Tau / 4096));
+    private static int Cos(int angle) => Sin(angle + 1024);
+    private static int Root(long value) => value <= 0 ? 0 : (int)Math.Sqrt(value);
+    private static int Angle(float dx, float dz) => (int)Math.Round(Math.Atan2(dx, dz) * 4096 / Math.Tau);
+    private int Roll(int range) => (int)(_random.Randi() & (uint)(range - 1));
+    private static (int X, int Z) TileOf(Combatant c) => ((int)Mathf.Floor(c.Actor.Position.X / 128), (int)Mathf.Floor(c.Actor.Position.Z / 128));
+    private static Vector3 Centre((int X, int Z) tile, float y) => new(tile.X * 128 + 64, y, tile.Z * 128 + 64);
+    private Combatant? At(int index) => index is >= 0 and < 16 ? Fighters().Find(c => c.Index == index) : null;
+
+    /// <summary>
+    /// Gives an actor its AI record as it joins the battle (BATTLE.PRG 0x800e6178 with the AI word's decoding,
+    /// 0x800e5a9c): its senses, faction, temper, retreat rule and movement from the AI word; its behaviour routine,
+    /// group and leader's group from its room record; its heights and girth from its model. Then its relations are set
+    /// (<see cref="Relate"/>) and leaders found (0x800e5998).
+    /// </summary>
+    private void Awaken(Combatant c, uint ai, GDictionary stats)
+    {
+        if (c.Cube) return;
+        var taken = new HashSet<int>();
+        foreach (var other in Combatants.Values) if (other != c && !other.Dead && other.Mind != null) taken.Add(other.Index);
+        if (c.Actor.Id == "slot:0") c.Index = 0;
+        else if (c.Actor.Id.StartsWith("slot:", StringComparison.Ordinal) && int.TryParse(c.Actor.Id[5..], out int slot) && slot is > 0 and < 16 && !taken.Contains(slot)) c.Index = slot;
+        else for (c.Index = 1; c.Index < 16 && taken.Contains(c.Index); c.Index++) { }
+        if (c.Index >= 16) return;
+        var definition = _view.Content.Character(c.Actor.Character);
+        int girth = definition.GetValueOrDefault("girth", 63).AsInt32();
+        var (sight, cone, rate) = _view.Content.Field.Senses(ai);
+        var m = new Mind
+        {
+            Height = (int)c.Centre, Head = definition.GetValueOrDefault("height", 0).AsInt32(),
+            Radius = c.Index == 0 ? 40 : Math.Min(girth, 62),
+            SightSquared = sight, HearingSquared = Math.Min(sight, 0x240000u),
+            ConeCosine = Cos(cone / 2 * 4096 / 360),
+            DefaultTurn = girth > 128 ? 32 : 128,
+            KeepsFacing = (ai >> 7 & 1) != 0, SearchesLost = (ai >> 13 & 1) != 0, BlindSight = (ai >> 15 & 1) != 0,
+            Forgets = (ai >> 23 & 1) != 0, Defends = (ai >> 24 & 1) != 0, Retaliates = (ai >> 25 & 1) != 0, Avenges = (ai >> 26 & 1) != 0,
+            Convertible = (ai >> 27 & 1) != 0, FleeRule = (int)(ai >> 28 & 3),
+            Behaviour = (Behaviour)Math.Min(stats.GetValueOrDefault("behaviour", 0).AsInt32(), (int)Behaviour.None),
+            Group = stats.GetValueOrDefault("group", 0).AsInt32(), LeaderGroup = stats.GetValueOrDefault("leader", 0).AsInt32(),
+            HomeRadius = stats.GetValueOrDefault("home_radius", 0).AsInt32(), Dormant = stats.GetValueOrDefault("dormant", false).AsBool() ? 1 : 0,
+        };
+        if (stats.GetValueOrDefault("home", new Godot.Collections.Array()).AsGodotArray() is { Count: 2 } home) m.Home = (home[0].AsInt32(), home[1].AsInt32());
+        (m.MoveFrames, m.IdleFrames, m.Chance) = _view.Content.Field.WanderPace(ai);
+        m.TurnSpeed = m.DefaultTurn * rate >> 4;
+        c.Faction = (int)(ai >> 21 & 3);
+        // Its movement profiles: their flags (+0x15e) and the larger of their speeds, its reach extension (+0xb3, 0x800e685c).
+        var profiles = stats.GetValueOrDefault("moves", new Godot.Collections.Array()).AsGodotArray();
+        if (profiles.Count == 2)
+        {
+            (m.FlagsA, m.SpeedA) = (profiles[0].AsGodotArray()[0].AsInt32(), profiles[0].AsGodotArray()[1].AsInt32());
+            (m.FlagsB, m.SpeedB) = (profiles[1].AsGodotArray()[0].AsInt32(), profiles[1].AsGodotArray()[1].AsInt32());
+        }
+        m.Moves = m.FlagsA | m.FlagsB;
+        m.ReachBonus = Math.Max(m.SpeedA, m.SpeedB);
+        // Its hop's reach (0x800e6178): the hopping profile's speed, 128 units a point, kept within its sight.
+        m.HopReach = (m.FlagsA & 8) != 0 ? m.SpeedA << 7 : (m.FlagsB & 8) != 0 ? m.SpeedB << 7 : 0;
+        if ((long)(m.HopReach - 64) * (m.HopReach - 64) > m.SightSquared) m.HopReach = Root(m.SightSquared) - 64;
+        c.Mind = m;
+        Relate(c);
+        // Leaders (0x800e5998): one without finds the first actor, Ashley first, whose group is its leader's group.
+        foreach (var follower in Fighters())
+        {
+            if (follower.Mind is not { Leader: 16 } f) continue;
+            foreach (var leader in Fighters()) if (leader.Mind is { } l && l.Group == f.LeaderGroup) { f.Leader = leader.Index; break; }
+        }
+    }
+
+    /// <summary>
+    /// Sets how an actor stands to every other (BATTLE.PRG 0x800e7370): 2 to itself, else by its faction and whether
+    /// the other is another of factions 0 to 2 (<see cref="Runtime.FieldContent.Relation"/>); one that has no relation to it
+    /// yet is set in turn.
+    /// </summary>
+    private void Relate(Combatant s)
+    {
+        var m = s.Mind!;
+        foreach (var k in Fighters())
+        {
+            if (k.Mind is not { } other) continue;
+            int r = k == s ? 2 : _view.Content.Field.Relation(s.Faction, !(k != Ashley && k.Faction < 3));
+            m.Relations[k.Index] = m.Relations[k.Index] & ~0xC0u | (uint)r << 6;
+            if ((other.Relations[s.Index] >> 6 & 3) == 0) Relate(k);
+        }
+    }
+
+    /// <summary>
+    /// How a room character stood to Ashley as she leaves (BATTLE.PRG 0x800e6694): bit 0 won over, bits 1-2 its
+    /// relation, 3-4 the relation it goes back to, 5 not dormant, 6-12 the frames left of an overridden relation; -1
+    /// without an AI.
+    /// </summary>
+    public int Bearing(Combatant c)
+    {
+        if (c.Mind is not { } m) return -1;
+        uint word = m.Relations[0];
+        return (m.Converted ? 1 : 0) | (int)(word >> 6 & 3) << 1 | (int)(word >> 28 & 3) << 3 | (m.Dormant == 0 ? 1 : 0) << 5 | (int)(word >> 20 & 0x7F) << 6;
+    }
+
+    /// <summary>
+    /// Puts back how a room character stood to Ashley (BATTLE.PRG 0x800e72d0, run for every actor as each is made): from
+    /// its kept halfword, its relation, the one it goes back to and the frames left of an override; one won over is won
+    /// over again (0x800dc210). One already awake there does not lie dormant again (0x800e6538).
+    /// </summary>
+    public void Restore(Combatant c, int standing)
+    {
+        if (c.Mind != null) c.Mind.Saved = standing;
+        if (c.Mind != null && standing >= 0 && (standing & 0x20) != 0) c.Mind.Dormant = 0;
+        foreach (var a in Fighters())
+        {
+            if (a.Mind is not { Saved: >= 0 } m) continue;
+            int h = m.Saved;
+            m.Relations[0] = m.Relations[0] & 0xC80FFF30u | (uint)(h >> 3 & 3) << 28 | (uint)(h >> 1 & 3) << 6 | (uint)(h >> 6 & 0x7F) << 20;
+            if ((h & 1) != 0) Convert(a, true);
+        }
+    }
+
+    /// <summary>
+    /// One battle frame of the enemies' AI (BATTLE.PRG's callbacks at 0x800f16bc): the next actor perceived in turn
+    /// (0x800e50c8), every actor's tick (<see cref="Tick"/>), then every enemy's decision (<see cref="Decide"/>), then
+    /// their bodies carry out the orders (<see cref="Drive"/>).
+    /// </summary>
+    private void StepEnemies()
+    {
+        if (Ashley == null || Ashley.Dead) return;
+        _launched = false;
+        _engagers = 0;
+        if (_planClock < 0xFFFE) _planClock++;
+        foreach (var c in Combatants.Values) c.Recovery = c.Recovery >= 36 ? c.Recovery - 35 : 0;
+        var fighters = Fighters();
+        for (int i = 0; i < 16; i++)
+        {
+            _rotating = (_rotating + 1) & 15;
+            if (fighters.Exists(f => f.Index == _rotating && f.Mind != null)) break;
+        }
+        // One that has left the battle lets its token go and its icons (0x800d82cc, 0x800d821c).
+        foreach (var c in Combatants.Values)
+            if (c.Mind != null && c != Ashley && (c.Dead || !c.Hostile))
+            {
+                ReleaseToken(c);
+                Show(c, 0);
+                Show(c, 0x40);
+            }
+        foreach (var c in fighters) if (Acts(c)) Tick(c, fighters);
+        foreach (var c in fighters) if (Acts(c)) Decide(c, fighters);
+        foreach (var c in fighters) if (Acts(c)) Drive(c);
+    }
+
+    /// <summary>Whether an enemy fights by the AI: a hostile one with its weapon drawn.</summary>
+    private bool Acts(Combatant c) => c != Ashley && c.Mind != null && c.Hostile && c.Drawn && !c.Dead;
+
+    /// <summary>
+    /// An enemy's AI tick (BATTLE.PRG 0x800d8ef4): its icon, cooldown and token timers; held, taken out, paralysed or
+    /// mid-hop, it does no more; its oscillation pause; its stuck count (2700 frames on one tile) and the ring of its
+    /// positions that catches it going back and forth (a 30-frame pause); its perception of Ashley and of the actor in
+    /// turn (<see cref="Perceive"/>); its plan's upkeep (<see cref="Recheck"/>); whether it retreats; and its memory.
+    /// </summary>
+    private void Tick(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        m.Refreshed = false;
+        if (m.IconTimer != 0) Show(c, --m.IconTimer == 0 ? 0 : m.Icon);
+        if (m.VoiceLockout > 0) m.VoiceLockout--;
+        if (c.Cooldown > 0) c.Cooldown--;
+        StepToken(c);
+        m.Skip = true;
+        if (m.Held || c.Suspended || c.Has(Paralysis) || c.Mover is { Busy: true } || c.HopState != 0) return;
+        if (m.Lost)
+        {
+            if (m.IconTimer != 0 && m.Icon == 6) { KeepChase(c); return; }
+            m.Lost = false;
+        }
+        if (m.Pause != 0)
+        {
+            m.Pause--;
+            Face(c);
+            Perceive(c, Ashley!, fighters);
+            m.Refreshed = true;
+            if (m.SameTile >= 2) m.SameTile--;
+            KeepChase(c);
+            return;
+        }
+        m.Skip = false;
+        var tile = TileOf(c);
+        if (tile == m.Tile)
+        {
+            if (m.SameTile != 0 && --m.SameTile == 0)
+            {
+                m.UnstickFace = 16;
+                m.Stuck = true;
+                m.Cycle = 40;
+                m.Memory = tile;
+            }
+            if (m.Cycle != 0 && --m.Cycle == 0)
+            {
+                if (++m.Unstick >= 5) m.Unstick = 1;
+                m.Cycle = 40;
+            }
+            m.Still = true;
+        }
+        else
+        {
+            m.SameTile = 2700;
+            m.Still = false;
+            if (m.Stuck) m.Memory = null;
+            m.Stuck = false;
+        }
+        m.Tile = tile;
+        // Walking, its last eight positions repeating every four frames is an oscillation: it pauses 30 frames.
+        if (m.Order is Order.Path or Order.Away)
+        {
+            if (m.RingFill == 0xFF && Same(m.RingX) && Same(m.RingZ))
+            {
+                m.RingFill = 0;
+                m.Pause = 30;
+                KeepChase(c);
+                m.Skip = true;
+                return;
+            }
+            m.RingX[m.RingIndex] = (byte)(int)c.Actor.Position.X;
+            m.RingZ[m.RingIndex] = (byte)(int)c.Actor.Position.Z;
+            m.RingFill |= 1 << m.RingIndex;
+            m.RingIndex = (m.RingIndex + 1) & 7;
+        }
+        else m.RingFill = 0;
+        Perceive(c, Ashley!, fighters);
+        if (_rotating != 0 && fighters.Find(f => f.Index == _rotating) is { Mind: not null } other) Perceive(c, other, fighters);
+        if (Recheck(c)) { KeepChase(c); m.Skip = true; return; }
+        // Whether it retreats (0x800d93ac): never; under a quarter or half its hit points; or while it has fled lately
+        // or knows of a foe; any rule also with no plan and foes about.
+        bool retreat = m.FleeRule switch
+        {
+            1 => c.Hp * 4 < c.MaxHp,
+            2 => c.Hp * 2 < c.MaxHp,
+            3 => m.FleeTimer != 0 || fighters.Exists(k => k.Index < 16 && (m.Relations[k.Index] & 0x20) != 0 && (m.Relations[k.Index] >> 6 & 3) == 3),
+            _ => false,
+        };
+        m.Retreating = m.FleeRule != 0 && (retreat || m.Phase == 2);
+        // Its memory of a failure goes once its 900 frames are up, or once the one it failed on leaves that tile.
+        if (!m.Stuck && m.Memory != null)
+        {
+            if (m.MemoryTimer == 0 || --m.MemoryTimer == 0) m.Memory = null;
+            else if (At(m.MemoryTarget) is not { } target || TileOf(target) != m.MemoryTargetTile) m.Memory = null;
+        }
+    }
+
+    private static bool Same(byte[] ring) => ring[0] == ring[4] && ring[1] == ring[5] && ring[2] == ring[6] && ring[3] == ring[7];
+
+    /// <summary>
+    /// How one actor perceives another (BATTLE.PRG 0x800d87e8), into its relation word and distance for it: the squared
+    /// distance between their reference heights; the line of sight, every other call at eye height (bit 30) or at the
+    /// centre (bit 2, which gives bit 30 too), clear on one tile; inside its view cone (bit 3); seen (bit 0) within sight
+    /// in the cone with a line of sight (unless it needs none), or while its memory of being struck runs (bits 15-19);
+    /// just lost (bit 1); aware (bit 5) seen or within hearing with a line of sight; perceived for targeting (bit 31)
+    /// seen or on a tile everyone is perceived on; another actor no farther standing within the target's girth of the
+    /// line (bit 27); the overridden relation's timer (bits 20-26); and a foe unseen over 120 frames forgotten.
+    /// </summary>
+    private void Perceive(Combatant self, Combatant other, List<Combatant> fighters)
+    {
+        var m = self.Mind!;
+        var om = other.Mind;
+        int o = other.Index;
+        var me = self.Actor.Position;
+        var them = other.Actor.Position;
+        uint d2 = Distance(me, m.Height, them, om?.Height ?? -64);
+        m.Distances[o] = d2;
+        uint rel = m.Relations[o];
+        var theirs = TileOf(other);
+        if (theirs == m.Tile) rel |= 0x40000004;
+        else
+        {
+            m.Sightings = (m.Sightings + 1) & 0xFF;
+            if ((m.Sightings & 1) != 0) rel = Clear(them, om?.Head ?? 128, me, m.Head) ? rel | 1u << 30 : rel & ~(1u << 30);
+            else rel = Clear(them, om != null ? Math.Abs(om.Height) : 64, me, Math.Abs(m.Height)) ? rel | 4 : rel & ~4u;
+            if ((rel & 4) != 0) rel |= 1u << 30;
+        }
+        int cone = 4096;
+        if (d2 != 0)
+        {
+            float facing = self.Actor.Facing * Mathf.Tau / 4096, dx = them.X - me.X, dz = them.Z - me.Z, length = Mathf.Sqrt(dx * dx + dz * dz);
+            cone = length == 0 ? 4096 : Math.Clamp((int)((-Mathf.Sin(facing) * dx - Mathf.Cos(facing) * dz) / length * 4096), -4096, 4096);
+        }
+        rel = cone >= m.ConeCosine ? rel | 8 : rel & ~8u;
+        if (other == self) rel = (rel | 0x21) & ~2u;
+        else
+        {
+            bool sighted = d2 <= m.SightSquared && (rel & 8) != 0 && (m.BlindSight || (rel >> 30 & 1) != 0);
+            uint memory = rel >> 15 & 0x1F;
+            if (memory != 0) { rel = rel & ~(0x1Fu << 15) | (memory - 1) << 15; sighted = true; }
+            bool was = (m.Relations[o] & 1) != 0;
+            rel = sighted ? rel | 1 : rel & ~1u;
+            rel = !sighted && was ? rel | 2 : rel & ~2u;
+            rel = sighted || d2 < m.HearingSquared && (rel >> 30 & 1) != 0 ? rel | 0x20 : rel & ~0x20u;
+        }
+        rel = _view.Perceived(theirs.X, theirs.Z) || (rel & 1) != 0 ? rel | 1u << 31 : rel & ~(1u << 31);
+        // Another actor no farther than the target (by what it last measured, 0 for one never perceived) in front of
+        // the line to it and within the target's girth of it stands in the line of fire.
+        int toward = Angle(them.X - me.X, them.Z - me.Z), girth = om?.Radius ?? 63;
+        bool occluded = false;
+        foreach (var k in fighters)
+        {
+            if (k == self || k == other || k.Index >= 16 || d2 < m.Distances[k.Index]) continue;
+            var at = k.Actor.Position;
+            int off = Angle(at.X - me.X, at.Z - me.Z) - toward;
+            if (Cos(off) < 0) continue;
+            if (Math.Abs((long)Root(m.Distances[k.Index]) * Sin(off) >> 12) < girth) { occluded = true; break; }
+        }
+        rel = occluded ? rel | 1u << 27 : rel & ~(1u << 27);
+        m.Relations[o] = rel;
+        if (other == self || om == null) return;
+        uint timer = rel >> 20 & 0x7F;
+        if (timer != 0)
+        {
+            rel = rel & ~(0x7Fu << 20) | --timer << 20;
+            if (timer == 0) rel = rel & ~0xC0u | (rel >> 28 & 3) << 6;
+        }
+        if (m.Forgets && (rel >> 6 & 3) == 3)
+        {
+            if ((rel & 1) != 0) rel &= ~(0x7Fu << 8);
+            else
+            {
+                uint unseen = ((rel >> 8) + 1) & 0x7F;
+                rel = rel & ~(0x7Fu << 8) | unseen << 8;
+                if (unseen > 120) rel = rel & ~0xC0u | 1u << 6;
+            }
+        }
+        m.Relations[o] = rel;
+    }
+
+    /// <summary>The squared distance between two points at heights raised by their offsets (BATTLE.PRG 0x800e4624), each difference as a 16-bit value.</summary>
+    private static uint Distance(Vector3 a, int ha, Vector3 b, int hb)
+    {
+        long dx = (short)((int)a.X - (int)b.X), dy = (short)((int)a.Y + ha - ((int)b.Y + hb)), dz = (short)((int)a.Z - (int)b.Z);
+        return (uint)(dx * dx + dy * dy + dz * dz);
+    }
+
+    /// <summary>
+    /// Whether the line from one point (raised by <paramref name="hp"/>) to another (raised by <paramref name="hq"/>)
+    /// stays above the floor at each of its sixteen steps (BATTLE.PRG 0x800e44e8 and 0x800e4478,
+    /// <see cref="FieldView.SightFloor"/>).
+    /// </summary>
+    private bool Clear(Vector3 p, int hp, Vector3 q, int hq)
+    {
+        int px = (int)p.X, py = (int)p.Y - hp, pz = (int)p.Z;
+        int sx = ((int)q.X - px) >> 4, sy = ((int)q.Y - hq - py) >> 4, sz = ((int)q.Z - pz) >> 4;
+        for (int i = 0; i < 16; i++)
+        {
+            px += sx; py += sy; pz += sz;
+            if (py >= _view.SightFloor(px, pz)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The decision pass for an enemy (BATTLE.PRG 0x800daed0): one that skipped its tick decides nothing, unless it
+    /// perceived anyway, when it only measures Ashley and tries to launch. Otherwise its orders are cleared and it acts
+    /// by priority (0x800db820): launch a move (<see cref="Launch"/>), step off a tile it is stuck or failed on
+    /// (<see cref="Unstick"/>), its behaviour routine (<see cref="Behave"/>), else wander.
+    /// </summary>
+    private void Decide(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        if (m.Skip && !m.Refreshed) return;
+        if (m.Skip)
+        {
+            m.Distances[0] = Distance(c.Actor.Position, m.Height, Ashley!.Actor.Position, Ashley.Mind?.Height ?? -64);
+            Launch(c);
+            return;
+        }
+        m.FaceTarget = 16;
+        m.FacePoint = null;
+        m.Run = false;
+        m.Order = Order.Stand;
+        if (!(Launch(c) || Unstick(c) || Behave(c, fighters))) Wander(c);
+        // Its stance (0x800db7b4): one dormant holds still; one stirring rises and is awake.
+        if (m.Dormant == 1) m.Order = Order.Stand;
+        else if (m.Dormant == 2) m.Dormant = 0;
+    }
+
+    /// <summary>
+    /// Tries to launch a planned move (BATTLE.PRG 0x800dad9c): each in turn (<see cref="TryLaunch"/>). The fallback
+    /// entry (+0x140) needs targets BATTLE.PRG fills from a table not yet read (its +0x28 to +0x34), and is not tried.
+    /// </summary>
+    private bool Launch(Combatant c)
+    {
+        foreach (var entry in c.Plans.ToArray()) if (TryLaunch(c, entry)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Launches one planned move if it may be made now (BATTLE.PRG 0x800dac80): it passes the gate
+    /// (<see cref="Gate"/>), takes a token (<see cref="AcquireToken"/>) and has held it 32 frames; then the move is
+    /// made, and one that cools starts its cooldown (the room's, or 50 won over).
+    /// </summary>
+    private bool TryLaunch(Combatant c, PlanEntry e)
+    {
+        var m = c.Mind!;
+        if (!Gate(c, e)) return false;
+        AcquireToken(c);
+        if (m.Token < 32) return false;
+        m.Executing = e;
+        _launched = true;
+        m.Order = Order.Stand;
+        Execute(c, e);
+        if (Cooled(c, e)) c.Cooldown = m.Converted ? 50 : _view.Document.GetValueOrDefault("cooldown", 150).AsInt32();
+        return true;
+    }
+
+    /// <summary>
+    /// The battle core starting a launched move (command 24): its recovery and its user's, 256 a point, for actions
+    /// outside 22 to 53 (0x800859b4; an action of 255 takes its user's weapon's, 0 in every zone's templates), then the
+    /// spell or special attack (<see cref="EnemySpell"/>), else the attack (<see cref="Strike(Combatant, Combatant, int)"/>).
+    /// </summary>
+    private void Execute(Combatant c, PlanEntry e)
+    {
+        var record = _view.Content.Field.Action(e.Action);
+        if (e.Action is < 22 or > 53) c.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + c.RecoveryBonus) * 256;
+        if (_walking.Remove(c)) c.Mover?.Halt();
+        _acted = new Acted(c, e.Action, e.Target);
+        if (EnemySpell(c, e.Action, e.Target)) return;
+        Strike(c, e.Target, e.Limb);
+    }
+
+    /// <summary>
+    /// A planned move's reach and flags (BATTLE.PRG 0x800e5710, copied into the entry by 0x800dd918): its reach squared
+    /// (0x800e5698: the action's range, or its user's weapon's, 32 less past 32), the margin it keeps out of
+    /// (0x800e5600), and its flags: 2 keeps that margin (action flags 0x2080), 4 needs no line of sight (0x1000), 8 needs
+    /// no clear line of fire (its target kinds 2, 4, 6 and 8), 16 harm (it cools) and 32 help.
+    /// </summary>
+    private (uint Reach2, int Margin, int Flags) Measure(Combatant c, PlanEntry e)
+    {
+        var record = _view.Content.Field.Action(e.Action);
+        int reach = record.Range[0] == 255 ? (int)c.Range.Z * Math.Abs(Cos((c.Tilt >> 3) * 128)) >> 12 : RangeReach(record.Range);
+        uint reach2 = reach > 32 ? (uint)((reach - 32) * (reach - 32)) : (uint)(reach * reach);
+        int root = Root(reach2), margin = 0;
+        if ((record.Flags & 0x2000) != 0) margin = _view.Content.Field.NearRange(e.Action)[1] * 32;
+        else if ((record.Flags & 0x80) != 0 && RangeReach(_view.Content.Field.NearRange(e.Action)) is var near && near < root) margin = near;
+        int flags = ((record.Flags & 0x2080) != 0 ? 2 : 0) | ((record.Flags & 0x1000) != 0 ? 4 : 0) | ((1 << record.TargetKind & 0x154) != 0 ? 8 : 0)
+            | (Harms(record, e.Action, e.Target, help: false) ? 16 : 0) | (Harms(record, e.Action, e.Target, help: true) ? 32 : 0);
+        return (reach2, margin, flags);
+    }
+
+    /// <summary>
+    /// How far a range record reaches (BATTLE.PRG 0x800e5568): its z radius for shapes 1, 2 and 4, else its y radius,
+    /// 32 units a point, by the cosine of its angle (byte 3 less its low three bits, 128ths of a turn's 4096ths), the
+    /// sine for shapes other than 1 to 4.
+    /// </summary>
+    private static int RangeReach(int[] range)
+    {
+        int shape = range[3] & 7, angle = (range[3] >> 3) * 128;
+        if ((1 << shape & 0x16) != 0) return range[2] * 32 * Math.Abs(Cos(angle)) >> 12;
+        return range[1] * 32 * Math.Abs((1 << shape & 8) != 0 ? Cos(angle) : Sin(angle)) >> 12;
+    }
+
+    /// <summary>A planned move's reach (the root of its reach squared).</summary>
+    private int Reach(Combatant c, PlanEntry e) => Root(Measure(c, e).Reach2);
+
+    /// <summary>
+    /// Whether a planned move may be launched now (BATTLE.PRG 0x800dbd80): it has weight; the planner's clock has come
+    /// to it; its user is ready (<see cref="Ready"/>); its target is within its reach and, for one that keeps a margin,
+    /// beyond it; its target perceived for targeting; Ashley not in an action; a line of sight unless it needs none,
+    /// and no one in the line of fire unless it does not mind. Nothing else may be under way (the port makes one move at
+    /// a time).
+    /// </summary>
+    private bool Gate(Combatant c, PlanEntry e)
+    {
+        var m = c.Mind!;
+        if (e.Weight == 0 || _planClock < e.Horizon || !Ready(c, e) || e.Target.Dead || e.Target.Index >= 16) return false;
+        if (_phase != Phase.Free || _enemyCast != null || _enemyRelease != null || Ashley!.Mover is { Busy: true }) return false;
+        var (reach2, margin, flags) = Measure(c, e);
+        uint d = m.Distances[e.Target.Index], rel = m.Relations[e.Target.Index];
+        if (d > reach2) return false;
+        if (margin > 0 && (flags & 2) != 0 && d < (uint)(margin * margin)) return false;
+        if ((rel >> 31 & 1) == 0) return false;
+        if ((flags & 4) == 0 && (rel & 4) == 0) return false;
+        return (flags & 8) != 0 || (rel >> 27 & 1) == 0;
+    }
+
+    /// <summary>Whether an enemy is ready to make a move (BATTLE.PRG 0x800dbcb4): not recovering, and past its cooldown for a move that cools.</summary>
+    private bool Ready(Combatant c, PlanEntry e) => c.Recovery == 0 && (!Cooled(c, e) || c.Cooldown == 0);
+
+    /// <summary>Whether a move cools (BATTLE.PRG 0x800dbc60): any, for one won over; else one that harms.</summary>
+    private bool Cooled(Combatant c, PlanEntry e) => c.Mind!.Converted || (Measure(c, e).Flags & 16) != 0;
+
+    /// <summary>
+    /// Takes a token, the right to telegraph and act (BATTLE.PRG 0x800d836c): one held stays; otherwise none while the
+    /// holders already exceed the room's limit, while its refractory frames run or once anyone launched this frame.
+    /// One taken within 90 frames of letting one go starts past its telegraph (at 32).
+    /// </summary>
+    private bool AcquireToken(Combatant c)
+    {
+        var m = c.Mind!;
+        if (m.Token != 0) return true;
+        if (TokenLimit < _holders.Count || m.Refractory != 0 || _launched) return false;
+        m.Token = m.AfterRelease != 0 ? 32 : 1;
+        _holders.Insert(0, c);
+        return true;
+    }
+
+    /// <summary>
+    /// Lets a token go (BATTLE.PRG 0x800d82cc): its age goes to 0, 48 refractory frames follow (none when it is the only
+    /// enemy) and 90 more in which another is taken without a telegraph; its icon goes.
+    /// </summary>
+    private void ReleaseToken(Combatant c)
+    {
+        if (!_holders.Remove(c)) return;
+        var m = c.Mind!;
+        m.Token = 0;
+        m.Refractory = Fighters().Count == 2 ? 0 : 48;
+        m.AfterRelease = 90;
+        Show(c, 0);
+    }
+
+    /// <summary>
+    /// A token's frame (BATTLE.PRG 0x800dbfe4): held, it ages a frame, its icon the balloon's dots (one each 8 frames)
+    /// then its mark; held 120 frames without launching, the failure is remembered and it is let go. Otherwise the 90
+    /// frames after a release run (the jagged balloon), and the refractory frames.
+    /// </summary>
+    private void StepToken(Combatant c)
+    {
+        var m = c.Mind!;
+        if (m.Token != 0)
+        {
+            m.Token = (m.Token + 1) & 0xFFFF;
+            if (m.Token != 0)
+            {
+                if (m.Token < 121) { Show(c, (m.Token < 8 ? 0 : m.Token < 16 ? 1 : m.Token < 24 ? 2 : 3) + 1); return; }
+                Remember(c);
+                ReleaseToken(c);
+            }
+        }
+        if (m.AfterRelease != 0) Show(c, --m.AfterRelease == 0 ? 0 : 4);
+        if (m.Refractory != 0) m.Refractory--;
+    }
+
+    /// <summary>
+    /// Whether an enemy may close to its move's reach (BATTLE.PRG 0x800db8ac): with a token; not in its refractory
+    /// frames; seeing its target; while no more have engaged this frame than the limit, already a holder or with room
+    /// for one more.
+    /// </summary>
+    private bool MayEngage(Combatant c, PlanEntry e)
+    {
+        var m = c.Mind!;
+        if (m.Token != 0) return true;
+        if (m.Refractory != 0 || (m.Relations[e.Target.Index] & 1) == 0 || TokenLimit < _engagers) return false;
+        return _holders.Contains(c) || TokenLimit >= _holders.Count;
+    }
+
+    /// <summary>
+    /// Sets the icon over an actor (BATTLE.PRG 0x800d820c): 0x80 adds the won-over mark, 0x40 takes it off, anything
+    /// else replaces the icon (0 none, 1 to 4 the telegraph's balloon, 6 alarm, 7 searching).
+    /// </summary>
+    private void Show(Combatant c, int value)
+    {
+        if (c.Mind is not { } m || c.Index == 0) return;
+        if ((value & 0x80) != 0) m.Shown |= 0x80;
+        else if ((value & 0x40) != 0) m.Shown &= 0x7F;
+        else m.Shown = m.Shown & 0x80 | value & 0x7F;
+    }
+
+    /// <summary>Holds an icon over an actor for some frames (BATTLE.PRG 0x800d8260).</summary>
+    private static void Flash(Combatant c, int icon, int frames)
+    {
+        c.Mind!.Icon = icon;
+        c.Mind.IconTimer = frames;
+    }
+
+    /// <summary>A reaction voiced (BATTLE.PRG 0x800e48a8): not while held or within 30 frames of the last. Its cue is not yet played.</summary>
+    private static void Voice(Combatant c)
+    {
+        if (c.Mind is not { } m || m.Held || m.VoiceLockout != 0) return;
+        m.VoiceLockout = 30;
+    }
+
+    /// <summary>
+    /// Remembers failing on its first planned move's target (BATTLE.PRG 0x800e4c8c: a token held out, or a move made):
+    /// its own tile, the target and the target's tile, for 900 frames. While it stands there it steps off
+    /// (<see cref="Unstick"/>).
+    /// </summary>
+    private void Remember(Combatant c)
+    {
+        var m = c.Mind!;
+        if (c.Plans.Count == 0) return;
+        m.Memory = m.Tile;
+        m.MemoryTarget = c.Plans[0].Target.Index;
+        m.MemoryTimer = 900;
+        m.MemoryTargetTile = TileOf(c.Plans[0].Target);
+    }
+
+    /// <summary>
+    /// Chooses an enemy's state for its first planned move (BATTLE.PRG 0x800d9dd8): 1, approach its target. (State 2,
+    /// a special spot first, needs the room's spots, which are not yet read.)
+    /// </summary>
+    private static void Choose(Combatant c) => c.Mind!.State = 1;
+
+    /// <summary>
+    /// The behaviour routine (BATTLE.PRG's table at 0x800f1790, its AI +0x68): returns whether it gave an order.
+    /// </summary>
+    private bool Behave(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        var first = c.Plans.Count > 0 ? c.Plans[0] : null;
+        switch (m.Behaviour)
+        {
+            case Behaviour.Fighter:
+                // 0x800dba4c: retreating it flees, else wanders; otherwise by its plan phase.
+                if (!m.Retreating) return Pursue(c, fighters);
+                if (!Flee(c, true, fighters)) Wander(c);
+                return true;
+            case Behaviour.KeepsDistance:
+            {
+                // 0x800dba88: keeps 256 off (320 for one whose object flags say so), or its move's reach, never backing off.
+                if (m.Retreating) return Flee(c, true, fighters);
+                if (m.Phase is not (0 or 1) || first == null) return Pursue(c, fighters);
+                int stop = 256;
+                if (m.Phase == 0) stop = Math.Min(stop, Reach(c, first));
+                return Chase(c, first.Target, stop, false) || HoldRange(c, first.Target);
+            }
+            case Behaviour.FollowsAlly:
+            {
+                // 0x800dbb98: by its plan, else after its first ally, going to it from beyond 640 and wandering by it within.
+                if (Pursue(c, fighters)) return true;
+                if (FirstWith(c, 2, fighters) is not { } ally) return false;
+                if (m.Distances[ally.Index] > 0x64000) GoTo(c, TileOf(ally), 0);
+                else WanderAround(c, TileOf(ally), 5);
+                return true;
+            }
+            case Behaviour.Escort:
+                // 0x800da5cc: engages when its move is due, else keeps 288 from its leader, facing its target there.
+                return Escort(c, 288, true);
+            case Behaviour.PackHunter:
+            {
+                // 0x800da6a4: with an ally about, closes to 1024 of the first foe before pursuing.
+                if (m.Retreating) return Flee(c, true, fighters);
+                if (FirstWith(c, 3, fighters) is not { } foe || FirstWith(c, 2, fighters) == null) return Pursue(c, fighters);
+                return Chase(c, foe, 1024, true) || Pursue(c, fighters);
+            }
+            case Behaviour.Bodyguard:
+                return Guard(c, fighters);
+            case Behaviour.Patroller:
+                // 0x800daa6c: retreating it flees or wanders; else by its plan, else its patrol.
+                if (m.Retreating) { if (!Flee(c, true, fighters)) Wander(c); return true; }
+                if (Pursue(c, fighters)) return true;
+                Patrol(c);
+                return true;
+            case Behaviour.ScaredEscort:
+            {
+                // 0x800daad8: as an escort at 384 without backing off; then it flees whoever it is wary of for a time.
+                if (Escort(c, 384, false)) return true;
+                foreach (var k in fighters)
+                {
+                    uint w = m.Relations[k.Index];
+                    if ((w >> 6 & 3) == 3 || (w >> 20 & 0x7F) == 0) continue;
+                    m.Relations[k.Index] = w | 0xC0;
+                    bool fled = Flee(c, false, fighters);
+                    m.Relations[k.Index] = m.Relations[k.Index] & ~0xC0u | (m.Relations[k.Index] >> 28 & 3) << 6;
+                    if (fled) return true;
+                }
+                return false;
+            }
+            case Behaviour.Berserk:
+                // 0x800dbc0c: won over, it pursues once its telegraph is done, else keeps by Ashley at 256.
+                if (m.Token >= 32 && Pursue(c, fighters)) return true;
+                return Chase(c, Ashley!, 256, false) || HoldRange(c, Ashley!);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// The escorts (BATTLE.PRG 0x800da5cc at 288 backing off, 0x800daad8 at 384 not): its first move engaged when due
+    /// (<see cref="Engage"/>), else it keeps the distance from its leader, and in range faces its planned target.
+    /// </summary>
+    private bool Escort(Combatant c, int distance, bool backsOff)
+    {
+        var m = c.Mind!;
+        if (m.Phase == 0 && c.Plans.Count > 0 && Engage(c, c.Plans[0])) return true;
+        if (m.Leader >= 16 || At(m.Leader) is not { } leader) return false;
+        if (Chase(c, leader, distance, backsOff))
+        {
+            if (m.Band == 1 && m.State != 7 && c.Plans.Count > 0)
+            {
+                m.FaceTarget = c.Plans[0].Target.Index;
+                Face(c);
+            }
+            return true;
+        }
+        return HoldRange(c, leader);
+    }
+
+    /// <summary>
+    /// The bodyguard (BATTLE.PRG 0x800da738): with a foe about and its ally protectee aware of it, it stands 320 from the
+    /// protectee toward the foe (the intercept holding 10 frames); else it faces the protectee with the foe within 384 of
+    /// it or keeps 320 from it; with no foe it flees; with its protectee just lost it raises the alarm.
+    /// </summary>
+    private bool Guard(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        var foe = FirstWith(c, 3, fighters);
+        var ward = m.Leader < 16 && m.Leader != c.Index ? At(m.Leader) : null;
+        bool ok = ward?.Mind != null && (m.Relations[ward.Index] >> 6 & 3) == 2;
+        bool was = m.Protecting;
+        m.Protecting = ok;
+        if (foe != null && ok && (m.Relations[ward!.Index] & 0x20) != 0)
+        {
+            var w = ward.Actor.Position;
+            var f = Centre(TileOf(foe), 0);
+            int a1 = Angle(f.X - (w.X - 64), f.Z - (w.Z - 64)), a2 = Angle(c.Actor.Position.X - w.X, c.Actor.Position.Z - w.Z);
+            int cosine = (Cos(a1) * Cos(a2) + Sin(a1) * Sin(a2)) >> 12;
+            if (m.Intercept != 0) m.Intercept--;
+            if (cosine >= -1200 || m.Intercept != 0)
+            {
+                var from = Centre(TileOf(ward), w.Y);
+                var toward = (f - from) with { Y = 0 };
+                var spot = from + (toward.LengthSquared() > 0 ? toward.Normalized() * 320 : Vector3.Zero);
+                m.Goal = ((int)Mathf.Floor(spot.X / 128), (int)Mathf.Floor(spot.Z / 128));
+                m.Run = true;
+                m.Order = Order.Path;
+                if (m.Intercept == 0) m.Intercept = 10;
+                return true;
+            }
+        }
+        if (ok)
+        {
+            if (foe != null && ward!.Mind!.Distances[foe.Index] <= 0x23FFF)
+            {
+                m.FaceTarget = ward.Index;
+                Face(c);
+                return true;
+            }
+            if (Chase(c, ward!, 320, true) || HoldRange(c, ward!)) return true;
+        }
+        if (foe == null) return Flee(c, true, fighters);
+        if (was)
+        {
+            m.Lost = true;
+            Flash(c, 6, 0);
+        }
+        return Flee(c, true, fighters) || Flee(c, true, fighters);
+    }
+
+    /// <summary>The first actor, Ashley first, other than itself to which it stands as <paramref name="relation"/> (BATTLE.PRG 0x800dbb2c).</summary>
+    private static Combatant? FirstWith(Combatant c, int relation, List<Combatant> fighters) =>
+        fighters.Find(k => k != c && k.Index < 16 && (c.Mind!.Relations[k.Index] >> 6 & 3) == relation);
+
+    /// <summary>
+    /// Pursues by plan phase (BATTLE.PRG 0x800da1d4): 0, its first move's state (<see cref="RunState"/>), else the
+    /// first other move due on another target; 1, its token let go, it keeps 640 from Ashley if she is a foe, else from
+    /// its first move's target (a foe at 640, else at the next move's reach), else as 2; 2, its token let go, it keeps
+    /// 640 from Ashley if she is a foe, else from the nearest foe.
+    /// </summary>
+    private bool Pursue(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        switch (m.Phase)
+        {
+            case 0:
+                if (c.Plans.Count == 0) return false;
+                if (RunState(c, c.Plans[0])) return true;
+                for (int i = 1; i < c.Plans.Count; i++)
+                    if (c.Plans[i].Horizon < _planClock && c.Plans[i].Target != c.Plans[0].Target) return RunState(c, c.Plans[i]);
+                return false;
+            case 1:
+            {
+                ReleaseToken(c);
+                if (Relation(c, Ashley!) == 3 && (Chase(c, Ashley!, 640, true) || HoldRange(c, Ashley!))) return true;
+                if (c.Plans.Count == 0) return false;
+                var target = c.Plans[0].Target;
+                int stop;
+                bool flag;
+                if (Relation(c, target) == 3) (stop, flag) = (640, true);
+                else if (c.Plans.Count < 2) return false;
+                else (stop, flag) = (Reach(c, c.Plans[1]), false);
+                if (Chase(c, target, stop, flag) || HoldRange(c, target)) return true;
+                return Nearest(c, fighters);
+            }
+            case 2:
+                ReleaseToken(c);
+                if (Relation(c, Ashley!) == 3 && (Chase(c, Ashley!, 640, true) || HoldRange(c, Ashley!))) return true;
+                return Nearest(c, fighters);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Phase 2's close on the nearest foe at 640 (BATTLE.PRG 0x800da1d4).</summary>
+    private bool Nearest(Combatant c, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        Combatant? nearest = null;
+        foreach (var k in fighters)
+            if (k.Index < 16 && (m.Relations[k.Index] >> 6 & 3) == 3 && (nearest == null || m.Distances[k.Index] < m.Distances[nearest.Index])) nearest = k;
+        return nearest != null && (Chase(c, nearest, 640, true) || HoldRange(c, nearest));
+    }
+
+    /// <summary>
+    /// Runs an enemy's state for a planned move (BATTLE.PRG 0x800d9e18). State 1 approaches: to the move's reach when
+    /// its target is an ally or it may engage (<see cref="MayEngage"/>), counting itself an engager and taking a token
+    /// once within its token radius (the reach and its reach extension, 8064 for a hopper) seeing the target; else it
+    /// hovers at that radius, 640 at least. State 7 (nothing planned) lets its token go and keeps 640 from Ashley if she
+    /// is a foe.
+    /// </summary>
+    private bool RunState(Combatant c, PlanEntry e)
+    {
+        var m = c.Mind!;
+        if (c.Plans.Count == 0 || e.Target.Mind == null) return false;
+        var t = e.Target;
+        switch (m.State)
+        {
+            case 1:
+            {
+                int reach = Reach(c, e);
+                long radius = (m.Moves & 8) != 0 ? 8064 : reach + 32 * m.ReachBonus;
+                int stop;
+                bool flag, engaging = true;
+                if (Relation(c, t) == 2) (stop, flag) = (reach, false);
+                else if (MayEngage(c, e)) (stop, flag) = (reach, true);
+                else { (stop, flag) = (Root(Math.Max(radius * radius, 0x64000)), true); engaging = false; }
+                if (engaging)
+                {
+                    _engagers++;
+                    if (m.Distances[t.Index] < radius * radius && (m.Relations[t.Index] & 1) != 0) AcquireToken(c);
+                }
+                return Chase(c, t, stop, flag) || HoldRange(c, t);
+            }
+            case 7:
+                ReleaseToken(c);
+                return Relation(c, Ashley!) == 3 && (Chase(c, Ashley!, 640, true) || HoldRange(c, Ashley!));
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Engages a planned move (BATTLE.PRG 0x800da4bc, the escorts' phase 0): if it may (<see cref="MayEngage"/>), it
+    /// counts itself an engager, takes a token within its reach and extension seeing the target, and closes to the
+    /// reach.
+    /// </summary>
+    private bool Engage(Combatant c, PlanEntry e)
+    {
+        var m = c.Mind!;
+        if (!MayEngage(c, e)) return false;
+        int reach = Reach(c, e);
+        long radius = reach + 32 * m.ReachBonus;
+        _engagers++;
+        if (m.Distances[e.Target.Index] < radius * radius && (m.Relations[e.Target.Index] & 1) != 0) AcquireToken(c);
+        return Chase(c, e.Target, reach, true) || HoldRange(c, e.Target);
+    }
+
+    /// <summary>
+    /// Sets the movement mode (BATTLE.PRG 0x800db4ac): changing it resets that mode's state (the chase's latches, the
+    /// mode-6 turn) and its look-around.
+    /// </summary>
+    private static void SetMode(Combatant c, int mode)
+    {
+        var m = c.Mind!;
+        if (mode == m.Mode) return;
+        if (mode == 1)
+        {
+            m.Searching = false;
+            m.ChaseTarget = 0;
+            m.SearchTimer = 0;
+            m.FaceLatch = false;
+            m.Band = 0;
+        }
+        if (mode == 6) { m.TurnLatch = false; m.TurnGoal = (-1, -1); }
+        m.Mode = mode;
+        m.Looks[mode] = (0, 0);
+    }
+
+    /// <summary>
+    /// Chases a target to a stop distance (BATTLE.PRG 0x800db370 and 0x800e24ec). Seeing it, its range band moves with
+    /// hysteresis (into range at D-96, out past D, too close at D-128, back past D-32; far without a low line of
+    /// sight): far it walks for the target's tile (running beyond D, or D+128 already running), in range it faces it,
+    /// too close it backs off facing it (only when <paramref name="backsOff"/>). Losing it, it searches the last known
+    /// tile for 255 frames if it may, else looks about with the searching icon.
+    /// </summary>
+    private bool Chase(Combatant c, Combatant t, int stop, bool backsOff)
+    {
+        var m = c.Mind!;
+        if (t.Mind == null || t.Index >= 16) return true;
+        if (m.ChaseTarget != t.Index)
+        {
+            m.Searching = false;
+            m.SearchTimer = 0;
+            m.FaceLatch = false;
+            m.Band = 0;
+            m.LastFlag = false;
+            m.LastChaseTarget = 0;
+        }
+        m.ChaseTarget = t.Index;
+        m.Stop = stop;
+        m.Goal = TileOf(t);
+        if (!ChaseStep(c, t, backsOff)) return false;
+        SetMode(c, 1);
+        return true;
+    }
+
+    private bool ChaseStep(Combatant c, Combatant t, bool flag)
+    {
+        var m = c.Mind!;
+        int stop = m.Stop;
+        if (t == c) { m.Order = Order.Stand; return true; }
+        var pos = t.Actor.Position;
+        var half = ((int)pos.X >> 6, (int)pos.Z >> 6);
+        if (half == m.TargetHalf && stop == m.LastStop && t.Index == m.LastChaseTarget && flag == m.LastFlag)
+        {
+            if (m.Unchanged++ > 180) { m.Unchanged = 0; m.FaceLatch = false; }
+        }
+        else { m.Unchanged = 0; m.FaceLatch = false; }
+        m.LastFlag = flag;
+        m.LastChaseTarget = t.Index;
+        m.LastStop = stop;
+        uint rel = m.Relations[t.Index], d = m.Distances[t.Index];
+        bool result;
+        if ((rel & 1) != 0)
+        {
+            m.Searching = false;
+            static long Square(int v) => (long)v * v;
+            if ((rel & 4) == 0) m.Band = 0;
+            switch (m.Band)
+            {
+                case 0: if (d <= Square(stop - 96)) m.Band = 1; break;
+                case 1: if (d > Square(stop)) m.Band = 0; else if (d <= Square(stop - 128)) m.Band = 2; break;
+                case 2: if (d > Square(stop - 32)) m.Band = 1; break;
+            }
+            bool face = m.Band != 2 && m.FaceLatch;
+            if (!flag && m.Band == 2) m.Band = 1;
+            if (face || m.Band == 1)
+            {
+                m.FaceTarget = t.Index;
+                Face(c);
+            }
+            else if (m.Band == 0)
+            {
+                long run = stop + (_walking.Contains(c) && m.Run ? 128 : 0);
+                m.Run = run * run < d;
+                m.FaceTarget = t.Index;
+                m.Order = Order.Path;
+            }
+            else
+            {
+                if (m.KeepsFacing) { m.Run = true; m.FacePoint = pos; }
+                else m.FaceTarget = t.Index;
+                m.Heading = c.Actor.FacingToward(pos) + 2048;
+                m.Order = Order.Away;
+                if (_walking.Contains(c)) m.FaceLatch = true;
+            }
+            result = true;
+        }
+        else
+        {
+            if (!m.Searching && (rel & 2) != 0)
+            {
+                if (m.SearchesLost)
+                {
+                    m.Searching = true;
+                    m.SearchTimer = 255;
+                    m.LastKnown = (m.TargetHalf.X >> 1, m.TargetHalf.Z >> 1);
+                }
+                else
+                {
+                    if ((rel & 0x20) != 0) return false;
+                    Flash(c, 7, 40);
+                    return LookAround(c, 128, 1, 1);
+                }
+            }
+            if (m.FaceLatch)
+            {
+                m.FaceTarget = t.Index;
+                Face(c);
+                result = true;
+            }
+            else if (!m.Searching) return false;
+            else
+            {
+                if (m.SearchTimer != 0) m.SearchTimer--;
+                if (m.LastKnown == m.Tile)
+                {
+                    if ((rel & 0x20) != 0) return false;
+                    Flash(c, 7, 40);
+                    if (LookAround(c, 128, 1, 1)) return true;
+                    m.Searching = false;
+                    return false;
+                }
+                if (m.SearchTimer == 0) { m.Searching = false; return false; }
+                m.Run = true;
+                m.Goal = m.LastKnown;
+                m.Order = Order.Path;
+                result = true;
+            }
+        }
+        m.TargetHalf = half;
+        return result;
+    }
+
+    /// <summary>Keeps the chase's last known half-tile of its target fresh on a frame it skips (BATTLE.PRG 0x800e48f8).</summary>
+    private void KeepChase(Combatant c)
+    {
+        var m = c.Mind!;
+        if (m.Mode == 1 && At(m.ChaseTarget) is { } t) m.TargetHalf = ((int)t.Actor.Position.X >> 6, (int)t.Actor.Position.Z >> 6);
+    }
+
+    /// <summary>
+    /// Holds in range (BATTLE.PRG 0x800db74c and 0x800e2b2c, mode 6): one that turns (its AI word's turning rate) turns
+    /// to face the target once aware of it on a new tile, at its turn speed, and once facing it keeps turning with it
+    /// while aware, else looks about.
+    /// </summary>
+    private bool HoldRange(Combatant c, Combatant t)
+    {
+        var m = c.Mind!;
+        if (t.Index >= 16) return false;
+        m.Goal = TileOf(t);
+        if (!Turn(c, t)) return false;
+        SetMode(c, 6);
+        return true;
+    }
+
+    private bool Turn(Combatant c, Combatant t)
+    {
+        var m = c.Mind!;
+        if (t == c) { m.Order = Order.Stand; return true; }
+        if (m.TurnSpeed == 0) return false;
+        float a = c.Actor.FacingToward(t.Actor.Position);
+        uint rel = m.Relations[t.Index];
+        if (m.Goal != m.TurnGoal && (rel & 0x20) != 0 && !m.TurnLatch) { m.TurnLatch = true; m.TurnAngle = a; m.TurnGoal = m.Goal; }
+        if (!m.TurnLatch) return false;
+        m.TurnRate = m.TurnSpeed;
+        if (((int)c.Actor.Facing & 0xFFF) != ((int)m.TurnAngle & 0xFFF)) { m.TurnTo = m.TurnAngle; m.Order = Order.Turn; return true; }
+        if ((rel & 0x20) == 0)
+        {
+            if (LookAround(c, 128, 1, 6)) return true;
+            m.TurnLatch = false;
+            return false;
+        }
+        m.TurnAngle = a;
+        m.TurnGoal = m.Goal;
+        m.TurnTo = a;
+        m.Order = Order.Turn;
+        return true;
+    }
+
+    /// <summary>
+    /// Faces (BATTLE.PRG 0x800e2ccc): whom it faces, at its usual turn speed; else the point it keeps facing; else the
+    /// lowest of the four neighbouring tiles about its facing; else it stands.
+    /// </summary>
+    private void Face(Combatant c)
+    {
+        var m = c.Mind!;
+        m.TurnRate = m.DefaultTurn;
+        if (m.FaceTarget != 16 && At(m.FaceTarget) is { } t) { m.TurnTo = c.Actor.FacingToward(t.Actor.Position); m.Order = Order.Turn; return; }
+        if (m.FacePoint is { } point) { m.TurnTo = c.Actor.FacingToward(point); m.Order = Order.Turn; return; }
+        int facing = (int)c.Actor.Facing & 0xFFF, q = 2 * (((facing >> 10) + ((facing & 0x3FF) > 512 ? 1 : 0)) & 3);
+        float? best = null;
+        int chosen = -1;
+        for (int i = 0; i < 4; i++)
+        {
+            int dir = (q + 2 * i) & 7;
+            var (dx, dz) = Directions[dir];
+            var spot = Centre((m.Tile.X + dx, m.Tile.Z + dz), c.Actor.Position.Y);
+            if (_view.FloorAt(spot) is { } floor && (best == null || floor > best)) { best = floor; chosen = dir; }
+        }
+        if (chosen < 0) { m.Order = Order.Stand; return; }
+        m.TurnTo = chosen << 9;
+        m.Order = Order.Turn;
+    }
+
+    /// <summary>The eight directions by facing octant (BATTLE.PRG 0x800f16ec): tile steps in x and z.</summary>
+    private static readonly (int X, int Z)[] Directions = { (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1) };
+
+    /// <summary>
+    /// Looks about (BATTLE.PRG 0x800e4180): a look of kind 1 (70 frames: one way, the other, then ahead) or 2 (24
+    /// frames) starts on a roll under its chance and runs its frames; returns whether it is still looking. Its head's
+    /// turn is not yet shown; it stands as it looks.
+    /// </summary>
+    private bool LookAround(Combatant c, int chance, int kind, int slot)
+    {
+        var m = c.Mind!;
+        var (ticks, held) = m.Looks[slot];
+        if (ticks == 0)
+        {
+            if (kind == 3 || chance < Roll(128)) return false;
+            ticks = new[] { 20, 70, 24, 1 }[kind];
+            held = kind;
+        }
+        m.Looks[slot] = (ticks - 1, held);
+        if (held is not (1 or 2)) return false;
+        m.Order = Order.Stand;
+        return ticks >= 2;
+    }
+
+    /// <summary>
+    /// Flees (BATTLE.PRG 0x800db61c, mode 4): from the average of the foes it is aware of (or, for 90 frames after it
+    /// last knew of one, from where they were), stepping away while facing them.
+    /// </summary>
+    private bool Flee(Combatant c, bool run, List<Combatant> fighters)
+    {
+        var m = c.Mind!;
+        int sx = 0, sz = 0;
+        bool any = false;
+        foreach (var k in fighters)
+        {
+            if (k.Index >= 16 || (m.Relations[k.Index] >> 5 & 7) != 7) continue;
+            int x = (int)k.Actor.Position.X & 0xFFFF, z = (int)k.Actor.Position.Z & 0xFFFF;
+            (sx, sz) = any ? ((sx + x) >> 1, (sz + z) >> 1) : (x, z);
+            any = true;
+        }
+        if (any) { m.FleeTimer = 90; m.Threat = (sx >> 7, sz >> 7); }
+        else
+        {
+            if (m.FleeTimer != 0) m.FleeTimer--;
+            if (m.FleeTimer == 0 || m.Mode != 4) return false;
+        }
+        var point = Centre(m.Threat, c.Actor.Position.Y);
+        m.Goal = m.Threat;
+        m.Run = run;
+        m.FacePoint = point;
+        m.Heading = c.Actor.FacingToward(point) + 2048;
+        m.Order = Order.Away;
+        SetMode(c, 4);
+        return true;
+    }
+
+    /// <summary>Goes to a tile (BATTLE.PRG 0x800db5dc, mode 2): stands once within the radius of its centre, else walks for it.</summary>
+    private void GoTo(Combatant c, (int X, int Z) tile, int radius)
+    {
+        var m = c.Mind!;
+        m.Goal = tile;
+        SetMode(c, 2);
+        var centre = Centre(tile, _view.FloorAt(Centre(tile, 0)) ?? c.Actor.Position.Y);
+        m.Order = (centre - c.Actor.Position).LengthSquared() < radius * radius ? Order.Stand : Order.Path;
+    }
+
+    /// <summary>Wanders about its home (BATTLE.PRG 0x800db5b0).</summary>
+    private void Wander(Combatant c) => WanderAround(c, c.Mind!.Home, c.Mind.HomeRadius);
+
+    /// <summary>
+    /// Wanders about a tile (BATTLE.PRG 0x800db5b8 and 0x800e1eac, mode 3). One dormant stirs after 31 frames on a roll
+    /// under 44 of 128, else lies on. It moves for its pace's move frames and idles (facing about) for its idle frames,
+    /// each phase going round again on a roll under 44. Within a radius of 63 it wanders freely along a heading near
+    /// a free cardinal direction, a new one at its odds, once it stalls 60 frames on a tile or the way ahead leaves the
+    /// room; within less, it takes a random walk of radius-and-one cardinal steps from the tile (a step a frame, facing
+    /// about meanwhile) and walks to its end.
+    /// </summary>
+    private void WanderAround(Combatant c, (int X, int Z) home, int radius)
+    {
+        var m = c.Mind!;
+        if (m.Mode != 3) { m.WanderState = 0; m.Stall = 0; }
+        SetMode(c, 3);
+        m.WanderCount = (m.WanderCount + 1) & 0xFFFF;
+        if (m.Dormant == 1)
+        {
+            if (m.WanderCount < 31) return;
+            if (Roll(128) < 44) m.Dormant = 2;
+            else { m.WanderCount = 0; return; }
+        }
+        if (m.WanderCount == m.MoveFrames) { if (Roll(128) < 44) m.WanderCount = 0; }
+        else if (m.WanderCount >= m.IdleFrames + m.MoveFrames) m.WanderCount = Roll(128) < 44 ? m.MoveFrames : 0;
+        if (m.WanderCount >= m.MoveFrames) { Face(c); return; }
+        int odds = 1 << (m.Chance & 31);
+        if (radius >= 63)
+        {
+            if (!(m.WanderState != 0 && Roll(odds) != 0 && m.Stall != 0))
+            {
+                m.WanderState = 1;
+                m.Stall = 60;
+                int first = 2 * Roll(4);
+                m.WanderHeading = -1;
+                for (int i = 0; i < 4; i++)
+                {
+                    int d = (first + 2 * i) & 7;
+                    if (Walkable(c, Step(m.Tile, d))) { m.WanderHeading = (d * 512 - 256 + Roll(512)) & 0xFFFF; break; }
+                }
+                if (m.WanderHeading < 0) m.WanderHeading = Roll(4096);
+            }
+            Stalled(m);
+            int ahead = (short)m.WanderHeading >> 9;
+            foreach (int d in new[] { ahead, (ahead + 2) & 7 })
+            {
+                var next = d < 0 ? m.Tile : Step(m.Tile, d);
+                if (_view.FloorAt(Centre(next, c.Actor.Position.Y)) == null) { m.Stall = 0; break; }
+            }
+            m.Heading = (short)m.WanderHeading;
+            m.Order = Order.Away;
+            return;
+        }
+        if (Roll(odds) == 0) m.WanderState = 0;
+        switch (m.WanderState)
+        {
+            case 0:
+                m.WanderHeading = -1;
+                m.WalkSteps = 0;
+                m.Stall = 60;
+                m.WanderState = 1;
+                Face(c);
+                return;
+            case 1:
+            {
+                int walked = RandomWalk(c, home, radius);
+                if (walked < 0) m.WanderState = 0;
+                else if (walked > 0) { m.WanderState = 2; m.Goal = m.WalkTile; }
+                Face(c);
+                return;
+            }
+            case 2:
+                m.Goal = m.WalkTile;
+                m.Order = m.Goal == m.Tile ? Order.Stand : Order.Path;
+                Stalled(m);
+                if (m.Goal == m.Tile || m.Stall == 0) m.WanderState = 0;
+                return;
+            default:
+                m.WanderState = 0;
+                Face(c);
+                return;
+        }
+    }
+
+    /// <summary>The wander's stall timer: 60 frames, run down while it stays on one tile.</summary>
+    private static void Stalled(Mind m)
+    {
+        if (!m.Still) m.Stall = 60;
+        else if (m.Stall != 0) m.Stall--;
+    }
+
+    /// <summary>
+    /// A step of the wander's random walk (BATTLE.PRG 0x800e1bb8): from the tile (or where it got to) to a free cardinal
+    /// neighbour, at random, once more at random if that turns straight back; -1 with none, 1 once past the radius.
+    /// </summary>
+    private int RandomWalk(Combatant c, (int X, int Z) from, int radius)
+    {
+        var m = c.Mind!;
+        if (radius == 0) return -1;
+        if (m.WalkSteps == 0) m.WalkTile = from;
+        var free = new List<int>();
+        for (int d = 0; d < 8; d += 2) if (Walkable(c, Step(m.WalkTile, d))) free.Add(d);
+        if (free.Count == 0) return -1;
+        int k = Roll(4096) % free.Count;
+        if ((short)m.WanderHeading > 0 && free[k] == ((m.WanderHeading + 4) & 7)) k = Roll(4096) % free.Count;
+        m.WalkTile = Step(m.WalkTile, free[k]);
+        m.WalkSteps++;
+        m.WanderHeading = free[k];
+        return radius < m.WalkSteps ? 1 : 0;
+    }
+
+    /// <summary>Walks its patrol route (BATTLE.PRG 0x800db5fc, mode 5). The room's routes are not yet read; it stands.</summary>
+    private static void Patrol(Combatant c)
+    {
+        SetMode(c, 5);
+        c.Mind!.Order = Order.Stand;
+    }
+
+    /// <summary>
+    /// Steps off the tile it remembers (BATTLE.PRG 0x800db0bc): from it, to the first walkable of four neighbouring
+    /// tiles, toward its goal and aside first and then back the other two in a rolled order, facing whom it failed on;
+    /// with none, it forgets.
+    /// </summary>
+    private bool Unstick(Combatant c)
+    {
+        var m = c.Mind!;
+        if (m.Memory != m.Tile) { m.Unstick = 0; return false; }
+        if (m.Unstick == 0)
+        {
+            int o = ((int)c.Actor.FacingToward(Centre(m.Goal, c.Actor.Position.Y)) >> 9) & 7, o2 = (o + 2) & 7;
+            int facing = (int)c.Actor.Facing & 0xFFF, q = 2 * (((facing >> 10) + ((facing & 0x3FF) > 512 ? 1 : 0)) & 3);
+            (m.UnstickDirections[0], m.UnstickDirections[1]) = q == o ? (o, o2) : (o2, o);
+            (m.UnstickDirections[2], m.UnstickDirections[3]) = Roll(2) != 0 ? ((o + 4) & 7, (o2 + 4) & 7) : ((o2 + 4) & 7, (o + 4) & 7);
+            for (int i = 0; i < 4; i++) if (Walkable(c, Step(m.Tile, m.UnstickDirections[i]))) { m.Unstick = i; break; }
+            m.Unstick++;
+        }
+        if (m.Unstick >= 5)
+        {
+            m.Memory = null;
+            m.Stuck = false;
+            m.Unstick = 0;
+            return false;
+        }
+        m.Goal = Step(m.Tile, m.UnstickDirections[m.Unstick - 1]);
+        m.FaceTarget = m.UnstickFace;
+        if (Walkable(c, m.Goal)) m.Order = Order.Path;
+        else m.Unstick++;
+        return true;
+    }
+
+    private static (int X, int Z) Step((int X, int Z) tile, int direction) => (tile.X + Directions[direction].X, tile.Z + Directions[direction].Z);
+
+    /// <summary>Whether it can stand on a tile (BATTLE.PRG 0x800d954c, its attribute masks not yet read): not the tile it remembers failing on, with a floor that does not block.</summary>
+    private bool Walkable(Combatant c, (int X, int Z) tile) => tile != c.Mind!.Memory && !_view.Blocked(tile.X, tile.Z) && _view.FloorAt(Centre(tile, c.Actor.Position.Y)) != null;
+
+    /// <summary>
+    /// A move ended (BATTLE.PRG's action end): an enemy that made a planned move remembers its target's tile
+    /// (0x800deb10, <see cref="Remember"/>) and faces it as it steps off; everyone heeds the move and plans anew
+    /// (<see cref="Replan"/>); and its maker lets its token go (0x800d82a8).
+    /// </summary>
+    private void Ended()
+    {
+        var acted = _acted;
+        _acted = null;
+        if (acted?.Caster is { Mind: { Executing: { } entry } m } caster && caster != Ashley)
+        {
+            m.UnstickFace = entry.Target.Index;
+            Remember(caster);
+            m.Executing = null;
+        }
+        Replan(acted);
+        if (acted != null && acted.Caster != Ashley) ReleaseToken(acted.Caster);
+    }
+
+    /// <summary>
+    /// Everyone heeds a move made (BATTLE.PRG 0x800dc810): each it was made on reacts (<see cref="Heed"/>), then each
+    /// takes sides (<see cref="TakeSides"/>).
+    /// </summary>
+    private void React(Acted? acted)
+    {
+        var fighters = Fighters();
+        foreach (var s in fighters) if (s.Mind != null) Heed(s, acted);
+        foreach (var s in fighters) if (s.Mind != null) TakeSides(s, fighters);
+    }
+
+    /// <summary>
+    /// How an actor reacts to a move made on it (BATTLE.PRG 0x800dd000), not Ashley, not one it made, nor one of effect
+    /// class 3: help from Ashley may win over one that can be (two in 128-roll odds of 76); help from a foe calms one won
+    /// over; it keeps seeing the maker 28 updates; harm from Ashley calms one won over; harm turns one that retaliates
+    /// on its maker (Ashley only, with bit 26), or else, from one not yet a foe, ends the maker's override of it or
+    /// overrides its own relation for 127 frames, turning on the maker with bit 26.
+    /// </summary>
+    private void Heed(Combatant s, Acted? acted)
+    {
+        if (acted == null || s == Ashley || acted.Target != s || acted.Caster == s || acted.Caster.Mind is not { } ca) return;
+        if (_view.Content.Field.Unheeded(acted.Action)) return;
+        var m = s.Mind!;
+        var c = acted.Caster;
+        var record = _view.Content.Field.Action(acted.Action);
+        if (m.Dormant == 1) m.Dormant = 2;
+        if (Harms(record, acted.Action, s, help: true))
+        {
+            if (c == Ashley && !m.Converted && m.Convertible) Convert(s, false);
+            else if ((ca.Relations[s.Index] >> 6 & 3) == 3) Calm(s);
+        }
+        m.Relations[c.Index] = m.Relations[c.Index] & ~(0x1Fu << 15) | 28u << 15;
+        if (!Harms(record, acted.Action, s, help: false)) return;
+        if (c == Ashley && m.Convertible) Calm(s);
+        if (m.Retaliates && (!m.Avenges || c == Ashley)) { Antagonise(s, c); return; }
+        uint own = m.Relations[c.Index];
+        if ((own >> 6 & 3) == 3) return;
+        uint theirs = ca.Relations[s.Index];
+        if ((theirs >> 20 & 0x7F) != 0)
+        {
+            ca.Relations[s.Index] = theirs & ~(0x7Fu << 20) & ~0xC0u | (theirs >> 28 & 3) << 6;
+            return;
+        }
+        m.Relations[c.Index] = own & ~(3u << 28) | 127u << 20 | (own >> 6 & 3) << 28;
+        if (m.Avenges) Antagonise(s, c);
+    }
+
+    /// <summary>Turns an actor on another (BATTLE.PRG 0x800dc784): from not yet a foe, with the alarm and a voiced reaction; its unseen count cleared.</summary>
+    private static void Antagonise(Combatant s, Combatant c)
+    {
+        var m = s.Mind!;
+        if ((m.Relations[c.Index] >> 6 & 3) < 3)
+        {
+            m.Lost = true;
+            Flash(s, 6, 40);
+            Voice(s);
+        }
+        m.Relations[c.Index] = m.Relations[c.Index] & 0xFFFF803Fu | 0xC0;
+    }
+
+    /// <summary>
+    /// Takes sides (BATTLE.PRG 0x800dd344): one won over stands with Ashley and those of faction 3, against those hostile
+    /// to her, neither to the rest; one that defends allies turns on whoever its mutual allies are foes to and it sees
+    /// as neither, unless another mutual ally stands with them.
+    /// </summary>
+    private void TakeSides(Combatant s, List<Combatant> fighters)
+    {
+        var m = s.Mind!;
+        if (m.Converted)
+        {
+            foreach (var k in fighters)
+            {
+                if (k.Mind is not { } oa) continue;
+                int r = k == s || k == Ashley || k.Faction == 3 ? 2 : oa.Converted ? 1 : (oa.Relations[0] >> 6 & 3) == 3 ? 3 : 1;
+                if (r == 3) m.Relations[k.Index] &= ~(0x7Fu << 20);
+                m.Relations[k.Index] = m.Relations[k.Index] & ~0xC0u | (uint)r << 6;
+            }
+            return;
+        }
+        if (!m.Defends) return;
+        bool Mutual(Combatant k) => k.Mind is { } km && (m.Relations[k.Index] >> 6 & 3) == 2 && (km.Relations[s.Index] >> 6 & 3) == 2;
+        foreach (var k in fighters)
+        {
+            if (!Mutual(k)) continue;
+            foreach (var j in fighters)
+            {
+                if (j.Index >= 16 || (m.Relations[j.Index] >> 6 & 3) != 1 || (m.Relations[j.Index] & 1) == 0 || (k.Mind!.Relations[j.Index] >> 6 & 3) != 3) continue;
+                bool sided = fighters.Exists(q => Mutual(q) && ((q.Mind!.Relations[j.Index] >> 6 & 3) == 2 || (q.Mind.Relations[j.Index] >> 20 & 0x7F) != 0 && (q.Mind.Relations[j.Index] >> 28 & 3) == 2));
+                if (!sided) Antagonise(s, j);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Wins an actor over (BATTLE.PRG 0x800dc210): unless forced, on a roll under 76 of 128, the second such; then it
+    /// fights by the berserk routine, its own kept, with the won-over mark.
+    /// </summary>
+    private void Convert(Combatant s, bool force)
+    {
+        var m = s.Mind!;
+        if (!force)
+        {
+            if ((_random.Randi() & 0x7F) >= 76) return;
+            if (++m.Conversions < 2) return;
+        }
+        m.Converted = true;
+        m.Calmed = m.Behaviour;
+        m.Behaviour = Behaviour.Berserk;
+        Show(s, 0x80);
+    }
+
+    /// <summary>
+    /// Calms one won over (BATTLE.PRG 0x800dc19c): its count cleared; won over, the mark goes, its relations are set
+    /// anew from its faction and its own routine comes back; one that does not retaliate raises the alarm.
+    /// </summary>
+    private void Calm(Combatant s)
+    {
+        var m = s.Mind!;
+        m.Conversions = 0;
+        if (!m.Converted) return;
+        m.Converted = false;
+        Show(s, 0x40);
+        Relate(s);
+        if (m.Calmed is { } own) { m.Behaviour = own; m.Calmed = null; }
+        if (!m.Retaliates)
+        {
+            Flash(s, 6, 40);
+            Voice(s);
+        }
+    }
+
+    /// <summary>
+    /// Carries out an enemy's order with its body: one falling carries on falling and a hop runs its course
+    /// (0x800a29e8: vanished, it stands on its tile facing Ashley and reappears, 21 then 22, then stands); then it
+    /// stands, turns at its turn rate, walks for its goal tile by its waypoint (<see cref="Waypoint"/>), or steps along
+    /// a heading still facing its point.
+    /// </summary>
+    private void Drive(Combatant enemy)
+    {
+        var actor = enemy.Actor;
+        var m = enemy.Mind!;
+        if (enemy.Mover is { Busy: true } falling) { falling.Step(null, walk: true); return; }
+        if (enemy.HopState == 1 && !_view.Materialising(actor))
+        {
+            actor.Position = enemy.HopTo;
+            if (At(m.FaceTarget) is { } faced) actor.Facing = actor.FacingToward(faced.Actor.Position);
+            _view.Materialise(actor, appear: true);
+            if (Play(enemy, 21, 8, once: true) is { } set) actor.Queue($"{set}_22", 8);
+            enemy.HopState = 2;
+        }
+        if (enemy.HopState == 2 && !_view.Materialising(actor)) { Play(enemy, 1, 6); enemy.HopState = 0; }
+        if (enemy.HopState != 0 || enemy.Suspended || m.Held || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) return;
+        switch (m.Order)
+        {
+            case Order.Stand:
+                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
+                break;
+            case Order.Turn:
+            {
+                if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
+                float turn = Mathf.Wrap(m.TurnTo - actor.Facing, -2048, 2048);
+                actor.Facing = Mathf.PosMod(Math.Abs(turn) <= m.TurnRate ? m.TurnTo : actor.Facing + Math.Sign(turn) * m.TurnRate, 4096);
+                break;
+            }
+            case Order.Path:
+                if (enemy.Gait == Gait.Hop) { Hop(enemy, m.Goal); break; }
+                Walk(enemy, Waypoint(enemy, Centre(m.Goal, actor.Position.Y)), null);
+                break;
+            case Order.Away:
+            {
+                float angle = m.Heading * Mathf.Tau / 4096;
+                var away = actor.Position + new Vector3(-Mathf.Sin(angle), 0, -Mathf.Cos(angle)) * 128;
+                var facing = m.FacePoint ?? (At(m.FaceTarget) is { } t ? t.Actor.Position : (Vector3?)null);
+                if (enemy.Gait == Gait.Hop)
+                {
+                    // 0x800e1764: of the points its reach along the heading and the other way, the one farther from
+                    // what it moves by.
+                    var ahead = PointAt(enemy, (int)m.Heading, m.HopReach);
+                    var behind = PointAt(enemy, (int)m.Heading + 2048, m.HopReach);
+                    var origin = facing ?? actor.Position;
+                    Hop(enemy, ((Centre(behind, 0) - origin) with { Y = 0 }).LengthSquared() < ((Centre(ahead, 0) - origin) with { Y = 0 }).LengthSquared() ? ahead : behind);
+                    break;
+                }
+                Walk(enemy, away, facing);
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Walks an enemy a frame for a point (BATTLE.PRG's walk and run command, 0x800def8c, carried out for the frame by
+    /// the movement Ashley's is, 0x800a5280): asked to run, at the first profile that runs (flags 0x84), else at the
+    /// first that walks (0x42; retail tests the first profile's speed byte for the second, kept); with neither it
+    /// stands. A flyer (0x800e0a68, its arc to the goal not yet followed) heads straight for the point at its cruising
+    /// height, 128 above the floor there, at the speed of its profile that flies (0x10 walking, 0x20 running; with
+    /// none it faces). <paramref name="facing"/> is a point it keeps facing as it goes.
+    /// </summary>
+    private void Walk(Combatant enemy, Vector3 waypoint, Vector3? facing)
+    {
+        var actor = enemy.Actor;
+        var m = enemy.Mind!;
+        if (enemy.Mover is not { } mover) return;
+        if (enemy.Gait == Gait.Fly)
+        {
+            int speed = m.Run ? ((m.FlagsA & 0x20) != 0 ? m.SpeedA : (m.FlagsB & 0x20) != 0 ? m.SpeedB : (m.FlagsA & 0x10) != 0 ? m.SpeedA : (m.FlagsB & 0x10) != 0 ? m.SpeedB : 0)
+                : (m.FlagsA & 0x10) != 0 ? m.SpeedA : (m.FlagsB & 0x10) != 0 ? m.SpeedB : (m.FlagsA & 0x20) != 0 ? m.SpeedA : (m.FlagsB & 0x20) != 0 ? m.SpeedB : 0;
+            if (speed <= 0) { Face(enemy); return; }
+            float floor = _view.SightFloor((int)waypoint.X, (int)waypoint.Z);
+            var aim = waypoint with { Y = floor - 128 };
+            var way = aim - actor.Position;
+            actor.Facing = actor.FacingToward(aim);
+            actor.Position = way.Length() <= speed ? aim : actor.Position + way.Normalized() * speed;
+            if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
+            if (facing is { } look) actor.Facing = actor.FacingToward(look);
+            return;
+        }
+        int pace = 0;
+        bool run = false;
+        if (m.Run && (m.FlagsA & 0x84) != 0) (pace, run) = (m.SpeedA, true);
+        else if (m.Run && (m.FlagsB & 0x84) != 0) (pace, run) = (m.SpeedB, true);
+        else if ((m.FlagsA & 0x42) != 0) pace = m.SpeedA;
+        else if ((m.SpeedA & 0x42) != 0) pace = m.SpeedB;
+        if (pace <= 0)
+        {
+            if (_walking.Remove(enemy)) { mover.Halt(); Play(enemy, 1, 6); }
+            return;
+        }
+        mover.WalkSpeed = pace;
+        mover.Step(actor.FacingToward(waypoint), walk: true);
+        if (!_walking.Contains(enemy) || enemy.Runs != run)
+        {
+            if (!run || Play(enemy, FieldPlayer.Run, 4) == null) Play(enemy, FieldPlayer.Walk, 4);
+            enemy.Runs = run;
+            _walking.Add(enemy);
+        }
+        if (facing is { } point) actor.Facing = actor.FacingToward(point);
+    }
+
+    /// <summary>
+    /// A point its reach along a heading from its tile (BATTLE.PRG 0x800e1388): the first standing tile of eight tries,
+    /// an eighth of the reach nearer each, else the last.
+    /// </summary>
+    private (int X, int Z) PointAt(Combatant c, int heading, int reach)
+    {
+        var m = c.Mind!;
+        float angle = heading * Mathf.Tau / 4096;
+        int step = reach >> 3;
+        (int X, int Z) tile = m.Tile;
+        for (int i = 0; i < 8; i++, reach -= step)
+        {
+            tile = (((m.Tile.X * 128) + (int)(-Mathf.Sin(angle) * reach) + 64) >> 7, ((m.Tile.Z * 128) + (int)(-Mathf.Cos(angle) * reach) + 64) >> 7);
+            if (Walkable(c, tile)) break;
+        }
+        return tile;
+    }
+
+    /// <summary>
+    /// A hopper for its goal tile (BATTLE.PRG 0x800e153c): on it, it faces; beyond its reach the goal comes in to its
+    /// reach (<see cref="PointAt"/>); one that also walks walks once within four tiles; else at most every 6 calls it
+    /// warps (command 13, actor code 23) to the goal or the first free cardinal tile beside it: it fades out (19 then
+    /// 20), stands there facing its target and fades back in (21 then 22), with no flight between.
+    /// </summary>
+    private void Hop(Combatant enemy, (int X, int Z) goal)
+    {
+        var m = enemy.Mind!;
+        var actor = enemy.Actor;
+        if (goal == m.Tile) { Face(enemy); return; }
+        var centre = Centre(goal, actor.Position.Y);
+        if ((long)m.HopReach * m.HopReach < ((centre - actor.Position) with { Y = 0 }).LengthSquared())
+            goal = PointAt(enemy, (int)actor.FacingToward(centre), m.HopReach);
+        int dx = goal.X - m.Tile.X, dz = goal.Z - m.Tile.Z;
+        if ((m.Moves & 6) != 0 && dx * dx + dz * dz < 16) { Walk(enemy, Waypoint(enemy, Centre(goal, actor.Position.Y)), null); return; }
+        if (++enemy.HopCount < 6) { Face(enemy); return; }
+        if (!Walkable(enemy, goal))
+        {
+            (int X, int Z)? free = null;
+            for (int d = 0; d < 8 && free == null; d += 2) if (Walkable(enemy, Step(goal, d))) free = Step(goal, d);
+            if (free is not { } beside) { Face(enemy); return; }
+            goal = beside;
+        }
+        enemy.HopCount = 0;
+        var spot = Centre(goal, 0);
+        if (_view.FloorAt(spot) is not { } landing) return;
+        enemy.HopTo = spot with { Y = landing };
+        enemy.HopState = 1;
+        _view.Materialise(actor, appear: false);
+        if (Play(enemy, 19, 8, once: true) is { } set) actor.Queue($"{set}_20", 8);
+    }
+}

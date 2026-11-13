@@ -21,11 +21,10 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// </list>
 /// RISK rises by the blade's cost with each attack and falls over time, faster with the weapon sheathed; hit and
 /// magic points come back at the same pace.
-/// Hostile characters with their weapons drawn close on Ashley once she is within 1536 units, wait, then attack
-/// through the same sphere and rules after 31 frames. The retail AI routine is hand-written assembly that was not
-/// read, so their pacing is an inference.
+/// Hostile characters with their weapons drawn fight by BATTLE.PRG's enemy AI (FieldEnemies.cs): they perceive,
+/// plan, take turns to telegraph and act, and move as it has them.
 /// </summary>
-public sealed class FieldBattle
+public sealed partial class FieldBattle
 {
     /// <summary>Animations by slot: draw, sheathe, attacks low, level and high, flinch front/back, Ashley's flinches, death.</summary>
     public const int Draw = 9, Sheathe = 10, AttackLow = 72, Attack = 73, AttackHigh = 74, FlinchFront = 64, FlinchBack = 66, AshleyFlinchFront = 68, AshleyFlinchBack = 69, Death = 70;
@@ -43,10 +42,6 @@ public sealed class FieldBattle
         Slow or Quicken => 20 * 30, Regen or Poison or Curse => -1, _ => 15 * 30,
     };
 
-    /// <summary>Names for the limbs of a character built like Ashley.</summary>
-    public const float DetectRange = 1536;
-    /// <summary>Frames an enemy waits between attacks, and how long its sphere is open before it strikes.</summary>
-    public const int EnemyPause = 60, EnemyWindUp = 31;
 
     /// <summary>Equipment as battle reads it: strength and agility, DP, and type, class and affinity values.</summary>
     public sealed class Gear
@@ -121,7 +116,7 @@ public sealed class FieldBattle
         public Gear Armour = new();
     }
 
-    public sealed class Combatant
+    public sealed partial class Combatant
     {
         /// <summary>The limb a spell or blow on the whole character lands on: its record's (byte 0x32), else its first.</summary>
         public int DefaultLimb = -1;
@@ -167,14 +162,7 @@ public sealed class FieldBattle
             }
         }
         public readonly List<Limb> Limbs = new();
-        /// <summary>
-        /// How far it sees (sight ranges by bits 18 to 20 of its record's AI word: 384, 512, 768, 896, 1024, 1536,
-        /// 1792 or 8192 units, at most 1536), within what cone (bits 16 and 17: 360, 190, 85 or 40 degrees), and its
-        /// pause between moves (the middle value of its timing preset, bits 4 to 6). Once it has seen Ashley it keeps
-        /// after her.
-        /// </summary>
-        public float Sight = DetectRange, Cone = 360;
-        public int Pause = EnemyPause;
+        /// <summary>Set by <see cref="Land"/> on a struck character; the enemy AI does not read it (it heeds a blow at the action's end, <see cref="Heed"/>).</summary>
         public bool Engaged;
         /// <summary>
         /// Its planner's state (BATTLE.PRG's AI record): its plan (+0x2f0), its faction (+0x2c, the AI word's bits 21 and
@@ -253,22 +241,15 @@ public sealed class FieldBattle
         /// <summary>What it may drop when felled (its record's drop table) and its room record's three items.</summary>
         public GDictionary? Drops;
         public Godot.Collections.Array? DropItems;
-        /// <summary>The enemy's countdown to its next move.</summary>
+        /// <summary>Set by <see cref="Land"/> on a struck character; the enemy AI keeps its own timings (<see cref="Mind"/>).</summary>
         public int Timer;
-        /// <summary>
-        /// The frames since it set out to act (0 while it is not): its balloon's dots grow over the first 24, the jagged
-        /// balloon holds to 120, and then it acts (BATTLE.PRG 0x800DBFE4).
-        /// </summary>
-        public int Telegraph;
-        /// <summary>Frames of the jagged balloon after it has acted, and of the rest before it may set out again.</summary>
-        public int Alert, Rest;
         /// <summary>Which side of its head its balloon stands (0 right, 1 left), turned as it crosses Ashley.</summary>
         public int BalloonSide;
         /// <summary>How it moves (BATTLE.PRG 0x800e6828, by its movement profiles' flags): walking, hopping or flying.</summary>
         public Gait Gait;
         /// <summary>Its speed: units a frame walking, running or flying, or how far a hop reaches.</summary>
         public float Speed;
-        /// <summary>Whether a walker closes in running (its run, 19) rather than walking (13).</summary>
+        /// <summary>Whether a walker is running (its run, 19) rather than walking (13); set as the AI drives it.</summary>
         public bool Runs;
         /// <summary>Frames since a hopper last hopped; it hops again every 6 (0x800e153c's count at AI +0x8c).</summary>
         public int HopCount;
@@ -292,7 +273,7 @@ public sealed class FieldBattle
         public bool Suspended;
     }
 
-    private enum Phase { Free, Drawing, Sheathing, Sphere, Striking, WindUp, Dying, Over, Casting }
+    private enum Phase { Free, Drawing, Sheathing, Sphere, Striking, Dying, Over, Casting }
 
     private readonly FieldView _view;
     private readonly RandomNumberGenerator _random = new();
@@ -407,7 +388,7 @@ public sealed class FieldBattle
             Blade = Gear.From(weapon), Shield = Gear.From(stats.GetValueOrDefault("shield", new GDictionary()).AsGodotDictionary()),
             Accessory = Gear.From(stats.GetValueOrDefault("accessory", new GDictionary()).AsGodotDictionary()),
             Reach = reach,
-            Hostile = hostile, Marked = marked, Drawn = drawn, Timer = EnemyPause,
+            Hostile = hostile, Marked = marked, Drawn = drawn,
             Category = weapon.GetValueOrDefault("category", 0).AsInt32(),
             DefaultLimb = stats.GetValueOrDefault("default_limb", -1).AsInt32(),
         };
@@ -438,21 +419,12 @@ public sealed class FieldBattle
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
         combatant.Set = drawn ? combatant.BattleSet : "base";
         long ai = stats.GetValueOrDefault("ai", 0L).AsInt64();
-        combatant.Faction = (int)(ai >> 21 & 3);
         combatant.LastResorts = stats.GetValueOrDefault("last_resorts", false).AsBool();
         combatant.WeighsLightly = stats.GetValueOrDefault("weighs_lightly", false).AsBool();
         combatant.RecoveryBonus = stats.GetValueOrDefault("recovery", 0).AsInt32();
         if (stats.GetValueOrDefault("slowing_limbs", new Godot.Collections.Array()).AsGodotArray() is { Count: 2 } slowing)
             combatant.SlowingLimbs = (slowing[0].AsInt32(), slowing[1].AsInt32());
-        if (ai != 0)
-        {
-            combatant.Sight = Math.Min(DetectRange, new[] { 384f, 512, 768, 896, 1024, 1536, 1792, 8192 }[(ai >> 18) & 7]);
-            combatant.Cone = new[] { 360f, 190, 85, 40 }[(ai >> 16) & 3];
-            combatant.Pause = new[] { 5400, 30, 60, 15, 300, 60, 60, 60 }[(ai >> 4) & 7];
-            combatant.Pause = Math.Clamp(combatant.Pause, 15, 300);
-            combatant.Routes = (ai & 1 << 14) != 0;
-            combatant.Timer = combatant.Pause;
-        }
+        combatant.Routes = (ai & 1 << 14) != 0;
         var limbs = stats.GetValueOrDefault("limbs", new Godot.Collections.Array()).AsGodotArray();
         for (int i = 0; i < limbs.Count; i++)
         {
@@ -474,6 +446,7 @@ public sealed class FieldBattle
         }
         Combatants[actor.Id] = combatant;
         if (actor.Id == "slot:0") Ashley = combatant;
+        Awaken(combatant, (uint)ai, stats);
         return combatant;
     }
 
@@ -599,7 +572,7 @@ public sealed class FieldBattle
                 StepSphere(player);
                 PulseHighlight();
                 break;
-            case Phase.Striking: case Phase.WindUp:
+            case Phase.Striking:
                 StepStrike();
                 break;
             case Phase.Dying:
@@ -610,10 +583,11 @@ public sealed class FieldBattle
                 break;
         }
         // The fight is planned anew as a move ends and as the hostile come and go (BATTLE.PRG 0x800dec88).
-        bool acting = _phase is Phase.Striking or Phase.WindUp or Phase.Casting || _enemyCast != null || _enemyRelease != null;
+        bool acting = _phase is Phase.Striking or Phase.Casting || _enemyCast != null || _enemyRelease != null;
         int hostile = 0;
         foreach (var c in Combatants.Values) if (c != Ashley && c.Hostile && !c.Dead) hostile++;
-        if (!acting && (_wasActing || hostile != _hostileCount)) Replan();
+        if (!acting && _wasActing) Ended();
+        else if (!acting && hostile != _hostileCount) Replan(null);
         _wasActing = acting;
         if (!acting) _hostileCount = hostile;
         if (_phase is Phase.Free or Phase.Drawing or Phase.Sheathing) { StepEnemies(); StepEnemyCast(); }
@@ -925,6 +899,7 @@ public sealed class FieldBattle
         player.Halt();
         _spell = art;
         _spellTarget = target.Who;
+        _acted = new Acted(Ashley, id, target.Who);
         _victimLimb = target.Limb;
         _artNumber = (id - 184) % 4;
         _released = false;
@@ -997,6 +972,7 @@ public sealed class FieldBattle
         _spell = spell;
         _spellAction = id;
         _spellTarget = target;
+        _acted = new Acted(Ashley, id, target);
         _released = false;
         if (target != Ashley) Ashley.Actor.Facing = Ashley.Actor.FacingToward(target!.Actor.Position);
         _phase = Phase.Casting;
@@ -1478,11 +1454,10 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// How <paramref name="from"/> stands to <paramref name="to"/> (its AI record's +0x1a4 word, bits 6 and 7, set as the
-    /// battle begins by 0x800e7370): 2 to itself, else by its faction and whether the other is the player or another of
-    /// factions 0 to 2 (<see cref="FieldContent.Relation"/>). 3 is a foe, 2 an ally, 1 neither.
+    /// How <paramref name="from"/> stands to <paramref name="to"/>: bits 6 and 7 of its relation word for it (its AI
+    /// record's +0x1a4, <see cref="Mind.Relations"/>). 3 is a foe, 2 an ally, 1 neither.
     /// </summary>
-    private int Relation(Combatant from, Combatant to) => from == to ? 2 : _view.Content.Field.Relation(from.Faction, to == Ashley || to.Faction >= 3);
+    private static int Relation(Combatant from, Combatant to) => to.Index < 16 ? (int)(from.Mind!.Relations[to.Index] >> 6 & 3) : 0;
 
     /// <summary>
     /// A fighter's well-being as an enemy reckons it (BATTLE.PRG 0x800dcc94, summed by 0x800dc284): six times the
@@ -1841,53 +1816,68 @@ public sealed class FieldBattle
     }
 
     /// <summary>
-    /// Checks an enemy's plan as it stands (BATTLE.PRG 0x800d85d8): a move whose time has come that it may no longer make
-    /// on its target, or can no longer make, is dropped (weight 0); if its first is dropped, the next still standing
-    /// takes its place, and with none the plan is empty.
+    /// Checks an enemy's plan as it stands (BATTLE.PRG 0x800d85d8, each AI tick): a move whose time has come that it may
+    /// no longer make on its target, or can no longer make, is dropped (weight 0); if its first is dropped, the next
+    /// still standing takes its place (staying in its own place too) and its state is chosen anew
+    /// (<see cref="Choose"/>), and with none the plan is empty. Its plan phase (AI +0x131) follows: with no plan, 2
+    /// while it has a foe and 3 otherwise; else 1 while its first is more than 30 frames off and 0 once nearer. Returns
+    /// whether its first was dropped.
     /// </summary>
-    private void Recheck(Combatant enemy)
+    private bool Recheck(Combatant enemy)
     {
+        var mind = enemy.Mind!;
+        bool dropped = false;
         foreach (var entry in enemy.Plans)
             if (entry.Weight != 0 && entry.Horizon <= _planClock && (!Allowed(enemy, entry.Action, entry.Target) || !Usable(enemy, entry.Slot, entry.Action)))
                 entry.Weight = 0;
-        if (enemy.Plans.Count == 0 || enemy.Plans[0].Weight != 0) return;
-        int next = enemy.Plans.FindIndex(1, entry => entry.Weight != 0);
-        if (next < 0) enemy.Plans.Clear();
-        else enemy.Plans[0] = enemy.Plans[next];
+        if (enemy.Plans.Count > 0 && enemy.Plans[0].Weight == 0)
+        {
+            dropped = true;
+            int next = enemy.Plans.FindIndex(1, entry => entry.Weight != 0);
+            if (next < 0) enemy.Plans.Clear();
+            else
+            {
+                enemy.Plans[0] = enemy.Plans[next];
+                Choose(enemy);
+            }
+        }
+        if (enemy.Plans.Count == 0)
+        {
+            mind.Phase = 3;
+            foreach (var other in Fighters()) if (Relation(enemy, other) == 3) { mind.Phase = 2; break; }
+        }
+        else mind.Phase = _planClock + 30 < enemy.Plans[0].Horizon ? 1 : 0;
+        return dropped;
     }
 
     /// <summary>
     /// Plans the fight anew (BATTLE.PRG 0x800dec88, after any move ends and as fighters join or leave): the clock goes
-    /// back to 0 and each hostile enemy plans its moves (<see cref="PlanMoves"/>).
+    /// back to 0; every enemy lets go of its chase and back-off latches and its pause, and the one that made
+    /// <paramref name="acted"/> its 90 frames after a release; each heeds the action (<see cref="React"/>); and each
+    /// hostile enemy plans its moves (<see cref="PlanMoves"/>), taking a state for its first (<see cref="Choose"/>), or
+    /// state 7 with none, its converted mark shown again.
     /// </summary>
-    private void Replan()
+    private void Replan(Acted? acted)
     {
         _planClock = 0;
-        var fighters = Fighters();
-        foreach (var enemy in Combatants.Values) if (enemy != Ashley && enemy.Hostile && !enemy.Dead && !enemy.Cube) PlanMoves(enemy, fighters);
-    }
-
-    /// <summary>
-    /// How near an enemy must be to its target to make an action (BATTLE.PRG 0x800e5698, its square against the
-    /// squared distance): the action's range (its own, or the weapon's when its first byte is 255; 0x800e5568), its z
-    /// radius for shapes 1, 2 and 4 and its y radius else, 32 units a point, turned by its angle (byte 3 less its low
-    /// three, 128ths of a turn's 4096ths; the cosine, or the sine for shapes other than 1 to 4), less 32 past 32.
-    /// </summary>
-    private static bool WithinReach(Combatant attacker, Combatant target, ActionRecord record)
-    {
-        if (target == attacker) return true;
-        float reach;
-        if (record.Range[0] == 255)
-            reach = attacker.Range.Z * Mathf.Abs(Mathf.Cos((attacker.Tilt >> 3) * 128 * Mathf.Tau / 4096));
-        else
+        foreach (var c in Fighters())
         {
-            int shape = record.Range[3] & 7;
-            float angle = (record.Range[3] >> 3) * 128 * Mathf.Tau / 4096;
-            reach = (1 << shape & 0x16) != 0 ? record.Range[2] * 32 * Mathf.Abs(Mathf.Cos(angle))
-                : shape == 3 ? record.Range[1] * 32 * Mathf.Abs(Mathf.Cos(angle)) : record.Range[1] * 32 * Mathf.Abs(Mathf.Sin(angle));
+            if (c.Mind is not { } mind || c == Ashley) continue;
+            mind.FaceLatch = false;
+            mind.Pause = 0;
+            if (acted?.Caster == c) mind.AfterRelease = 0;
         }
-        if (reach > 32) reach -= 32;
-        return (target.Actor.Position - attacker.Actor.Position).Length() <= reach;
+        React(acted);
+        var fighters = Fighters();
+        foreach (var enemy in Combatants.Values)
+        {
+            if (enemy == Ashley || !enemy.Hostile || enemy.Dead || enemy.Cube || enemy.Mind == null) continue;
+            PlanMoves(enemy, fighters);
+            if (enemy.Plans.Count == 0) enemy.Mind.State = 7;
+            else Choose(enemy);
+            if (enemy.Mind.Converted) Show(enemy, 0x80);
+        }
+        _planClock = 0;
     }
 
     /// <summary>
@@ -1954,7 +1944,6 @@ public sealed class FieldBattle
         var target = cast.Target;
         _castEffect = _enemyEffect = _view.PlayEffect(cast.Spell.GetValueOrDefault("visual", 0).AsInt32(), cast.Caster.Actor, target.Actor);
         _enemyRelease = (cast.Caster, cast.Spell, target);
-        cast.Caster.Timer = EnemyPause;
     }
 
     private FieldEffect? _enemyEffect;
@@ -2130,6 +2119,7 @@ public sealed class FieldBattle
             var (who, chosen) = _targets[_target];
             int limb = chosen[_part];
             CloseSphere();
+            _acted = new Acted(Ashley!, 1, who);
             Strike(Ashley!, who, limb);
         }
     }
@@ -2492,13 +2482,6 @@ public sealed class FieldBattle
     private void StepStrike()
     {
         if (_attacker == null || _victim == null) { _phase = Phase.Free; return; }
-        if (_phase == Phase.WindUp)
-        {
-            if (--_frames > 0) return;
-            if (_attacker.Dead || !InSphere(_attacker, _victim)) { _attacker.Timer = EnemyPause; _phase = Phase.Free; return; }
-            Strike(_attacker, _victim, _victimLimb);
-            return;
-        }
         _frames--;
         for (int i = _cues.Count - 1; i >= 0; i--)
             if (_frames <= _cues[i].At) { _view.PlayActorSound(_attacker.Actor, _cues[i].Sound); _cues.RemoveAt(i); }
@@ -2514,7 +2497,6 @@ public sealed class FieldBattle
         _lastButton = -1;
         if (_attacker == Ashley) AshleyActed?.Invoke();
         Play(_attacker, 1, 6);
-        _attacker.Timer = _attacker.Pause;
         _attacker = _victim = null;
         _phase = Phase.Free;
     }
@@ -2569,139 +2551,6 @@ public sealed class FieldBattle
 
 
     /// <summary>
-    /// Hostile characters: within range of Ashley they turn to her and close in at walking pace until she is inside
-    /// their sphere, then wait their pause, telegraph the move with their balloon (120 frames) and attack after a
-    /// 31-frame wind-up.
-    /// </summary>
-    private void StepEnemies()
-    {
-        if (Ashley == null || Ashley.Dead) return;
-        // The AI tick (BATTLE.PRG 0x800d8ef4): the planner's clock runs on, each cooldown (0x800e4358) and recovery
-        // (35 a frame, 0x80088620) runs down.
-        if (_planClock < 0xFFFE) _planClock++;
-        foreach (var c in Combatants.Values)
-        {
-            if (c.Cooldown > 0) c.Cooldown--;
-            c.Recovery = c.Recovery >= 36 ? c.Recovery - 35 : 0;
-        }
-        foreach (var enemy in Combatants.Values)
-        {
-            if (!enemy.Hostile || enemy.Dead || enemy.Suspended || !enemy.Drawn || enemy.Has(Paralysis) || _phase != Phase.Free && _phase != Phase.Drawing && _phase != Phase.Sheathing) continue;
-            var actor = enemy.Actor;
-            // One off the ground carries on falling until it lands.
-            if (enemy.Mover is { Busy: true } falling) { falling.Step(null, walk: true); continue; }
-            // A hop runs its course (0x800a29e8): once it has vanished it stands on its tile, facing Ashley, and
-            // reappears (21, then 22); once it has, it stands (1).
-            if (enemy.HopState == 1 && !_view.Materialising(actor))
-            {
-                actor.Position = enemy.HopTo;
-                actor.Facing = actor.FacingToward(Ashley.Actor.Position);
-                _view.Materialise(actor, appear: true);
-                if (Play(enemy, 21, 8, once: true) is { } set) actor.Queue($"{set}_22", 8);
-                enemy.HopState = 2;
-            }
-            if (enemy.HopState == 2 && !_view.Materialising(actor)) { Play(enemy, 1, 6); enemy.HopState = 0; }
-            if (enemy.HopState != 0) continue;
-            var offset = Ashley.Actor.Position - actor.Position;
-            float distance = new Vector2(offset.X, offset.Z).Length();
-            if (!enemy.Engaged)
-            {
-                // It notices her within its sight and cone.
-                float facing = actor.Facing * Mathf.Tau / 4096f;
-                var ahead = new Vector2(-Mathf.Sin(facing), -Mathf.Cos(facing));
-                float angle = Mathf.RadToDeg(ahead.AngleTo(new Vector2(offset.X, offset.Z)));
-                if (distance > enemy.Sight || Math.Abs(angle) > enemy.Cone / 2) continue;
-                enemy.Engaged = true;
-            }
-            if (distance > Math.Max(DetectRange, enemy.Sight) * 1.5f) { enemy.Engaged = false; continue; }
-            // It closes in until its first planned move's target is within that action's reach (its weapon's with none).
-            var plan = enemy.Plans.Count > 0 ? enemy.Plans[0] : null;
-            if (!(plan != null ? WithinReach(enemy, plan.Target, _view.Content.Field.Action(plan.Action)) : WithinReach(enemy, Ashley, _view.Content.Field.Action(1))))
-            {
-                var waypoint = Waypoint(enemy, Ashley.Actor.Position);
-                // It walks there as Ashley moves (walk command 9, 0x8007589c): stepping off a ledge, it falls and lands
-                // (the Ghost of "The Lamenting Mother" comes down off its ledge so).
-                if (enemy.Speed <= 0 || enemy.Mover is not { } mover) continue;
-                switch (enemy.Gait)
-                {
-                    case Gait.Walk:
-                        // One whose movement profiles let it walk neither way stands (command 2).
-                        mover.Step(actor.FacingToward(waypoint), walk: true);
-                        if (!_walking.Contains(enemy)) { if (!enemy.Runs || Play(enemy, FieldPlayer.Run, 4) == null) Play(enemy, FieldPlayer.Walk, 4); _walking.Add(enemy); }
-                        break;
-                    case Gait.Hop:
-                        // Every 6 frames a hopper hops toward its waypoint, as far as its reach, to the nearest
-                        // standing tile on the way (eight tries, an eighth nearer each; 0x800e1388): command 23
-                        // vanishes it (drawing mode 6, its 19 then 20), sets it on that tile at the floor there
-                        // (0x800a9c54) and brings it back (mode 9; 0x800a2ab0).
-                        if (++enemy.HopCount < 6) break;
-                        enemy.HopCount = 0;
-                        var reach = (waypoint - actor.Position) with { Y = 0 };
-                        if (reach.Length() > enemy.Speed) reach = reach.Normalized() * enemy.Speed;
-                        for (int attempt = 0; attempt < 8; attempt++, reach *= 7f / 8)
-                        {
-                            var spot = actor.Position + reach;
-                            var centre = new Vector3(Mathf.Floor(spot.X / 128) * 128 + 64, 0, Mathf.Floor(spot.Z / 128) * 128 + 64);
-                            if (_view.FloorAt(centre) is not { } landing || _view.Blocked((int)(centre.X / 128), (int)(centre.Z / 128))) continue;
-                            enemy.HopTo = centre with { Y = landing };
-                            enemy.HopState = 1;
-                            _view.Materialise(actor, appear: false);
-                            if (Play(enemy, 19, 8, once: true) is { } set) actor.Queue($"{set}_20", 8);
-                            break;
-                        }
-                        break;
-                    case Gait.Fly:
-                        // A flyer heads straight for the point above where it is going, at the height it flies over
-                        // the floor, at its speed, over whatever lies below (commands 16 and 17; its climb toward the
-                        // height is not read, so it is taken at the same pace).
-                        float floor = _view.FloorAt(waypoint) ?? waypoint.Y;
-                        var aim = waypoint with { Y = floor - enemy.Altitude };
-                        var way = aim - actor.Position;
-                        actor.Facing = actor.FacingToward(aim);
-                        actor.Position = way.Length() <= enemy.Speed ? aim : actor.Position + way.Normalized() * enemy.Speed;
-                        if (!_walking.Contains(enemy)) { Play(enemy, 13, 4); _walking.Add(enemy); }
-                        break;
-                }
-                continue;
-            }
-            actor.Facing = actor.FacingToward(Ashley.Actor.Position);
-            if (_walking.Remove(enemy)) { enemy.Mover?.Halt(); Play(enemy, 1, 6); }
-            if (--enemy.Timer > 0) continue;
-            // Its first planned move must have come due on the planner's clock (BATTLE.PRG 0x800d85d8).
-            if (plan == null || plan.Horizon > _planClock) continue;
-            // It sets out to act: its balloon telegraphs the move for 120 frames (BATTLE.PRG 0x800D836C). Only as many set
-            // out at once as the room allows (its "telegraphs"); one still alert from its last move skips the dots.
-            if (enemy.Telegraph == 0)
-            {
-                if (enemy.Rest > 0 || Telegraphing() >= _view.Document.GetValueOrDefault("telegraphs", 1).AsInt32()) continue;
-                enemy.Telegraph = enemy.Alert > 0 ? 32 : 1;
-                continue;
-            }
-            if (enemy.Telegraph <= TelegraphFrames || _phase != Phase.Free || _enemyCast != null) continue;
-            enemy.Telegraph = 0;
-            enemy.Alert = AlertFrames;
-            enemy.Rest = RestFrames;
-            // It makes its first planned move still standing (0x800d85d8); with none it lets the moment pass. Setting out
-            // starts its cooldown (the room's, 0x800dad74) and adds the action's recovery and its own, 256 a point, but for
-            // actions 22 to 53 (0x800859b4; an action of 255 takes its user's weapon's, its data's +0x147 from template byte
-            // 0x48 by 0x8006a334, which is 0 in every zone's templates).
-            Recheck(enemy);
-            if (enemy.Plans.Count == 0) continue;
-            var move = enemy.Plans[0];
-            var record = _view.Content.Field.Action(move.Action);
-            enemy.Cooldown = _view.Document.GetValueOrDefault("cooldown", 150).AsInt32();
-            if (move.Action is < 22 or > 53) enemy.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + enemy.RecoveryBonus) * 256;
-            if (EnemySpell(enemy, move.Action, move.Target)) return;
-            _attacker = enemy;
-            _victim = move.Target;
-            _victimLimb = move.Limb;
-            _frames = EnemyWindUp;
-            _phase = Phase.WindUp;
-            return;
-        }
-    }
-
-    /// <summary>
     /// Where an enemy heads for to reach a point (BATTLE.PRG 0x800e19fc): in the point's zone, or not routing, straight
     /// at it; else for the nearer to it of the two connector tiles the room links its zone to the point's by, along z
     /// first then x (0x800def30); and on the connector, through it into the next zone: its steps (bits 13 and 14, less
@@ -2754,20 +2603,10 @@ public sealed class FieldBattle
     /// <summary>How an enemy moves: walking (and running), hopping from tile to tile, or flying.</summary>
     public enum Gait { Walk, Hop, Fly }
 
-    // BATTLE.PRG's timings: the telegraph's end, the jagged balloon after a move, the rest before the next.
-    private const int TelegraphFrames = 120, AlertFrames = 90, RestFrames = 48;
-
-    private int Telegraphing()
-    {
-        int n = 0;
-        foreach (var c in Combatants.Values) if (c.Telegraph > 0) n++;
-        return n;
-    }
-
     /// <summary>
-    /// Every enemy's telegraph, alert and rest advance a frame, and its balloon is shown over its head: the rounded
-    /// balloon with one, two then three dots over the telegraph's first 24 frames (8 each), then the jagged balloon
-    /// with its mark to its end, and the jagged balloon again while it is alert after a move.
+    /// Each enemy's balloon over its head, by the icon its AI shows (BATTLE.PRG's byte at 0x800f2260, set by
+    /// <see cref="Show"/>): the rounded balloon with one, two then three dots (1 to 3) over a token's first 24 frames,
+    /// then the jagged balloon with its mark (4), which also stands while the 90 frames after a release run.
     /// </summary>
     private void StepBalloons()
     {
@@ -2775,12 +2614,9 @@ public sealed class FieldBattle
         var shown = new List<(Vector3 Head, int Kind, int Side)>();
         foreach (var enemy in Combatants.Values)
         {
-            if (enemy.Dead || !enemy.Hostile) { enemy.Telegraph = enemy.Alert = 0; continue; }
-            if (enemy.Telegraph > 0) enemy.Telegraph++;
-            if (enemy.Alert > 0) enemy.Alert--;
-            if (enemy.Rest > 0) enemy.Rest--;
-            int kind = enemy.Telegraph > 0 ? (enemy.Telegraph < 8 ? 1 : enemy.Telegraph < 16 ? 2 : enemy.Telegraph < 24 ? 3 : 4) : enemy.Alert > 0 ? 4 : 0;
-            if (kind == 0 || Ashley == null) continue;
+            if (enemy.Dead || !enemy.Hostile || enemy.Mind == null) continue;
+            int kind = enemy.Mind.Shown & 0x7F;
+            if (kind is < 1 or > 4 || Ashley == null) continue;
             // It turns to the other side of its head once it is 32 units past Ashley across the screen.
             var camera = _view.Field?.Camera;
             if (camera == null || !camera.IsInsideTree()) continue;
