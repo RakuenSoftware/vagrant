@@ -1833,10 +1833,21 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return Error.Ok;
             }
             case "game.ending":
-                // The story is over: the ending plays, then the title. The clear counts toward the score for good.
+            {
+                // The story is over: ENDING.PRG runs over the field (its credits, then its CONGRATULATIONS on the
+                // rank's picture, reckoning the field's record as MENUF does), then the title. The clear counts
+                // toward the score for good.
                 GameEnded = true;
                 Clears++;
-                if (!KeepScene) _ = GetNode<SceneManager>("/root/SceneManager").ChangeScene(Wol.Games.Vagrant.Scenes.Ending.Ending.Scene);
+                var ending = GD.Load<PackedScene>(Wol.Games.Vagrant.Scenes.Ending.Ending.Scene).Instantiate<Wol.Games.Vagrant.Scenes.Ending.Ending>();
+                ending.KeepScene = KeepScene;
+                ending.Sound = MenuSound;
+                ending.MapPercent = MapPercent();
+                ending.Score = screen => screen.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, PlayFrames / 3600, StreakScore, OtherScore);
+                // ENDING.PRG takes BATTLE.PRG's place: the field stops under it.
+                ending.ProcessMode = ProcessModeEnum.Always;
+                ProcessMode = ProcessModeEnum.Disabled;
+                Screen.AddChild(ending);
                 return Error.Ok;
             case "timer.hold":
                 // Holds the timer where it stands (its mode kept aside) or lets it run on again.
@@ -4840,7 +4851,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (_results == null)
         {
             _results = new ResultsScreen { Name = "Results", Sound = MenuSound, StopSound = id => StopSound($"effect_{id}") };
-            _results.Configure(_content.ScreenTexture("results_sheet"), _content.ScreenTexture("results_reel"), _content.Data("results"),
+            _results.Configure(_content.Disc("SMALL/RANK.DIS"), _content.Data("results"),
                 _content.Has("hud_labels") ? _content.ScreenTexture("hud_labels", true) : null,
                 _content.HudLettering);
             Screen.AddChild(_results);

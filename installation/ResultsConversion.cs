@@ -6,34 +6,40 @@ using System.Text.Json.Nodes;
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
-/// The CONGRATULATIONS screen a boss's defeat opens (MENU/MENUF.PRG, submenu 0): its lettering (SMALL/RANK.DIS) and the
-/// tables it reckons the score, the rank and the bonus by.
+/// The CONGRATULATIONS screen a boss's defeat opens (MENU/MENUF.PRG, submenu 0): the sprites of its lettering
+/// (SMALL/RANK.DIS), its colours, and the tables it reckons the score, the rank and the bonus by.
 /// </summary>
 public static class ResultsConversion
 {
-    // MENUF.PRG's tables, as file offsets: the lettering's 127 sprites, the sixteen ranks' words, the three bonus reels,
-    // the ranks' title and score thresholds, and the points for a kill of each class and an attack with each weapon kind.
-    private const int Sprites = 0x69D8, Ranks = 0x6DD0, Reels = 0x6E10, TitleThresholds = 0x6FEC, ScoreThresholds = 0x700C;
-    private const int KillPoints = 0x398, AttackPoints = 0x3A4;
-    // The prompt's two words, plain ASCII the HUD lettering prints.
-    private const int Press = 0x388, Button = 0x390;
-    private const int TimSize = 0x8220;
+    /// <summary>Where a program keeps the screen's tables, as file offsets (-1 where it has none).</summary>
+    private readonly record struct Layout(int Sprites, int SpriteCount, int Ranks, int Reels, int TitleThresholds, int ScoreThresholds, int KillPoints, int AttackPoints, int Colours, int ColourCount, int Press, int Button);
+
+    // MENUF.PRG's tables (loaded at 0x80102800): the lettering's 127 sprites, the sixteen ranks' words, the three bonus
+    // reels, the ranks' title and score thresholds, the points for a kill of each class and an attack with each weapon
+    // kind, the colour pairs the parts are shaded by (0x80109738, four bytes each), and the prompt's two words.
+    private static readonly Layout Menu = new(0x69D8, 127, 0x6DD0, 0x6E10, 0x6FEC, 0x700C, 0x398, 0x3A4, 0x6F38, 22, 0x388, 0x390);
+    // ENDING.PRG's copy of the screen (loaded at 0x80068800, after the credits; the sprites at 0x800DB814, the ranks at
+    // 0x800DBA3C, the colours at 0x800DBA7C, the thresholds at 0x800DBAB8 and 0x800DBAD8, the points at 0x800688B4
+    // and 0x800688C0): the ranks' 69 sprites, no reel and no prompt.
+    private static readonly Layout Ending = new(0x73014, 69, 0x7323C, -1, 0x732B8, 0x732D8, 0xB4, 0xC0, 0x7327C, 15, -1, -1);
 
     /// <summary>
-    /// The tables. A sprite is its rectangle on the lettering sheet (the three RANK.DIS pictures side by side, 256 wide
-    /// each, by its texture page 29, 30 or 31): 0 to 9 the digits, 10 the comma, 11 BONUS, 12 RISKBREAKER RANK, 13 to 17
+    /// The tables. A sprite is its corner and size on its texture page, the page and its palette (RANK.DIS's pictures
+    /// as MENUF loads them, pages 29 to 31): 0 to 9 the digits, 10 the comma, 11 BONUS, 12 RISKBREAKER RANK, 13 to 17
     /// STR, AGL, INT, HP and MP, 18 SCORE, 19 the percent sign, 20 PTS., 21 MAP COMPLETED, 22 and 23 CONGRATULATIONS'
     /// halves, 24 plus, 25 minus, 26 the colon, 27 to 68 the ranks' words. A rank is its words; a reel sixteen stops of
-    /// a stat sprite and an amount.
+    /// a stat sprite and an amount. A colour is red, green and blue. From MENUF.PRG, or from ENDING.PRG's copy
+    /// (<paramref name="ending"/>), whose lettering is END.DIS.
     /// </summary>
-    public static JsonObject Export(byte[] menu)
+    public static JsonObject Export(byte[] menu, bool ending = false)
     {
-        if (menu.Length < ScoreThresholds + 64) throw new InvalidDataException("MENUF.PRG is truncated.");
+        var (Sprites, SpriteCount, Ranks, Reels, TitleThresholds, ScoreThresholds, KillPoints, AttackPoints, Colours, ColourCount, Press, Button) = ending ? Ending : Menu;
+        if (menu.Length < Math.Max(Sprites + SpriteCount * 8, ScoreThresholds + 64)) throw new InvalidDataException("The results' program is truncated.");
         var sprites = new JsonArray();
-        for (int i = 0; i < 127; i++)
+        for (int i = 0; i < SpriteCount; i++)
         {
-            int at = Sprites + i * 8, page = BitConverter.ToUInt16(menu, at + 4) & 0xF;
-            sprites.Add(new JsonArray { (page - 13) * 256 + menu[at], menu[at + 1], menu[at + 2], menu[at + 3] });
+            int at = Sprites + i * 8;
+            sprites.Add(new JsonArray { menu[at], menu[at + 1], menu[at + 2], menu[at + 3], BitConverter.ToUInt16(menu, at + 4), BitConverter.ToUInt16(menu, at + 6) });
         }
         var ranks = new JsonArray();
         for (int i = 0; i < 16; i++)
@@ -43,7 +49,7 @@ public static class ResultsConversion
             ranks.Add(words);
         }
         var reels = new JsonArray();
-        for (int r = 0; r < 3; r++)
+        for (int r = 0; r < 3 && Reels >= 0; r++)
         {
             var stops = new JsonArray();
             for (int i = 0; i < 16; i++)
@@ -59,48 +65,23 @@ public static class ResultsConversion
             for (int i = 0; i < count; i++) list.Add(BitConverter.ToInt16(menu, at + i * 2));
             return list;
         }
+        var colours = new JsonArray();
+        for (int i = 0; i < ColourCount; i++) colours.Add(new JsonArray { menu[Colours + i * 4], menu[Colours + i * 4 + 1], menu[Colours + i * 4 + 2] });
         var scores = new JsonArray();
         for (int i = 0; i < 16; i++) scores.Add(BitConverter.ToUInt32(menu, ScoreThresholds + i * 4));
-        return new JsonObject
+        var tables = new JsonObject
         {
-            ["sprites"] = sprites, ["ranks"] = ranks, ["reels"] = reels,
+            ["sprites"] = sprites, ["colours"] = colours, ["ranks"] = ranks, ["reels"] = reels,
             ["title_thresholds"] = Shorts(TitleThresholds, 16), ["score_thresholds"] = scores,
             ["kill_points"] = Shorts(KillPoints, 6), ["attack_points"] = Shorts(AttackPoints, 10),
-            ["press"] = Ascii(menu, Press), ["button"] = Ascii(menu, Button),
-            ["sheet"] = "results_sheet", ["reel_sheet"] = "results_reel",
         };
+        if (Press >= 0) (tables["press"], tables["button"]) = (Ascii(menu, Press), Ascii(menu, Button));
+        return tables;
     }
 
     private static string Ascii(byte[] data, int at)
     {
         int end = Array.IndexOf(data, (byte)0, at);
         return System.Text.Encoding.ASCII.GetString(data, at, (end < 0 ? data.Length : end) - at);
-    }
-
-    /// <summary>
-    /// The lettering sheet, 768 by 256: RANK.DIS's three 4-bit pictures side by side through one of the first
-    /// picture's palettes (0 the plain grey ramp the screen tints, 2 the gold ramp of the bonus reel), texel 0 clear.
-    /// </summary>
-    public static Godot.Image Sheet(byte[] rank, int palette)
-    {
-        if (rank.Length < TimSize * 3) throw new InvalidDataException("RANK.DIS is truncated.");
-        var colours = new ushort[16];
-        for (int i = 0; i < 16; i++) colours[i] = BitConverter.ToUInt16(rank, 20 + palette * 32 + i * 2);
-        var rgba = new byte[768 * 256 * 4];
-        for (int t = 0; t < 3; t++)
-        {
-            int image = t * TimSize + 8 + (int)BitConverter.ToUInt32(rank, t * TimSize + 8);
-            int width = BitConverter.ToUInt16(rank, image + 8) * 4, height = BitConverter.ToUInt16(rank, image + 10);
-            for (int y = 0; y < Math.Min(256, height); y++)
-                for (int x = 0; x < Math.Min(256, width); x++)
-                {
-                    int texel = rank[image + 12 + (y * width + x) / 2] >> (x % 2 * 4) & 0xF;
-                    if (texel == 0) continue;
-                    int colour = colours[texel], at = (y * 768 + t * 256 + x) * 4;
-                    var shown = TitleConversion.ToColor((ushort)colour, false);
-                    (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, 255);
-                }
-        }
-        return Godot.Image.CreateFromData(768, 256, false, Godot.Image.Format.Rgba8, rgba);
     }
 }

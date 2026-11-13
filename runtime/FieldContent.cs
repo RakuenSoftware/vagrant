@@ -227,7 +227,6 @@ public sealed class FieldContent
         if (name.StartsWith("field_", StringComparison.Ordinal) && name.Length >= 14) Data(name[..14]);
         else if (name.StartsWith("effect_", StringComparison.Ordinal)) Data(name[..10]);
         else if (name.StartsWith("manual_", StringComparison.Ordinal)) Data("manual");
-        else if (name.StartsWith("ending_", StringComparison.Ordinal)) Data("ending");
         else if (name.StartsWith("hud_page_", StringComparison.Ordinal) && int.TryParse(name["hud_page_".Length..], out int clut))
             _images[name] = new HudConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Page(clut);
         else if (name.StartsWith("hud_second_", StringComparison.Ordinal) && name["hud_second_".Length..].Split('_') is [var px, var py] && int.TryParse(px, out int secondX) && int.TryParse(py, out int secondY))
@@ -241,7 +240,6 @@ public sealed class FieldContent
         else if (name == "item_menu_backdrop") Data("item_menu");
         else if (name == "map_backdrop") Data("map_menu");
         else if (name == "memory_card_pictures") Data("memory_card");
-        else if (name is "results_sheet" or "results_reel") Data("results");
         else if (name.StartsWith("overlay_", StringComparison.Ordinal) && int.TryParse(name[8..11], out int overlay)) Overlay(overlay);
         return _images.GetValueOrDefault(name);
     }
@@ -271,12 +269,9 @@ public sealed class FieldContent
         return MemoryCardConversion.Export(Read("MENU/MCMAN.BIN"), _executable, _battle, Read("MENU/MENU7.PRG"));
     }
 
-    /// <summary>The CONGRATULATIONS screen's tables and lettering (<see cref="ResultsConversion"/>).</summary>
+    /// <summary>The CONGRATULATIONS screen's tables (<see cref="ResultsConversion"/>); its lettering is SMALL/RANK.DIS as the disc holds it.</summary>
     private JsonObject Results()
     {
-        var rank = Read("SMALL/RANK.DIS");
-        _images["results_sheet"] = ResultsConversion.Sheet(rank, 0);
-        _images["results_reel"] = ResultsConversion.Sheet(rank, 2);
         return ResultsConversion.Export(Read("MENU/MENUF.PRG"));
     }
 
@@ -326,15 +321,10 @@ public sealed class FieldContent
 
     private JsonObject Ending()
     {
-        // The ending: its illustrations and credits (see EndingConversion).
-        var illustrations = new JsonArray();
-        for (int n = EndingConversion.FirstIllustration; n <= EndingConversion.LastIllustration; n++)
-        {
-            string asset = $"ending_illust_{n:d2}";
-            _images[asset] = EndingConversion.Tim(EndingConversion.Decompress(Read($"ENDING/ILLUST{n:d2}.BIN")));
-            illustrations.Add(asset);
-        }
-        return new JsonObject { ["illustrations"] = illustrations, ["credits"] = EndingConversion.Credits(Read("ENDING/ENDING.PRG")) };
+        // The ending runs ENDING.PRG itself (see Scenes.Ending.Ending), with the illustrations it unpacks; its closing
+        // CONGRATULATIONS screen is ENDING.PRG's copy of MENUF's.
+        for (int n = EndingConversion.FirstIllustration; n <= EndingConversion.LastIllustration; n++) Read($"ENDING/ILLUST{n:d2}.BIN");
+        return new JsonObject { ["program"] = "ENDING/ENDING.PRG", ["results"] = ResultsConversion.Export(Read("ENDING/ENDING.PRG"), true) };
     }
 
     /// <summary>Every room the disc has, by name ("z001_m00"): each zone's maps, in its list's order.</summary>

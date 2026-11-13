@@ -251,8 +251,11 @@ public partial class FieldContracts : Node
         if (_ending != null)
         {
             _frame++;
-            if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && _frame is 300 or 3000 or 6000) Capture($"ending_{_frame}");
-            if (_ending.Finished) { GD.Print($"FIELD: the ending ran {_frame} frames to the title"); Finish(""); return; }
+            if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && (_frame % _storyEvery == 0 || _frame is 300)) Capture($"ending_{_ending.Frames:d5}");
+            // The closing screen waits for a button: Circle once its parts are all in.
+            if (_ending.Results != null && _frame % 600 == 0) Input.ActionPress("ps_circle");
+            if (_ending.Results != null && _frame % 600 == 4) Input.ActionRelease("ps_circle");
+            if (_ending.Finished) { GD.Print($"FIELD: the ending ran {_ending.Frames} frames of credits and its closing screen, {_frame} in all, to the title"); Finish(""); return; }
             if (_frame > 60 * 600) Finish("the ending did not finish");
             return;
         }
