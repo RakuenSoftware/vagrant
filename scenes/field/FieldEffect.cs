@@ -1180,7 +1180,11 @@ public sealed partial class FieldEffect : Node3D
                 Vector3 across = right, down = -up;
                 if ((p.Flags & (1 << 16)) != 0 && p.Velocity.LengthSquared() > 0)
                 {
-                    var ahead = camera.UnprojectPosition(EventActor.RetailSpace * (retail + p.Velocity / 4096f * 128)) - camera.UnprojectPosition(centre);
+                    // Use the same limited GTE projection as the drawn corners. Godot's unprojection divides
+                    // by zero when a sprite or its projected motion passes through the camera plane.
+                    float least = Math.Max(NearLimit, front / unit);
+                    var ahead = EventActor.GteProjection(eye * (EventActor.RetailSpace * (retail + p.Velocity / 4096f * 128)) / unit, Math.Max(1, Projection), least, front / unit).Screen
+                        - EventActor.GteProjection(eye * centre / unit, Math.Max(1, Projection), least, front / unit).Screen;
                     if (ahead.LengthSquared() > 0)
                     {
                         float angle = Mathf.Atan2(ahead.Y, ahead.X);

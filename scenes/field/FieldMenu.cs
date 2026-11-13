@@ -1112,6 +1112,12 @@ public sealed partial class FieldMenu : PanelContainer
                 break;
             case 4:
             {
+                if (_setupCommand == Repair)
+                {
+                    headers.Add(SetupString(9));
+                    foreach (int word in new[] { 34, 35 }) rows.Add(new ItemMenu.Row(SetupString(word), -1, -1, SetupString(45), Caution: true));
+                    break;
+                }
                 headers = new List<string> { SetupString(41 + _setupKind) };
                 bool held = _setupTarget != null && _setupKind == 0 && _view.Holds(_setupTarget);
                 string question = SetupString(_setupKind == 0 ? (held ? 40 : 39) : 43);
@@ -1119,6 +1125,9 @@ public sealed partial class FieldMenu : PanelContainer
                 rows.Add(new ItemMenu.Row(SetupString(35), -1, -1, question, Caution: true));
                 break;
             }
+            case 5:
+                headers.Add(SetupString(9));
+                break;
         }
         // What the last setup did stands as the information until the cursor moves.
         if (_setupNote.Length > 0 && _setupCursor < rows.Count) rows[_setupCursor] = rows[_setupCursor] with { Help = _setupNote, Caution = false };
@@ -1127,11 +1136,17 @@ public sealed partial class FieldMenu : PanelContainer
 
     /// <summary>
     /// A frame of SETUP. Up and down choose; Circle goes on (a greyed row refuses with the invalid sound), Cross and
-    /// Triangle go back a page, from the commands to OPTIONS. At a workshop ASSEMBLE, REPAIR and COMBINE still open the
+    /// Triangle go back a page, from the commands to OPTIONS. At a workshop ASSEMBLE and COMBINE still open the
     /// workshop's pages drawn as text.
     /// </summary>
     private bool StepSetup(Func<string, bool> pressed, int step)
     {
+        if (_setup == 5)
+        {
+            if (pressed("ps_circle") || pressed("ps_cross") || pressed("ps_triangle")) { _view.MenuSound(FieldView.MenuLeave); _setup = 0; _setupCursor = Repair; }
+            Draw();
+            return true;
+        }
         var (_, rows, _) = SetupPage();
         if (rows.Count > 1 && step != 0) { _setupCursor = (_setupCursor + step + rows.Count) % rows.Count; _setupNote = ""; _view.MenuSound(FieldView.MenuChange); }
         if (pressed("ps_triangle") || pressed("ps_cross"))
@@ -1143,6 +1158,7 @@ public sealed partial class FieldMenu : PanelContainer
                 case 0: _setup = -1; _cursor = 1; _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1"); break;
                 case 1: _setup = 0; _setupCursor = _setupCommand; break;
                 case 2: _setup = _setupCommand == Rename ? 0 : 1; _setupCursor = _setupCommand == Rename ? Rename : _setupKind; break;
+                case 4 when _setupCommand == Repair: _setup = 0; _setupCursor = Repair; break;
                 default: _setup = 2; _setupCursor = Math.Max(0, SetupHolders().IndexOf(_setupTarget!)); _setupTarget = null; break;
             }
             Draw();
@@ -1159,6 +1175,7 @@ public sealed partial class FieldMenu : PanelContainer
                 _setupCommand = chosen;
                 if (chosen is AttachGems or Disassemble) { _setup = 1; _setupCursor = 0; }
                 else if (chosen == Rename) { _setup = 2; _setupKind = 0; _setupCursor = 0; }
+                else if (chosen == Repair) { _setup = 4; _setupCursor = 0; }
                 else { _setup = -1; _legacy = true; _tab = chosen switch { Assemble => 3, Combine => 5, _ => 6 }; _cursor = 0; }
                 break;
             case 1:
@@ -1186,6 +1203,12 @@ public sealed partial class FieldMenu : PanelContainer
                 _setupTarget = null;
                 break;
             case 4:
+                if (_setupCommand == Repair)
+                {
+                    if (chosen == 0) { _view.MenuSound(13); _view.RepairAll(); _setup = 5; _setupCursor = 0; }
+                    else { _setup = 0; _setupCursor = Repair; }
+                    break;
+                }
                 if (chosen == 0)
                 {
                     if (_setupKind == 0) _setupNote = _view.Disassemble(_setupTarget!);
@@ -2046,7 +2069,7 @@ public sealed partial class FieldMenu : PanelContainer
             if (_setup >= 0)
             {
                 var (headers, setupRows, icons) = SetupPage();
-                _items.SetSetup(headers, setupRows, _setupCursor, icons);
+                _items.SetSetup(headers, setupRows, _setupCursor, icons, _setupCommand == Repair && _setup == 4 ? 146 : -1, _setup == 5 ? SetupString(46) : "");
             }
             else if (_equip == 1)
             {

@@ -702,8 +702,8 @@ public sealed class MapConversion
 
     /// <summary>
     /// The room's locked doors (room sub-section 9, 20 bytes each): tile x, z and level, a kind (0 one tile; 4 to 7
-    /// two, the second towards -z, +x, +z or -x), the lock (0 open, 1 key or sigil, 2 magic, 3 locked), the geometry
-    /// group that opens, and the key or sigil's item id.
+    /// two, the second towards -z, +x, +z or -x), the lock (0 unlocked, 1 key or sigil, 2 magic, 3 locked), the room
+    /// animation that opens it, the key or sigil's item id and whether it already stands open.
     /// </summary>
     private JsonArray Locks(int room)
     {
@@ -715,7 +715,8 @@ public sealed class MapConversion
             locks.Add(new JsonObject
             {
                 ["tile"] = new JsonArray { (int)BitConverter.ToInt16(_map, p), (int)BitConverter.ToInt16(_map, p + 2) }, ["level"] = (int)BitConverter.ToInt16(_map, p + 4),
-                ["kind"] = (int)BitConverter.ToInt16(_map, p + 6), ["lock"] = (int)_map[p + 8], ["group"] = (int)_map[p + 9], ["key"] = (int)BitConverter.ToInt16(_map, p + 0xC),
+                ["kind"] = (int)BitConverter.ToInt16(_map, p + 6), ["lock"] = (int)_map[p + 8], ["object"] = (int)_map[p + 9], ["key"] = (int)BitConverter.ToInt16(_map, p + 0xC),
+                ["opened"] = BitConverter.ToInt16(_map, p + 0xE) != 0, ["linked"] = (int)BitConverter.ToInt16(_map, p + 0x10), ["enabled"] = _map[p + 0xA] != 0,
             });
         }
         return locks;

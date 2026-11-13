@@ -19,6 +19,25 @@ public partial class FieldContracts : Node
     private string _capture = "";
     /// <summary>With --near-enemy, Ashley is set down beside the room's first hostile character as she gets control.</summary>
     private bool _nearEnemy;
+    /// <summary>A continuous New Game run using pad input, without the focused checks' state grants.</summary>
+    private bool _campaign;
+    private string _campaignSave = "", _campaignLoad = "";
+    private (int Zone, int Map)? _campaignCheckpoint;
+    private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt;
+    private int _campaignPuzzle, _campaignPuzzleAt, _campaignHallAt;
+    private string _campaignTargetText = "";
+    private int _campaignCubePicks, _campaignWaitForEnemyUntil, _emptyLimbPicks, _fightCloseUntil;
+    private bool _fightWasPaused, _fightNextPart;
+    private string _fightPreferredPart = "", _fightTargetId = "";
+    private int _fightPartSearch, _fightProgressAt;
+    private int _fightLastHp = -1, _fightStalls;
+    private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount;
+    private bool _repairAllCheck;
+    private int _repairFrame, _repairDp, _repairPp, _repairWait;
+    private Godot.Collections.Dictionary? _repairLoose, _repairAccessory, _repairStored, _repairShield, _repairArmour;
+    private readonly Dictionary<string, Vector3> _campaignHiddenPositions = new();
+    private readonly Dictionary<(int Zone, int Map), int> _campaignVisits = new();
+    private readonly Dictionary<(int Zone, int Map, int Door), int> _campaignAttempts = new();
 
     /// <summary>With --defeat, every hostile character falls as Ashley gets control, so the room's defeat event plays.</summary>
     private bool _defeat;
@@ -111,6 +130,11 @@ public partial class FieldContracts : Node
         {
             if (argument.StartsWith("--capture=", StringComparison.Ordinal)) _capture = argument["--capture=".Length..];
             if (argument == "--near-enemy") _nearEnemy = true;
+            if (argument == "--campaign") _campaign = true;
+            if (argument.StartsWith("--campaign-save=", StringComparison.Ordinal)) _campaignSave = argument["--campaign-save=".Length..];
+            if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
+            if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
+            if (argument == "--workshop-repair") _repairAllCheck = true;
             if (argument == "--defeat") _defeat = true;
             if (argument == "--remember") _remember = true;
             if (argument == "--skip") _skip = true;
@@ -212,8 +236,15 @@ public partial class FieldContracts : Node
         var content = GetNode<RetailContent>("/root/RetailContent");
         if (!content.Installed) { Finish("installation unavailable: " + content.Failure); return; }
         _view = GD.Load<PackedScene>("res://scenes/field/field.tscn").Instantiate<FieldView>();
+        _view.KeepScene = _campaign;
+        if (_campaignLoad.Length != 0)
+        {
+            FieldView.PendingSave = Json.ParseString(File.ReadAllText(_campaignLoad)).AsGodotDictionary();
+            GD.Print($"CAMPAIGN: resuming earned checkpoint {_campaignLoad}");
+        }
         AddChild(_view);
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
+        if (_campaignLoad.Length != 0) return;
         var field = _view.Field;
         int surfaces = 0, triangles = 0;
         // The room is one object per geometry group; event actors share the geometry node but are not counted.
@@ -274,6 +305,8 @@ public partial class FieldContracts : Node
         if (_view.Battle?.Hud is { NoticesShown: > 0 } && _noticeAt == 0) { _noticeAt = _frame + 10; GD.Print($"FIELD: a gear-change notice shows at frame {_frame}"); }
         if (_noticeAt > 0 && _frame == _noticeAt && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture("battle_notice");
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
+        if (_campaign) { StepCampaign(); return; }
+        if (_repairAllCheck) { StepWorkshopRepair(); return; }
         if (_room != null) { StepRoom(); return; }
         if (_battleFrame != 0) { StepBattle(); return; }
         if (_controlFrame != 0) { StepControl(); return; }
@@ -300,6 +333,343 @@ public partial class FieldContracts : Node
 
     private int _controlFrame;
     private Vector3 _start, _startEye;
+
+    /// <summary>Repair's confirmation, cancellation and all-carried transaction through SETUP's pad controls.</summary>
+    private void StepWorkshopRepair()
+    {
+        if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (!_view.Controlled) { if (_frame % 30 == 0) Tap("ps_circle"); return; }
+        if (_view.Battle?.Ashley is not { } ashley || !_view.Workshop) { Finish("repair check needs a workshop and Ashley"); return; }
+        switch (++_repairFrame)
+        {
+            case 1:
+            {
+                ashley.Blade.Wear(700);
+                ashley.Blade.Gain(70);
+                (_repairDp, _repairPp) = (ashley.Blade.Dp, ashley.Blade.Pp);
+                var source = _view.Weapons()[0]["blade"].AsGodotDictionary();
+                _repairLoose = source.Duplicate(true);
+                _repairLoose["slot"] = 15;
+                _repairLoose["material"] = 4; // Iron at Work of Art, whose combining mask only allows wood/leather/bronze.
+                _repairLoose["dp"] = 1300; _repairLoose["max_dp"] = 2000; _repairLoose["pp"] = 70;
+                _view.Equipment.Add(new Godot.Collections.Dictionary { ["kind"] = "blade", ["record"] = _repairLoose });
+                _repairShield = new Godot.Collections.Dictionary { ["id"] = 127, ["category"] = 6, ["dp"] = 100, ["max_dp"] = 1000, ["pp"] = 2 };
+                _repairArmour = new Godot.Collections.Dictionary { ["id"] = 159, ["category"] = 4, ["dp"] = 1000, ["max_dp"] = 2000, ["pp"] = 100 };
+                _view.Equipment.Add(new Godot.Collections.Dictionary { ["kind"] = "shield", ["record"] = _repairShield });
+                _view.Equipment.Add(new Godot.Collections.Dictionary { ["kind"] = "armour", ["record"] = _repairArmour });
+                _repairAccessory = new Godot.Collections.Dictionary { ["id"] = 207, ["category"] = 7, ["dp"] = 1300, ["max_dp"] = 2000, ["pp"] = 70 };
+                _view.Equipment.Add(new Godot.Collections.Dictionary { ["kind"] = "armour", ["record"] = _repairAccessory });
+                _repairStored = source.Duplicate(true);
+                _repairStored["dp"] = 1300; _repairStored["max_dp"] = 2000; _repairStored["pp"] = 70;
+                _view.Stored.Add(new Godot.Collections.Dictionary { ["kind"] = "blade", ["record"] = _repairStored });
+                Tap("ps_triangle");
+                break;
+            }
+            case 20:
+                if (!_view.MenuOpen)
+                {
+                    if (++_repairWait > 600) { Finish($"the workshop menu did not open at {ashley.Actor.Position}, busy {_view.Battle.Busy}"); return; }
+                    if (_repairWait % 10 == 0) Tap("ps_triangle");
+                    _repairFrame--;
+                }
+                break;
+            case 30: Tap("ps_circle"); break;
+            case 50:
+            {
+                var mounts = _view.FindChildren("Weapon", "BoneAttachment3D", true, false).OfType<BoneAttachment3D>().ToList();
+                if (mounts.Count < 2 || mounts.Any(m => m.BoneIdx < 0 || string.IsNullOrEmpty(m.BoneName)))
+                { Finish("the carried weapon lost its bone attachment in the item menu's model copy"); return; }
+                break;
+            }
+            case 60: Tap("ps_down"); break;
+            case 80: Tap("ps_circle"); break;
+            case 110 or 125 or 140 or 155: Tap("ps_down"); break;
+            case 180: Tap("ps_circle"); break;
+            case 200:
+            case 280:
+            case 340:
+                if (!_view.ItemHelpShown.Caution || !_view.ItemHelpShown.Text.StartsWith("Repair all equipment", StringComparison.Ordinal)) { Finish($"Repair did not ask for confirmation at {_repairFrame}: {_view.ItemHelpShown}, page {_view.MenuPage}, row {_view.MenuRow}, rows {string.Join(';', _view.ItemRows.Select(r => r.Name))}"); return; }
+                Capture("repair_confirm_" + _repairFrame);
+                break;
+            case 210: Tap("ps_down"); break;
+            case 230: Tap("ps_circle"); break;
+            case 250:
+            case 310:
+                if (ashley.Blade.Dp != _repairDp || _repairLoose!["dp"].AsInt32() != 1300) { Finish("declining or cancelling Repair changed equipment"); return; }
+                break;
+            case 260 or 320 or 350: Tap("ps_circle"); break;
+            case 290: Tap("ps_cross"); break;
+            case 380:
+                if (ashley.Blade.Dp != ashley.Blade.MaxDp || ashley.Blade.Pp != Math.Max(0, _repairPp - 7) || _repairLoose!["dp"].AsInt32() != 2000 || _repairLoose["pp"].AsInt32() != 63) { Finish("Repair did not repair all carried blades once, including iron, for the retail PP cost"); return; }
+                if (_repairShield!["dp"].AsInt32() != 1000 || _repairShield["pp"].AsInt32() != 0 || _repairArmour!["dp"].AsInt32() != 2000 || _repairArmour["pp"].AsInt32() != 90) { Finish("Repair did not restore shields and armour or clamp PP at zero"); return; }
+                if (_repairAccessory!["dp"].AsInt32() != 1300 || _repairStored!["dp"].AsInt32() != 1300) { Finish("Repair changed accessories or stored equipment"); return; }
+                if (!_view.ItemHelpShown.Caution || !_view.ItemHelpShown.Text.StartsWith("All equipment repaired", StringComparison.Ordinal)) { Finish("Repair did not show the retail completion message"); return; }
+                Capture("repair_complete");
+                break;
+            case 410: Tap("ps_circle"); break;
+            case 430 or 450 or 470: Tap("ps_cross"); break;
+            case 490:
+                if (_view.MenuOpen) { Finish("Repair did not return through SETUP to play"); return; }
+                GD.Print("FIELD: Repair confirmation, NO, Cross, all carried blades/shields/armour, PP cost and floor, iron, accessories and stored equipment passed");
+                Finish("");
+                break;
+        }
+    }
+
+    /// <summary>Explores doors and fights through the normal pad path, preserving one New Game's earned state.</summary>
+    private void StepCampaign()
+    {
+        if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (_capture.Length != 0 && _frame % 120 == 0) Capture($"campaign_frame_{_frame:d7}");
+        if (_view.Rooms.Count != _campaignRooms)
+        {
+            _campaignRooms = _view.Rooms.Count;
+            _campaignHiddenPositions.Clear();
+            _campaignDoor = -1;
+            _campaignPuzzle = 0;
+            _campaignHallAt = 0;
+            _campaignPuzzleAt = _frame;
+            var room = (_view.Zone, _view.Map);
+            _campaignVisits[room] = _campaignVisits.GetValueOrDefault(room) + 1;
+            GD.Print($"CAMPAIGN: entered {room}, visits {_campaignVisits[room]}, frame {_frame}, story {_view.Flags[0x82]}");
+            if (_campaignVisits[room] > 4) { Finish($"campaign: route driver repeated {room} five times without advancing beyond its obstacles"); return; }
+            GD.Print($"CAMPAIGN: blocks on entry {string.Join(';', _view.CrateObjects.Select(c => $"{c.Id}:{c.X},{c.Z},{c.Bottom}"))}; flag 0 {_view.Flags[0]}");
+            Capture($"campaign_{_campaignRooms:d4}_{_view.Zone:d3}_{_view.Map:d2}");
+        }
+        if (_view.Battle?.GameOver == true) { Finish($"campaign: Ashley fell in {_view.Zone},{_view.Map} after {_campaignRooms} room entries"); return; }
+        if (_view.Controlled && _view.Battle is { Ashley: { } observed } observedBattle)
+        {
+            // A room script may hide a live enemy (Sackheim during Goodwin's encounter). Its AI must stop too.
+            foreach (var c in observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead))
+                if (!c.Actor.Visible && !_view.Materialising(c.Actor))
+                {
+                    if (_campaignHiddenPositions.TryGetValue(c.Actor.Id, out var held) && held.DistanceTo(c.Actor.Position) > 0.01f)
+                    { Finish($"campaign: hidden {c.Name} moved from {held} to {c.Actor.Position}"); return; }
+                    _campaignHiddenPositions[c.Actor.Id] = c.Actor.Position;
+                }
+                else _campaignHiddenPositions.Remove(c.Actor.Id);
+            if (_frame % 600 == 0)
+                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}"))}");
+        }
+        if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
+        // Recovery uses the earned inventory through ITEMS, USE and the normal targeting sphere. No HP or item
+        // count is written by this driver. The starting Cure Roots are the first option, then any bulbs/tonics found.
+        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp / 4 || patient.Risk > 60))
+            foreach (int item in patient.Hp < patient.MaxHp / 4 ? new[] { 323, 324, 325 } : new[] { 331, 332, 333 })
+                if (_view.Items.GetValueOrDefault(item) > 0)
+                {
+                    (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealItem, _campaignHealCount) = (1, _frame, _frame, item, _view.Items[item]);
+                    GD.Print($"CAMPAIGN: seeking {_view.ItemName(item)} at {patient.Hp}/{patient.MaxHp} HP");
+                    break;
+                }
+        if (_campaignHealStep > 0 && _view.Battle is { Ashley: { } recovering } healing)
+        {
+            Steer(Vector2.Zero);
+            if (_frame - _campaignHealStart > 1800) { Finish($"campaign: recovery step {_campaignHealStep} stalled, page {_view.MenuPage}, help {_view.ItemHelpShown}, {_view.SystemBox.Text}"); return; }
+            if (_press > 0 || _frame % 8 != 0) return;
+            switch (_campaignHealStep)
+            {
+                case 1:
+                    if (_view.MenuOpen) _campaignHealStep = 2;
+                    else if (healing.Paused) Tap("ps_cross");
+                    else if (!healing.Busy) Tap("ps_triangle");
+                    break;
+                case 2:
+                    if (_view.MenuPage == 3) _campaignHealStep = 3;
+                    else if (_view.MenuRow != 3) Tap(_view.MenuRow > 3 ? "ps_up" : "ps_down");
+                    else Tap("ps_circle");
+                    break;
+                case 3:
+                {
+                    string name = _view.ItemName(_campaignHealItem);
+                    var row = _view.ItemRows.FirstOrDefault(r => r.Name == name);
+                    if (string.IsNullOrEmpty(row.Name)) Tap("ps_l1");
+                    else if (_view.ItemHelpShown.Text != row.Help) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignHealStep = 4; _campaignHealAt = _frame; }
+                    break;
+                }
+                case 4:
+                    if (_frame - _campaignHealAt >= 16) { Tap("ps_circle"); _campaignHealStep = 5; }
+                    break;
+                case 5:
+                    if (healing.Paused) Tap("ps_circle");
+                    if (_view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount) { _campaignHealStep = 6; _campaignHealAt = _frame; }
+                    break;
+                case 6:
+                    if (!healing.Busy)
+                    {
+                        GD.Print($"CAMPAIGN: used {_view.ItemName(_campaignHealItem)}, remaining {_view.Items.GetValueOrDefault(_campaignHealItem)}, HP {recovering.Hp}/{recovering.MaxHp}");
+                        _campaignHealStep = 0;
+                    }
+                    break;
+            }
+            return;
+        }
+        if (!_view.Controlled || _view.MenuOpen)
+        {
+            Steer(Vector2.Zero);
+            if (_frame % 30 == 0) Tap("ps_circle");
+            return;
+        }
+        if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
+        if (battle.HostileCount() > 0)
+        {
+            // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
+            // jumping platform; attacking his limbs through the barrier correctly fails the line-of-fire test.
+            if ((_view.Zone, _view.Map) == (9, 7) && ashley.Actor.Position.Z < 1152
+                && battle.Combatants.Values.Where(c => c.Targetable).All(c => c.Actor.Position.Z >= 896))
+            {
+                if (battle.Paused) { Tap("ps_cross"); return; }
+                if (battle.Busy) { Steer(Vector2.Zero); return; }
+                if (battle.Drawn) { Tap("ps_cross"); return; }
+                if (_campaignHallAt == 0) _campaignHallAt = _frame;
+                if (_frame - _campaignHallAt > 1800)
+                { Finish($"campaign: Hall of Struggle puzzle step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+                var point = _campaignPuzzle switch
+                {
+                    0 => new Vector3(320, 0, 704), 1 => new Vector3(320, 0, 384),
+                    2 => new Vector3(576, 0, 384), 3 => new Vector3(576, 0, 448),
+                    4 => new Vector3(576, -384, 576), 6 => new Vector3(576, -448, 832),
+                    _ => new Vector3(576, 0, 1152),
+                };
+                if (_campaignPuzzle < 4 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
+                { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (_campaignPuzzle == 4 && ashley.Actor.Position.Y <= -384)
+                { _campaignPuzzle = 5; _campaignPuzzleAt = _frame; }
+                if (_campaignPuzzle == 5)
+                {
+                    Steer(Vector2.Zero);
+                    if (_frame - _campaignPuzzleAt < 40) return;
+                    _campaignPuzzle = 6; _campaignPuzzleAt = _frame;
+                    point = new Vector3(576, -448, 832);
+                }
+                if (_campaignPuzzle == 6 && ashley.Actor.Position.Z >= 768 && ashley.Actor.Position.Y <= -448) _campaignPuzzle = 7;
+                if (_campaignPuzzle == 6 && _frame - _campaignPuzzleAt > 120 && ashley.Actor.Position.Y > -128)
+                { _campaignPuzzle = 0; _campaignPuzzleAt = _frame; }
+                float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                if (_campaignPuzzle is 4 or 6 && (_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square");
+                return;
+            }
+            if (_frame < _campaignWaitForEnemyUntil) { Steer(Vector2.Zero); return; }
+            if (battle.Paused && _campaignTargetText != _view.SystemBox.Text)
+            {
+                _campaignTargetText = _view.SystemBox.Text;
+                GD.Print($"CAMPAIGN: aiming {_campaignTargetText.Replace('\n', '/')} from {ashley.Actor.Position}");
+            }
+            Fight(battle, ashley, _frame);
+            return;
+        }
+        if (battle.Busy) { Steer(Vector2.Zero); return; }
+        if (battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
+        if (_campaignCheckpoint == (_view.Zone, _view.Map))
+        {
+            Steer(Vector2.Zero);
+            if (_campaignSave.Length != 0)
+            {
+                if (_view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
+                { Finish("campaign: earned checkpoint could not be saved"); return; }
+                File.WriteAllText(_campaignSave, Json.Stringify(saved));
+                GD.Print($"CAMPAIGN: wrote earned checkpoint {_campaignSave}; this diagnostic save does not check the save-point menu");
+            }
+            GD.Print($"CAMPAIGN: {(_room == null ? _campaignLoad.Length == 0 ? "New Game" : "resumed campaign" : "isolated room")} checkpoint {_campaignCheckpoint} reached after {_campaignRooms} room entries; this is not a campaign-completion verdict");
+            Finish("");
+            return;
+        }
+        // The Wine Cellar's first block puzzle: carry the western block onto the eastern one, climb the stack,
+        // then climb the high ledge. These are route instructions for the test player, not changes to room state.
+        if ((_view.Zone, _view.Map) == (9, 3) && ashley.Actor.Position.Z < 1408 && _campaignPuzzle < 8)
+        {
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: puzzle movement {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates.Select(c => $"{c.X},{c.Z},{c.Bottom}"))}"); return; }
+            var target = _campaignPuzzle switch
+            {
+                0 => new Vector3(192, 0, 832), 1 => new Vector3(192, 0, 960),
+                3 => new Vector3(320, 0, 832), 4 => new Vector3(320, 0, 960),
+                6 => new Vector3(320, -448, 1088), _ => new Vector3(320, -640, 1344),
+            };
+            if (_campaignPuzzle is 2 or 5)
+            {
+                Steer(Vector2.Zero);
+                int blocks = _view.Crates.Count();
+                if (_frame % 20 == 0) Tap("ps_cross");
+                if ((_campaignPuzzle == 2 && blocks == 1) || (_campaignPuzzle == 5 && _view.Crates.Count(c => c.X == 2 && c.Z == 8) == 2))
+                {
+                    GD.Print($"CAMPAIGN: block puzzle step {_campaignPuzzle} completed through Cross");
+                    _campaignPuzzle++;
+                    _campaignPuzzleAt = _frame;
+                }
+                if (_frame - _campaignPuzzleAt > 600) { Finish($"campaign: block interaction {_campaignPuzzle} failed at {ashley.Actor.Position}, facing {ashley.Actor.Facing}, blocks {string.Join(';', _view.Crates.Select(c => $"{c.Id}:{c.X},{c.Z},{c.Bottom}"))}, objects {string.Join(';', _view.CrateObjects.Select(c => c.Id))}, document {_view.Document["crates"].AsGodotArray().Count}, geometry {string.Join(',', _view.Field.Actors.Keys)}"); return; }
+                return;
+            }
+            var path = _view.Path(ashley.Actor.Position, target, 256);
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 20) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : target;
+            float direction = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
+            Steer(new Vector2(Mathf.Sin(direction), -Mathf.Cos(direction)));
+            Input.ActionPress("ps_r2");
+            if (new Vector2(target.X - ashley.Actor.Position.X, target.Z - ashley.Actor.Position.Z).Length() < 20 && (_campaignPuzzle < 6 || Math.Abs(target.Y - ashley.Actor.Position.Y) < 2))
+            {
+                Steer(Vector2.Zero);
+                Input.ActionRelease("ps_r2");
+                _campaignPuzzle++;
+                _campaignPuzzleAt = _frame;
+            }
+            return;
+        }
+        Input.ActionRelease("ps_r2");
+        var doors = _view.Document["doors"].AsGodotArray();
+        if (_campaignDoor >= 0 && _frame - _campaignDoorAt > 1800)
+        {
+            GD.Print($"CAMPAIGN: door {_campaignDoor} in {_view.Zone},{_view.Map} was not reached from {ashley.Actor.Position}");
+            _campaignDoor = -1;
+        }
+        if (_campaignDoor < 0)
+        {
+            int best = int.MaxValue;
+            for (int i = 0; i < doors.Count; i++)
+            {
+                var candidate = doors[i].AsGodotDictionary();
+                if (_view.Flags[candidate["flag"].AsInt32()] < candidate["flag_value"].AsInt32()) continue;
+                int zone = candidate["zone"].AsInt32();
+                if (zone == 0) zone = _view.Zone;
+                int cost = _campaignAttempts.GetValueOrDefault((_view.Zone, _view.Map, i)) * 1000 + _campaignVisits.GetValueOrDefault((zone, candidate["map"].AsInt32()));
+                if (_campaignCheckpoint is { } destination && zone == destination.Zone) cost += 20 * Math.Abs(candidate["map"].AsInt32() - destination.Map);
+                if (cost < best) { best = cost; _campaignDoor = i; }
+            }
+            if (_campaignDoor < 0) { Finish($"campaign: no available door in {_view.Zone},{_view.Map}, story {_view.Flags[0x82]}"); return; }
+            var key = (_view.Zone, _view.Map, _campaignDoor);
+            _campaignAttempts[key] = _campaignAttempts.GetValueOrDefault(key) + 1;
+            _campaignDoorAt = _frame;
+            GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
+        }
+        // The Blackmarket's northeast platform is reached by a diagonal running jump from its southwest corner,
+        // rather than trying to climb the taller barrels along its south face.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (9, 5, 1) && _campaignPuzzle < 2)
+        {
+            var corner = _campaignPuzzle == 0 ? new Vector3(1984, 0, 448) : new Vector3(2048, -384, 384);
+            if (_campaignPuzzle == 0 && new Vector2(corner.X - ashley.Actor.Position.X, corner.Z - ashley.Actor.Position.Z).Length() < 16)
+            { _campaignPuzzle = 1; _campaignPuzzleAt = _frame; }
+            else if (_campaignPuzzle == 1 && ashley.Actor.Position.Y <= -384 && ashley.Actor.Position.Z < 384)
+            { _campaignPuzzle = 2; Steer(Vector2.Zero); return; }
+            var steps = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, corner) : new List<Vector3>();
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var point = steps.Count > 0 ? steps[0] : corner;
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle == 1 && (_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square");
+            return;
+        }
+        var tile = doors[_campaignDoor].AsGodotDictionary()["tile"].AsGodotArray();
+        var goal = new Vector3(tile[0].AsInt32() * 128 + 64, ashley.Actor.Position.Y, tile[1].AsInt32() * 128 + 64);
+        var route = _view.Path(ashley.Actor.Position, goal, _campaign ? 256 : FieldPlayer.StepHeight);
+        while (route.Count > 1 && new Vector2(route[0].X - ashley.Actor.Position.X, route[0].Z - ashley.Actor.Position.Z).Length() < 24) route.RemoveAt(0);
+        var waypoint = route.Count > 0 ? route[0] : goal;
+        float angle = (ashley.Actor.FacingToward(waypoint) - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
+        Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
+        // At a blocked edge, try the player's interaction and jump controls; never move the actor or set a flag.
+        if (_frame % 120 == 0) Tap("ps_cross");
+        if (_frame % 120 == 60) Tap("ps_square");
+    }
 
     /// <summary>
     /// After the prologue: control passes to the player once the camera is back on Ashley. Running up the stick for a
@@ -1807,6 +2177,7 @@ public partial class FieldContracts : Node
     private void StepBattle()
     {
         int elapsed = _frame - _battleFrame;
+        if (elapsed % 600 == 0) GD.Print($"FIELD: combat progress {_view.Zone},{_view.Map}, control {_view.Controlled}, door {_doorRooms}, hostiles {_view.Battle?.HostileCount()}, {_view.SystemBox.Text.Replace('\n', '/')}");
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         var battle = _view.Battle;
         if (battle?.Ashley is not { } ashley) { if (_leftBattle) { Tap("ps_circle"); return; } Finish("the battle has no Ashley"); return; }
@@ -1934,7 +2305,13 @@ public partial class FieldContracts : Node
                 GD.Print($"FIELD: the story went on through {string.Join(" > ", _view.Rooms)}; events {string.Join(" > ", _view.Events)}; Ashley is the player's in {_view.Rooms[^1]}, with {ashley.Hp}/{ashley.MaxHp} HP");
                 _doorRooms = _view.Rooms.Count;
             }
-            if (_doorRooms != 0) { WalkThroughDoor(ashley, elapsed); return; }
+            if (_doorRooms != 0)
+            {
+                // A hidden room enemy can enter the fight while she approaches the exit (the prologue wyvern).
+                if (_view.Controlled && battle.HostileCount() > 0) { _doorFrame = elapsed; Fight(battle, ashley, elapsed); return; }
+                WalkThroughDoor(ashley, elapsed);
+                return;
+            }
             if (_leftBattle && _view.Controlled && battle.HostileCount() > 0) { Fight(battle, ashley, elapsed); return; }
             if (elapsed - _wonFrame > 60 * 60 * 30) { Finish($"the story stalled in {_view.Rooms[^1]} at {_view.EventNode}: {_view.WaitingOn}"); return; }
             else if (elapsed % 60 == 0) Tap("ps_circle");
@@ -1992,6 +2369,8 @@ public partial class FieldContracts : Node
         if (_view.Rooms.Count > _doorRooms)
         {
             Steer(Vector2.Zero);
+            if (_view.Controlled && _view.Rooms.Count > _doorRooms + 1)
+            { _doorRooms = _view.Rooms.Count; _doorFrame = elapsed; return; }
             if (_view.EndOfContent.Length != 0) { Finish($"the door led out of the converted rooms ({_view.EndOfContent})"); return; }
             if (_view.Controlled && _view.Rooms.Count == _doorRooms + 1)
             {
@@ -2026,11 +2405,12 @@ public partial class FieldContracts : Node
         var goal = new Vector3(tile[0].AsInt32() * 128 + 64, 0, tile[1].AsInt32() * 128 + 64);
         if (!_view.Controlled) { Steer(Vector2.Zero); return; }
         if (_view.Battle is { Paused: true }) { Tap("ps_cross"); return; }
-        var route = _view.Path(ashley.Actor.Position, goal);
+        var route = _view.Path(ashley.Actor.Position, goal, _campaign ? 256 : FieldPlayer.StepHeight);
         while (route.Count > 1 && new Vector2(route[0].X - ashley.Actor.Position.X, route[0].Z - ashley.Actor.Position.Z).Length() < 24) route.RemoveAt(0);
         var waypoint = route.Count > 0 ? route[0] : goal;
         float angle = (ashley.Actor.FacingToward(waypoint) - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
         Steer(new Vector2(Mathf.Sin(angle), -Mathf.Cos(angle)));
+        if (elapsed % 60 == 0) Tap("ps_cross");
         // After the battle she must still walk or run as she goes, not glide in another pose.
         string clip = ashley.Actor.Player?.AssignedAnimation ?? "";
         bool striding = clip.EndsWith("_13", StringComparison.Ordinal) || clip.EndsWith("_19", StringComparison.Ordinal);
@@ -2044,22 +2424,69 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        if (battle.Paused) { Tap("ps_circle"); return; }
+        bool opened = battle.Paused && !_fightWasPaused;
+        _fightWasPaused = battle.Paused;
+        if (opened)
+        {
+            int hp = battle.Combatants.Values.Where(c => c.Targetable).Sum(c => c.Hp);
+            _fightStalls = hp == _fightLastHp ? _fightStalls + 1 : 0;
+            if (hp != _fightLastHp) _fightProgressAt = _frame;
+            _fightLastHp = hp;
+            _fightPartSearch = 0;
+        }
+        if (_campaign && _fightProgressAt > 0 && _frame - _fightProgressAt > 7200)
+        { Finish($"campaign: no damage for 7200 frames in {_view.Zone},{_view.Map}, target {_fightTargetId}, {_view.SystemBox.Text}"); return; }
+        if (battle.Paused)
+        {
+            string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
+            if (_fightNextPart)
+            {
+                if (_press > 0) return;
+                _fightPreferredPart = part;
+                _fightNextPart = false;
+            }
+            if (_fightPreferredPart.Length > 0 && part != _fightPreferredPart)
+            {
+                if (_press == 0)
+                    if (++_fightPartSearch < 6) Tap("ps_down");
+                    else { Tap("ps_cross"); _fightPreferredPart = ""; _fightCloseUntil = _frame + 60; }
+                return;
+            }
+            if (_fightStalls >= 3)
+            { if (_press == 0) { Tap("ps_cross"); _fightPreferredPart = ""; _fightCloseUntil = _frame + 120; _fightStalls = 0; } return; }
+            if (_campaign && _view.SystemBox.Text.StartsWith(_view.Content.Data("battle_text")["cube"].AsString(), StringComparison.Ordinal))
+            {
+                if (_press == 0)
+                {
+                    if (++_campaignCubePicks <= 4) Tap("ps_right");
+                    else { Tap("ps_cross"); _campaignCubePicks = 0; _campaignWaitForEnemyUntil = _frame + 120; }
+                }
+            }
+            else if (_view.SystemBox.Text.Contains(" HP 0/", StringComparison.Ordinal))
+            {
+                if (_press == 0)
+                    if (++_emptyLimbPicks < 6) { Tap("ps_down"); _fightNextPart = true; }
+                    else { Tap("ps_cross"); _emptyLimbPicks = 0; _fightPreferredPart = ""; _fightCloseUntil = _frame + 60; }
+            }
+            else { _campaignCubePicks = _emptyLimbPicks = 0; Tap("ps_circle"); }
+            return;
+        }
         if (battle.Busy) { Steer(Vector2.Zero); return; }
         if (!battle.Drawn) { Steer(Vector2.Zero); Tap("ps_circle"); return; }
         FieldBattle.Combatant? nearest = null;
         foreach (var c in battle.Combatants.Values)
-            if (c.Hostile && !c.Dead && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
+            if (c.Targetable && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
         if (nearest == null) { Steer(Vector2.Zero); return; }
+        if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;
-        if (new Vector2(offset.X, offset.Z).Length() < 240)
+        if (_frame >= _fightCloseUntil && FieldBattle.InSphere(ashley, nearest))
         {
             Steer(Vector2.Zero);
             if (elapsed % 8 == 0) Tap("ps_circle");
             return;
         }
         // Point the stick along the route to the soldier, relative to the camera: up is the camera's yaw.
-        var route = _view.Path(ashley.Actor.Position, nearest.Actor.Position);
+        var route = _view.Path(ashley.Actor.Position, nearest.Actor.Position, _campaign ? 256 : FieldPlayer.StepHeight);
         while (route.Count > 1 && new Vector2(route[0].X - ashley.Actor.Position.X, route[0].Z - ashley.Actor.Position.Z).Length() < 24) route.RemoveAt(0);
         var waypoint = route.Count > 0 ? route[0] : nearest.Actor.Position;
         float heading = ashley.Actor.FacingToward(waypoint), angle = (heading - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
@@ -2076,6 +2503,20 @@ public partial class FieldContracts : Node
     /// </summary>
     private string CheckMovement(FieldBattle battle)
     {
+        // A previous jump's heading must not become the direction of a later ground climb.
+        var body = new Node3D();
+        try
+        {
+            var walker = new EventActor("climb-history", 0, body);
+            var control = new FieldPlayer(walker, p => p.X >= 96 ? -192 : 0) { Animates = false, Turns = false };
+            control.Step(0, false, true);
+            for (int i = 0; i < 26; i++) control.Step(0, false);
+            float before = walker.Position.Z;
+            for (int i = 0; i < 80; i++) control.Step(3072, false);
+            if (walker.Position.X < 96 || walker.Position.Y != -192 || Math.Abs(walker.Position.Z - before) > 0.01f)
+                return $"a ground climb after a northward jump went to {walker.Position}, not east onto the ledge at z {before}";
+        }
+        finally { body.Free(); }
         var enemy = battle.Combatants.Values.FirstOrDefault(c => c != battle.Ashley && c.Mind != null && c.Mover != null && !c.Dead && c.Gait == FieldBattle.Gait.Walk);
         if (enemy == null) return "the room has no walking enemy";
         var m = enemy.Mind!;

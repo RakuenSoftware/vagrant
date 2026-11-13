@@ -660,7 +660,7 @@ public sealed partial class FieldBattle
     public int HostileCount()
     {
         int count = 0;
-        foreach (var c in Combatants.Values) if (c.Hostile && !c.Dead && !c.Suspended) count++;
+        foreach (var c in Combatants.Values) if (c.Targetable) count++;
         return count;
     }
 
@@ -719,7 +719,7 @@ public sealed partial class FieldBattle
         // The fight is planned anew as a move ends and as the hostile come and go (BATTLE.PRG 0x800dec88).
         bool acting = _phase is Phase.Striking or Phase.Casting || _enemyCast != null || _enemyRelease != null;
         int hostile = 0;
-        foreach (var c in Combatants.Values) if (c != Ashley && c.Hostile && !c.Dead) hostile++;
+        foreach (var c in Combatants.Values) if (c != Ashley && c.Targetable) hostile++;
         // An action's end puts the frame step back to 2 (0x8006fc90).
         if (!acting && _wasActing) { _view.FrameStep = 2; Ended(); }
         else if (!acting && hostile != _hostileCount) Replan(null);
@@ -806,7 +806,7 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>Whether the attacker's sphere reaches any of the target's limbs (0x80071d54), or its middle when it has none.</summary>
-    private static bool InSphere(Combatant attacker, Combatant target)
+    internal static bool InSphere(Combatant attacker, Combatant target)
     {
         bool limbs = false;
         for (int limb = 0; limb < target.Limbs.Count; limb++)
@@ -2559,11 +2559,11 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>The fighters the planner reckons with (BATTLE.PRG's actor list, 0x800f1928): Ashley and every living fighter but the crates.</summary>
-    private List<Combatant> Fighters()
+    private List<Combatant> Fighters(bool includeHidden = false)
     {
         var fighters = new List<Combatant>();
         if (Ashley != null && !Ashley.Dead) fighters.Add(Ashley);
-        foreach (var c in Combatants.Values) if (c != Ashley && !c.Dead && !c.Cube) fighters.Add(c);
+        foreach (var c in Combatants.Values) if (c != Ashley && !c.Dead && !c.Cube && (includeHidden || c.Actor.Visible)) fighters.Add(c);
         return fighters;
     }
 
@@ -2939,9 +2939,9 @@ public sealed partial class FieldBattle
         }
         React(acted);
         var fighters = Fighters();
-        foreach (var enemy in Combatants.Values)
+        foreach (var enemy in fighters)
         {
-            if (enemy == Ashley || !enemy.Hostile || enemy.Dead || enemy.Hp == 0 || enemy.Cube || enemy.Mind == null) continue;
+            if (enemy == Ashley || !enemy.Hostile || enemy.Hp == 0 || enemy.Mind == null) continue;
             PlanMoves(enemy, fighters);
             if (enemy.Plans.Count == 0) enemy.Mind.State = 7;
             else Choose(enemy);

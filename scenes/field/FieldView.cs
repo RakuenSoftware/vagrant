@@ -2667,6 +2667,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (result != Error.Ok) return result;
             if (!Actors.TryGetValue(reference, out var actor)) continue;
             actor.Facing = entry["facing"].AsSingle();
+            // Keep the shown, animated and shadow flags in sync with the room actor's initial presentation.
+            actor.Flags = 0x47;
             actor.Visible = true;
             // Stance 2 is a hostile character with its weapon drawn; the record's marked byte flags it for the room's
             // conditions.
@@ -2725,7 +2727,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Fail(error.Message);
             return;
         }
-        var mount = new BoneAttachment3D { Name = shield ? "Shield" : "Weapon", BoneIdx = index };
+        var mount = new BoneAttachment3D { Name = shield ? "Shield" : "Weapon", BoneName = skeleton.GetBoneName(index) };
         skeleton.AddChild(mount);
         model.Transform = new Transform3D(new Basis(Vector3.Right, Mathf.Pi).Scaled(Vector3.One / Installation.MapConversion.UnitsPerMetre), Vector3.Zero).AffineInverse();
         mount.AddChild(model);
@@ -3270,14 +3272,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// 0x8008D710 sets an opened chest's lid as the room loads (0x80093824).
     /// </summary>
     /// <summary>Swings the lid open, then (once it is still, as retail shows the bag or the container's question only then) does <paramref name="then"/>; Ashley stands meanwhile.</summary>
-    private void AfterLid(GDictionary chest, Action then)
+    private void AfterLid(GDictionary chest, Action then, GDictionary? paired = null)
     {
         _control?.Halt();
         OpenLid(chest, false);
-        _afterLid = (chest.GetValueOrDefault("object", -1).AsInt32(), then);
+        if (paired != null) OpenLid(paired, false);
+        _afterLid = (chest.GetValueOrDefault("object", -1).AsInt32(), paired?.GetValueOrDefault("object", -1).AsInt32() ?? -1, then);
     }
 
-    private (int Lid, Action Then)? _afterLid;
+    private (int Lid, int Other, Action Then)? _afterLid;
 
     /// <summary>Whether a lid is still swinging open before its chest's bag or container shows.</summary>
     public bool LidOpening => _afterLid != null;
@@ -3285,7 +3288,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private void StepAfterLid()
     {
         if (_afterLid is not { } pending) return;
-        foreach (var swing in _swings) if (swing.Index == pending.Lid && swing.Running) return;
+        foreach (var swing in _swings) if ((swing.Index == pending.Lid || swing.Index == pending.Other) && swing.Running) return;
+        foreach (var script in _groupScripts) if ((script.Index == pending.Lid || script.Index == pending.Other) && script.Running) return;
         _afterLid = null;
         pending.Then();
     }
@@ -3293,6 +3297,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private void OpenLid(GDictionary chest, bool snap)
     {
         int index = chest.GetValueOrDefault("object", -1).AsInt32();
+        if (!snap)
+            foreach (var script in _groupScripts)
+                if (script.Index == index) { script.Pc = script.Counter = 0; script.Running = true; script.Paused = false; }
         foreach (var swing in _swings)
         {
             if (swing.Index != index) continue;
@@ -3793,11 +3800,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>
     /// A walking route across the room's collision map from one map position to another, as the centres of the
     /// 32-unit sub-cells it passes, ending at the destination; empty when there is none. A step may climb at most
-    /// 96 units (ground any higher is a wall), and no sub-cell within one of a wall is used, so a body of Ashley's
+    /// maximumRise units (96 by default), and no sub-cell within one of a wall is used, so a body of Ashley's
     /// radius clears it. The search is A* over the eight neighbours, and the route keeps only its turning points. Not
     /// retail's: no retail actor walks by it; the field contracts steer their stand-in player by it.
     /// </summary>
-    public List<Vector3> Path(Vector3 from, Vector3 to)
+    public List<Vector3> Path(Vector3 from, Vector3 to, float maximumRise = FieldPlayer.StepHeight)
     {
         var route = new List<Vector3>();
         if (_heights.Length == 0) return route;
@@ -3810,7 +3817,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         {
             for (int dz = -1; dz <= 1; dz++)
                 for (int dx = -1; dx <= 1; dx++)
-                    if (!Inside(x + dx, z + dz) || Height(x, z) - Height(x + dx, z + dz) > FieldPlayer.StepHeight) return false;
+                    if (!Inside(x + dx, z + dz) || Height(x, z) - Height(x + dx, z + dz) > maximumRise) return false;
             return true;
         }
         (int, int) Cell(Vector3 p) => (Math.Clamp((int)Mathf.Floor(p.X / cell), 0, columns - 1), Math.Clamp((int)Mathf.Floor(p.Z / cell), 0, rows - 1));
@@ -3832,7 +3839,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 {
                     if (dx == 0 && dz == 0) continue;
                     int nx = cx + dx, nz = cz + dz;
-                    if (!Inside(nx, nz) || Height(cx, cz) - Height(nx, nz) > FieldPlayer.StepHeight || Blocked(nx / 4, nz / 4)) continue;
+                    if (!Inside(nx, nz) || Height(cx, cz) - Height(nx, nz) > maximumRise || Blocked(nx / 4, nz / 4) && (nx / 4, nz / 4) != (goal.Item1 / 4, goal.Item2 / 4)) continue;
                     if ((nx, nz) != goal && !Clear(nx, nz)) continue;
                     // A diagonal may not cut a corner.
                     if (dx != 0 && dz != 0 && (!Clear(cx + dx, cz) || !Clear(cx, cz + dz))) continue;
@@ -4722,6 +4729,25 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return $"The {name} was repaired.";
     }
 
+    /// <summary>
+    /// SETUP's Repair, MENUC 0x8010740c: all carried blades, shields and armour, including assembled and equipped
+    /// pieces. Accessories (category 7) are skipped. The retail loops do not apply the workshop's combining-material
+    /// mask; each repaired piece spends one PP per hundred DP restored, to no less than zero.
+    /// </summary>
+    public void RepairAll()
+    {
+        foreach (var value in Equipment)
+        {
+            var entry = value.AsGodotDictionary();
+            string kind = entry["kind"].AsString();
+            var record = entry["record"].AsGodotDictionary();
+            if (kind == "weapon") record = record["blade"].AsGodotDictionary();
+            else if (kind is not ("blade" or "blades" or "shield" or "armour")) continue;
+            if (kind is "shield" or "armour" && record.GetValueOrDefault("category", 0).AsInt32() == 7) continue;
+            Repair(record, ItemName(record["id"].AsInt32()));
+        }
+    }
+
     public string Disassemble(GDictionary weapon)
     {
         var entry = weapon["entry"].AsGodotDictionary();
@@ -5441,14 +5467,31 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         {
             var record = value.AsGodotDictionary();
             var tile = record["tile"].AsGodotArray();
-            if (tile[0].AsInt32() != x || tile[1].AsInt32() != z || record["lock"].AsInt32() == 0) continue;
+            if (tile[0].AsInt32() != x || tile[1].AsInt32() != z || record.GetValueOrDefault("opened", false).AsBool()) continue;
             if (!Unlock(record, true, out string message)) { Message(message); return; }
             if (message.Length > 0) Message(message);
             record["lock"] = 0;
-            // The door's geometry group opens and its tile no longer blocks.
-            _hiddenGroups.Add(record["group"].AsInt32());
-            int width = _columns / 4, index = z * width + x;
-            if (index >= 0 && index < _attributes.Length) _attributes[index] &= ~(7L << 10);
+            // Lock 0 means unlocked, not physically open (0x80073b9c). Byte 9 names a room animation,
+            // not a geometry group (0x8008bf98); collision changes after that animation ends (0x8008c200).
+            var locks = Document["locks"].AsGodotArray();
+            int link = record.GetValueOrDefault("linked", -1).AsInt32();
+            var paired = link >= 0 && link < locks.Count && locks[link].AsGodotDictionary().GetValueOrDefault("enabled", false).AsBool() ? locks[link].AsGodotDictionary() : null;
+            AfterLid(record, () =>
+            {
+                foreach (var opened in paired == null ? new[] { record } : new[] { record, paired })
+                {
+                    opened["opened"] = true;
+                    var at = opened["tile"].AsGodotArray();
+                    int kind = opened["kind"].AsInt32(), width = _columns / 4;
+                    for (int part = 0; part < (kind is >= 4 and <= 7 ? 2 : 1); part++)
+                    {
+                        int dx = part == 0 ? 0 : kind == 5 ? 1 : kind == 7 ? -1 : 0;
+                        int dz = part == 0 ? 0 : kind == 4 ? -1 : kind == 6 ? 1 : 0;
+                        int index = (at[1].AsInt32() + dz) * width + at[0].AsInt32() + dx;
+                        if (index >= 0 && index < _attributes.Length) _attributes[index] ^= 5L << 10;
+                    }
+                }
+            }, paired);
             return;
         }
         foreach (var value in Document.GetValueOrDefault("chests", new GArray()).AsGodotArray())
@@ -5474,6 +5517,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         int lockType = record["lock"].AsInt32(), key = record["key"].AsInt32();
         bool sigil = key >= 466;
+        if (lockType == 0) { message = ""; return true; }
         if (lockType == 2) { message = RetailMessage(door ? 5 : 1); return false; }
         if (key > 0 && FlagValue(0x1B6 + key) != 0) { message = ""; return true; }
         if (key > 0 && Items.GetValueOrDefault(key) > 0)

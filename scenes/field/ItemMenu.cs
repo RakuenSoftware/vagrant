@@ -102,7 +102,7 @@ public sealed partial class ItemMenu : RetailScreen
     private Row? Helped => _mode is Mode.Items or Mode.ContainerList && _actions is { } shown && _action < shown.Count ? shown[_action] : _chosen >= 0 && _chosen < _rows.Count ? _rows[_chosen] : null;
 
     /// <summary>The help shown, and whether it stands under CAUTION.</summary>
-    public (string Text, bool Caution) Help => _mode == Mode.Status ? (_status?.Help ?? "", false) : (Helped?.Help ?? "", Helped is { Caution: true });
+    public (string Text, bool Caution) Help => _mode == Mode.Status ? (_status?.Help ?? "", false) : _mode == Mode.Setup && _setupCaution.Length > 0 ? (_setupCaution, true) : (Helped?.Help ?? "", Helped is { Caution: true });
     private int _action;
     private Texture2D? _digits;
 
@@ -287,10 +287,11 @@ public sealed partial class ItemMenu : RetailScreen
     /// or things with their icons from x 169 (<paramref name="icons"/>), the pointer at the chosen one (footage:
     /// SETUP's six commands; SETUP and ATTACH GEMS over WEAPONS and SHIELDS; "ATTACH: Weapon" over the weapons).
     /// </summary>
-    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons)
+    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons, int rowTop = -1, string caution = "")
     {
         if (_mode != Mode.Setup) Enter(Mode.Setup);
         (_headers, _rows, _chosen, _browsing, _iconRows) = (headers, rows, chosen, false, icons);
+        (_setupRowTop, _setupCaution) = (rowTop, caution);
         if (_chosen < _first) _first = Math.Max(0, _chosen);
         if (_chosen >= _first + 8) _first = _chosen - 7;
         if (_first > Math.Max(0, rows.Count - 8)) _first = Math.Max(0, rows.Count - 8);
@@ -299,6 +300,8 @@ public sealed partial class ItemMenu : RetailScreen
 
     private IReadOnlyList<string> _headers = Array.Empty<string>();
     private bool _iconRows;
+    private int _setupRowTop = -1;
+    private string _setupCaution = "";
 
     /// <summary>Only the header (none when empty), for the memory card screens drawn over the menu; with <paramref name="caution"/>, that under CAUTION (the container's "Accessing MEMORY CARDs..." and its question as it is left).</summary>
     /// <summary>A limb on the STATUS screen: its name (BATTLE.PRG's, "#R.ARM"), condition (0 DYING to 4 EXCELLENT) and rig bone.</summary>
@@ -848,7 +851,7 @@ public sealed partial class ItemMenu : RetailScreen
                 Bar(180 + slide, 18 + 16 * h, 140, MenuList.HeaderLight, MenuList.HeaderDark);
                 Text(_headers[h], 186 + slide, 18 + 16 * h);
             }
-            float top = 18 + 16 * _headers.Count, x = _iconRows ? 169 : 194;
+            float top = _setupRowTop >= 0 ? _setupRowTop : 18 + 16 * _headers.Count, x = _iconRows ? 169 : 194;
             for (int i = _first; i < _rows.Count && i < _first + 8; i++) Row(_rows[i], x + slide, top + 16 * (i - _first), _iconRows ? 151 : 126, i == _chosen);
             if (_chosen >= _first && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(x - 14, top + 16 * (_chosen - _first) - 10), unit);
         }
@@ -940,11 +943,10 @@ public sealed partial class ItemMenu : RetailScreen
 
         // The chosen row's help.
         Side(0);
-        Row? helped = _mode == Mode.Status ? null : Helped;
-        string help = _mode == Mode.Status ? _status?.Help ?? "" : helped?.Help ?? "";
+        var (help, caution) = Help;
         if (help.Length > 0)
         {
-            FieldView.Sprite(this, _labels, helped is { Caution: true } ? CautionWord : MenuList.InformationWord, new Vector2(8, 181), unit);
+            FieldView.Sprite(this, _labels, caution ? CautionWord : MenuList.InformationWord, new Vector2(8, 181), unit);
             var lines = help.Split('\n');
             for (int i = 0; i < lines.Length && i < 4; i++) Text(lines[i], 16, 192 + 13 * i);
         }

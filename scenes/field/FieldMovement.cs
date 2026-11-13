@@ -2312,14 +2312,14 @@ public sealed partial class FieldBattle
     /// </summary>
     public void StepScripted()
     {
-        foreach (var c in Fighters())
+        foreach (var c in Fighters(includeHidden: true))
         {
             if (c.Dead || c.Mind is not { } own) continue;
             if (own.Script is { } walk) c.Mind = walk;
             try { if (c.Mind.Posted || c.BodyBusy || own.Script != null) Embody(c); }
             finally { c.Mind = own; }
         }
-        foreach (var c in Fighters())
+        foreach (var c in Fighters(includeHidden: true))
         {
             if (c.Dead || c.Mind is not { Script: { } walk } own) continue;
             if (walk.Posted || c.BodyBusy) continue;

@@ -170,7 +170,7 @@ public sealed class FieldPlayer
             float? ahead = _floor(next + _velocity.Normalized() * Radius);
             if (ahead is not { } floorAhead || position.Y - floorAhead > 32 && !_stairs(next))
             {
-                if (ahead is { } ledge && position.Y - ledge is > 32 and <= 255 && Climb(next, ledge)) return;
+                if (ahead is { } ledge && position.Y - ledge is > 32 and <= 255 && Climb(next, ledge, _velocity.Normalized())) return;
                 next = position;
             }
         }
@@ -194,12 +194,11 @@ public sealed class FieldPlayer
     /// Starts climbing onto a ledge at <paramref name="ledge"/> ahead of <paramref name="at"/>: over 8 frames a 64-unit
     /// level for a climb (36, or 39 for the third level), or a grab and pull-up for the fourth (41, then 39).
     /// </summary>
-    private bool Climb(Vector3 at, float ledge)
+    private bool Climb(Vector3 at, float ledge, Vector3 direction)
     {
         float rise = _actor.Position.Y - ledge;
         if (rise > 256 || !Climbs) return false;
         int level = (int)Math.Ceiling(rise / 64);
-        var direction = _velocity != Vector3.Zero ? _velocity.Normalized() : new Vector3(-Mathf.Sin(_actor.Facing * Mathf.Tau / 4096f), 0, -Mathf.Cos(_actor.Facing * Mathf.Tau / 4096f));
         _climbFrom = _actor.Position;
         _climbTo = (at + direction * (Radius + 8)) with { Y = ledge };
         _climbTotal = _climbFrames = level >= 4 ? 28 : level * 8;
@@ -242,13 +241,15 @@ public sealed class FieldPlayer
     private void Move(Vector3 motion, float heading)
     {
         var position = _actor.Position;
-        var front = position + motion.Normalized() * (Radius + 4);
+        // The ground solver probes the proposed position (0x800a7818), as the air solver below does. Probing only
+        // the old position can leave the body blocked by a ledge before the climbing probe ever reaches it.
+        var front = position + motion + motion.Normalized() * (Radius + 4);
         if (_floor(front) is { } ahead)
         {
             float rise = position.Y - ahead;
             if (rise is > StepHeight and <= 256 && !_stairs(front))
             {
-                if (++_push >= 8 && Climb(position, ahead)) return;
+                if (++_push >= 8 && Climb(position, ahead, motion.Normalized())) return;
             }
             else _push = 0;
             float drop = ahead - position.Y;
