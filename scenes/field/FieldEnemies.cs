@@ -416,7 +416,7 @@ public sealed partial class FieldBattle
     }
 
     /// <summary>Whether an enemy fights by the AI: a hostile one with its weapon drawn.</summary>
-    private bool Acts(Combatant c) => c != Ashley && c.Mind != null && c.Hostile && c.Drawn && !c.Dead;
+    private bool Acts(Combatant c) => c != Ashley && c.Mind != null && c.Hostile && c.Drawn && !c.Dead && c.Hp > 0;
 
     /// <summary>
     /// An enemy's AI tick (BATTLE.PRG 0x800d8ef4): its icon, cooldown and token timers; held, taken out, paralysed or
@@ -800,8 +800,15 @@ public sealed partial class FieldBattle
         if (e.Action is < 22 or > 53) c.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + c.RecoveryBonus) * 256;
         if (_walking.Remove(c)) c.Mover?.Halt();
         _acted = new Acted(c, e.Action, e.Target);
-        if (EnemySpell(c, e.Action, e.Target)) return;
-        Strike(c, e.Target, e.Limb);
+        // It is resolved, and its cost paid, as it sets out (0x80072ec4 then 0x80070f28 with state+12 its index), on
+        // what its kind takes: its target, or every fighter its area holds.
+        c.Actor.Facing = c.Actor.FacingToward(e.Target.Actor.Position);
+        _links = 0;
+        _exchanges = 1;
+        var blow = Resolve(e.Action, c, Targets(record, c, e.Target, e.Limb), live: true);
+        if (EnemySpell(c, e.Action, e.Target, blow)) return;
+        _blow = blow;
+        Strike(c, e.Target, blow.Targets.Count > 0 ? blow.Targets[0].Limb : e.Limb);
     }
 
     /// <summary>

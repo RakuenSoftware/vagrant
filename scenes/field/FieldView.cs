@@ -743,7 +743,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Battle.AshleyActed += () => _reclaimCheck = true;
             Battle.Felled += (felled, action) =>
             {
-                CountKill();
                 RecordKill(felled, action);
             };
             if (Player is { } enlisted)
@@ -2604,7 +2603,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // Stance 2 is a hostile character with its weapon drawn; the record's marked byte flags it for the room's
             // conditions.
             bool hostile = entry["stance"].AsInt32() == 2;
-            var combatant = Battle!.Enlist(actor, entry["stats"].AsGodotDictionary(), hostile, entry.GetValueOrDefault("marked", false).AsBool(), hostile, LimbBones(actor.Character), LimbParts(actor.Character));
+            var combatant = Battle!.Enlist(actor, entry["stats"].AsGodotDictionary(), hostile, entry.GetValueOrDefault("marked", false).AsBool(), hostile, LimbBones(actor.Character), LimbParts(actor.Character), entry["stance"].AsInt32());
             combatant.Drops = entry["stats"].AsGodotDictionary().GetValueOrDefault("drops", new GDictionary()).AsGodotDictionary();
             combatant.DropItems = entry.GetValueOrDefault("items", new GArray()).AsGodotArray();
             _roomActorIndex[reference] = index;
@@ -3324,6 +3323,18 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (x >= platform.MinX && x <= platform.MaxX && z >= platform.MinZ && z <= platform.MaxZ && Math.Abs(position.Y - (platform.Position.Y + platform.Top + PlatformDip[platform.Dip])) <= 16) return i;
         }
         return -1;
+    }
+
+    /// <summary>
+    /// The points of the room's platforms that are switched on (BATTLE.PRG 0x8008d2c0 lists them from 0x800f1ca0: x and z
+    /// its place, y its lift's dip less its height (the record's y is up), so its place with the dip added, y down; as
+    /// <see cref="PlatformState"/> has it), which stop a missile (0x800e6ba0) and which Fixate is cast on (0x80070cac).
+    /// </summary>
+    public List<Vector3> PlatformPoints()
+    {
+        var points = new List<Vector3>();
+        for (int i = 0; i < _platforms.Count; i++) if (PlatformState(i) is { Off: false } state) points.Add(state.Now);
+        return points;
     }
 
     /// <summary>The top of a platform under a position (y down), if one is there and no more than 160 above it.</summary>
@@ -4107,9 +4118,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (Battle is not { Busy: true } && Battle?.GameOver != true)
         {
             var stick = Input.GetVector("ps_left", "ps_right", "ps_up", "ps_down");
-            // Crippled legs and slowing halve her pace, quickening adds a quarter; paralysis holds her.
+            // Paralysis holds her.
             var fighter = Battle?.Ashley;
-            _control.Pace = (Battle?.Lame == true ? 0.5f : 1) * (fighter?.Has(FieldBattle.Slow) == true ? 0.5f : 1) * (fighter?.Has(FieldBattle.Quicken) == true ? 1.25f : 1);
+            // Slow or numbness halve the pace, else Quicken adds a quarter (BATTLE.PRG 0x80086fa8, on any of statuses 0x8810).
+            _control.Pace = fighter == null ? 1 : (fighter.Status & 0x8010) != 0 ? 0.5f : fighter.Has(FieldBattle.Quicken) ? 1.25f : 1;
             if (fighter?.Has(FieldBattle.Paralysis) == true) stick = Vector2.Zero;
             // Carrying a block she walks, and does not jump; the block rides on her head.
             _control.Step(stick.Length() > 0.25f ? Gameplay.Heading(stick) : null, Input.IsActionPressed("ps_r2") || _carried != null, _jumpPressed && _carried == null);
@@ -4351,7 +4363,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var made = (GDictionary)a.Duplicate(true);
         made["id"] = id;
         made["material"] = material;
-        foreach (string key in blades ? new[] { "model", "category", "cost", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
+        foreach (string key in blades ? new[] { "model", "category", "cost", "cost_kind", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
             made[key] = kind[key];
         made["strength"] = Int(kind, "strength") + bonus[0].AsInt32();
         made["intelligence"] = Int(kind, "intelligence") + bonus[1].AsInt32();
@@ -4789,13 +4801,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Raises one of Ashley's stats for good (0 strength, 1 intelligence, 2 agility, 3 most hit points, 4 most magic
-    /// points, the last two filling as they grow), to at most 999, and keeps it in <see cref="Gains"/>. Returns the
-    /// amount it grew.
+    /// Raises (or lowers, to no less than 0) one of Ashley's stats for good (0 strength, 1 intelligence, 2 agility, 3
+    /// most hit points, 4 most magic points, the last two filling as they grow when <paramref name="fill"/>; an item's
+    /// raise, BATTLE.PRG 0x800875c8, does not fill them), to at most 999, and keeps it in <see cref="Gains"/>. Returns
+    /// the amount it grew.
     /// </summary>
-    public int Grow(int stat, int amount)
+    public int Grow(int stat, int amount, bool fill = true)
     {
-        if (Battle?.Ashley is not { } ashley || amount <= 0) return 0;
+        if (Battle?.Ashley is not { } ashley || amount == 0) return 0;
         ref int value = ref ashley.Strength;
         switch (stat)
         {
@@ -4804,11 +4817,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case 3: value = ref ashley.MaxHp; break;
             case 4: value = ref ashley.MaxMp; break;
         }
-        amount = Math.Min(amount, 999 - value);
-        if (amount <= 0) return 0;
+        amount = Math.Clamp(amount, -value, 999 - value);
+        if (amount == 0) return 0;
         value += amount;
-        if (stat == 3) ashley.Hp += amount;
-        if (stat == 4) ashley.Mp += amount;
+        if (fill && stat == 3) ashley.Hp = Math.Clamp(ashley.Hp + amount, 0, ashley.MaxHp);
+        if (fill && stat == 4) ashley.Mp = Math.Clamp(ashley.Mp + amount, 0, ashley.MaxMp);
         Gains[stat] += amount;
         return amount;
     }
@@ -4918,7 +4931,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// A kill by Ashley's own hand counts towards the arts of her weapon's category, once the story has reached flag
     /// 0x82 = 10, up to the kills its next art takes (BATTLE.PRG 0x80085500); the art is reclaimed after her action.
     /// </summary>
-    private void CountKill()
+    public void CountKill()
     {
         if (Battle?.Ashley is not { } ashley || FlagValue(0x82) < 10 || ashley.Category <= 0) return;
         int category = ashley.Category, row = category % 10, learned = ArtsLearned(category);
@@ -4971,6 +4984,27 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (seer.Mp < cost) return "Not enough MP.";
             seer.Mp -= cost;
             SeeTraps(action.GetValueOrDefault("visual", 0).AsInt32(), ashley);
+            confirmed?.Invoke();
+            return "";
+        }
+        // Effect 36 (Fixate) is cast on every platform switched on (BATTLE.PRG 0x80070cac with 0x8008d2c0's list): its
+        // effect plays at each, and as it lands (0x8006cdd8) the trap on that platform's tile is revealed (0x8008deac)
+        // and the tile marked in the AI's grid (0x800e68ec sets 0x400 at [0x800F58B8]; nothing in BATTLE.PRG reads
+        // that bit, so it is not kept).
+        if (effects.Count > 0 && effects[0].AsGodotDictionary()["effect"].AsInt32() == 36)
+        {
+            if (Battle.Ashley is not { } fixer) return "Not now.";
+            int cost = action["cost"].AsInt32();
+            if (fixer.Mp < cost) return "Not enough MP.";
+            if (fixer.Has(FieldBattle.Silence)) return "Ashley is silenced.";
+            var platforms = PlatformPoints();
+            if (platforms.Count == 0) return RetailMessage(0);
+            fixer.Mp -= cost;
+            foreach (var point in platforms)
+            {
+                // The effect's action 2 at the point reveals the trap there (FieldEffect.RevealTrap), as Eureka's does.
+                Battle.HideHudFor(PlayEffect(action.GetValueOrDefault("visual", 0).AsInt32(), ashley, null, false, -1, point: point));
+            }
             confirmed?.Invoke();
             return "";
         }
@@ -5454,7 +5488,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             var traps = _content.Has("trap_actions") ? _content.Data("trap_actions") : new GDictionary();
             if (traps.GetValueOrDefault(type.ToString(), new GDictionary()).AsGodotDictionary() is not { Count: > 0 } action) return;
             Announce(22 + action["kind"].AsInt32(), action["name"].AsString());
-            Battle.Trap(action, Document.GetValueOrDefault("trap_level", 0).AsInt32());
+            Battle.Trap(type + 6, action.GetValueOrDefault("visual", 0).AsInt32(), Document.GetValueOrDefault("trap_level", 0).AsInt32());
             return;
         }
     }

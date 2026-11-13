@@ -34,7 +34,8 @@ public sealed class InventoryConversion
 
     /// <summary>
     /// A blade record (0x2C bytes): id, weapon model, category, maximum and current DP and PP, strength,
-    /// intelligence, agility, damage type, range (x, y, z, shape), eight classes, eight affinities and material.
+    /// intelligence, agility, damage type (byte 16, low two bits) and the kind of its cost (bits 2 to 4; 2 is RISK,
+    /// BATTLE.PRG's +0x14b), range (x, y, z, shape), eight classes, eight affinities and material.
     /// </summary>
     public static JsonObject Blade(byte[] d, int at) => new()
     {
@@ -42,7 +43,7 @@ public sealed class InventoryConversion
         ["dp"] = (int)BitConverter.ToUInt16(d, at + 8), ["max_dp"] = (int)BitConverter.ToUInt16(d, at + 4),
         ["pp"] = (int)BitConverter.ToUInt16(d, at + 10), ["max_pp"] = (int)BitConverter.ToUInt16(d, at + 6),
         ["strength"] = (int)(sbyte)d[at + 12], ["intelligence"] = (int)(sbyte)d[at + 13], ["agility"] = (int)(sbyte)d[at + 14],
-        ["damage_type"] = d[at + 16] & 3, ["cost"] = (int)d[at + 15], ["range"] = new JsonArray { (int)d[at + 20], (int)d[at + 21], (int)d[at + 22], (int)d[at + 23] },
+        ["damage_type"] = d[at + 16] & 3, ["cost_kind"] = d[at + 16] >> 2 & 7, ["cost"] = (int)d[at + 15], ["range"] = new JsonArray { (int)d[at + 20], (int)d[at + 21], (int)d[at + 22], (int)d[at + 23] },
         ["classes"] = Signed(d, at + 24, 8), ["affinities"] = Signed(d, at + 32, 8), ["material"] = (int)BitConverter.ToUInt16(d, at + 40),
     };
 
@@ -51,7 +52,7 @@ public sealed class InventoryConversion
     /// MENU/BLADE.SYD opens with three offsets: a 96 by 96 table of the blade a pair makes (by the two blades' ids), a
     /// table of the material it takes (by first material less three, its category, second material less three and
     /// its category: 5 × 10 × 5 × 10), and a 16-byte record a blade id: its model (1), category (2), damage type (3),
-    /// a value (4, low three bits) and its cost (5), a value (6), strength, intelligence and agility (8 to 10) and its
+    /// the kind of its cost (4, low three bits) and its cost (5), a value (6), strength, intelligence and agility (8 to 10) and its
     /// range (0xC to 0xF). The executable's material records (0x8004EDCC, 30 bytes each) add strength,
     /// intelligence and agility (bytes 0x18, 0x1A and 0x1C). The class and affinity values are mixed by weights
     /// The materials each workshop works (MENUC 0x8010BB30, a bit per material, by the room's workshop kind) limit
@@ -78,7 +79,7 @@ public sealed class InventoryConversion
             int p = kinds + id * 16;
             kindList.Add(new JsonObject
             {
-                ["model"] = (int)blades[p + 1], ["category"] = (int)blades[p + 2], ["damage_type"] = blades[p + 3] & 3, ["value4"] = blades[p + 4] & 7, ["cost"] = (int)blades[p + 5],
+                ["model"] = (int)blades[p + 1], ["category"] = (int)blades[p + 2], ["damage_type"] = blades[p + 3] & 3, ["cost_kind"] = blades[p + 4] & 7, ["cost"] = (int)blades[p + 5],
                 ["value6"] = (int)blades[p + 6], ["strength"] = (int)(sbyte)blades[p + 8], ["intelligence"] = (int)(sbyte)blades[p + 9], ["agility"] = (int)(sbyte)blades[p + 10],
                 ["range"] = new JsonArray { (int)blades[p + 12], (int)blades[p + 13], (int)blades[p + 14], (int)blades[p + 15] },
             });
@@ -202,12 +203,12 @@ public sealed class InventoryConversion
         var effects = new JsonArray();
         for (int i = 0; i < 2; i++)
         {
-            uint word = BitConverter.ToUInt32(executable, record + 0x14 + i * 4);
-            if ((word & 0x7F) == 0) continue;
+            var effect = new ActionEffect(BitConverter.ToUInt32(executable, record + 0x14 + i * 4));
+            if (effect.Effect == 0) continue;
             effects.Add(new JsonObject
             {
-                ["effect"] = (int)(word & 0x7F), ["prerequisite"] = (int)(word >> 7 & 0x3F), ["hit"] = (int)(word >> 13 & 7),
-                ["reckoning"] = (int)(word >> 16 & 0x3F), ["factor"] = (int)(word >> 22 & 0x1F), ["type"] = (int)(word >> 27 & 3), ["affinity"] = (int)(word >> 29),
+                ["effect"] = effect.Effect, ["prerequisite"] = effect.Prerequisite, ["hit"] = effect.Hit,
+                ["reckoning"] = effect.Reckoning, ["factor"] = effect.Factor, ["type"] = effect.Type, ["affinity"] = effect.Affinity,
             });
         }
         return effects;
@@ -567,4 +568,21 @@ public sealed class InventoryConversion
         foreach (int offset in new[] { 380, 372, 364, 356, 348, 344, 336 }) categories.Add(At(offset));
         return new JsonObject { ["title"] = At(420), ["categories"] = categories, ["slash"] = At(432), ["get"] = At(436), ["all"] = At(440), ["end"] = At(444) };
     }
+}
+
+/// <summary>
+/// One of an action record's two effect words (SLUS_010.40 0x8004B9DC + id * 52, at 0x14 and 0x18), as BATTLE.PRG's
+/// resolver (0x80085b10) reads it: the effect (bits 0 to 6, the handler table at 0x800E8378), its prerequisite (7 to
+/// 12: who it falls on and what it needs, 0x8007fdd8), its hit function (13 to 15, 0x800E8234), its reckoning (16 to
+/// 21, 0x800E830C), a factor (22 to 26), a damage type (27 and 28) and an affinity (29 to 31; 0 the weapon's).
+/// </summary>
+public readonly record struct ActionEffect(uint Word)
+{
+    public int Effect => (int)(Word & 0x7F);
+    public int Prerequisite => (int)(Word >> 7 & 0x3F);
+    public int Hit => (int)(Word >> 13 & 7);
+    public int Reckoning => (int)(Word >> 16 & 0x3F);
+    public int Factor => (int)(Word >> 22 & 0x1F);
+    public int Type => (int)(Word >> 27 & 3);
+    public int Affinity => (int)(Word >> 29);
 }

@@ -40,6 +40,11 @@ public sealed class FieldContent
     private const int PatrolOdds = 0x1408;       // BATTLE.PRG 0x80069C08
     private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
     private const int SwoopSteps = 0x88FDC;      // BATTLE.PRG 0x800F17DC
+    private const int StatusGroups = 0x13BC;     // BATTLE.PRG 0x80069BBC
+    private const int PhantomShares = 0x7FAF4;   // BATTLE.PRG 0x800E82F4
+    private const int CrippledBits = 0x7FA00;    // BATTLE.PRG 0x800E8200
+    private const int TargetKinds = 0x7F994;     // BATTLE.PRG 0x800E8194, then 0x800E81B4, 0x800E81C4 and 0x800E81D4
+    private const int NoticePieces = 0x944, NoticeValues = 0x97C, NoticeColours = 0xB94;   // BATTLE.PRG 0x80069144, 0x8006917C, 0x80069394
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -552,9 +557,58 @@ public sealed class FieldContent
     /// </summary>
     /// <remarks>Its period (the rule's halfword at 6) is how many seconds poison and regeneration take a turn in, as an
     /// enemy reckons them ahead (0x800de228).</remarks>
-    public (int Weight, uint Clears, uint BlockedBy, int Period) Status(int bit) =>
+    /// <remarks>Its own mask (the rule's word at 0) is what the target's immunities (its data's +0x944) are tested
+    /// against (0x8007f4b0), and its duration (the halfword at 4) is how many status ticks its group's timer is loaded
+    /// with (0x80086fa8).</remarks>
+    public (int Weight, uint Clears, uint BlockedBy, int Period, uint Own, int Duration) Status(int bit) =>
         ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12),
-            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6));
+            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6), BitConverter.ToUInt32(_executable, StatusRules + bit * 16),
+            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 4));
+
+    /// <summary>
+    /// A gear-change notice's sprites on the HUD page (BATTLE.PRG 0x8009695c, 8 bytes each: u, v, width and height):
+    /// the piece (<paramref name="value"/> false; 0 weapon, 1 shield, 2 right arm, 3 left arm, 4 head, 5 body, 6 legs,
+    /// the table at 0x80069144) or the class or affinity (classes 0 to 5, then affinities 6 to 12; 0x8006917C).
+    /// </summary>
+    public (int U, int V, int Width, int Height) NoticeSprite(bool value, int index)
+    {
+        int at = (value ? NoticeValues : NoticePieces) + Math.Clamp(index, 0, value ? 12 : 6) * 8;
+        return (_battle[at], _battle[at + 2], BitConverter.ToInt16(_battle, at + 4), BitConverter.ToInt16(_battle, at + 6));
+    }
+
+    /// <summary>A gear-change notice's colour (BATTLE.PRG 0x80069394: red, green and blue for a fall, then for a rise; 128 leaves a texel as it is).</summary>
+    public (int Red, int Green, int Blue) NoticeColour(bool raised)
+    {
+        int at = NoticeColours + (raised ? 4 : 0);
+        return (_battle[at], _battle[at + 1], _battle[at + 2]);
+    }
+
+    /// <summary>
+    /// The statuses that share one of a fighter's five status timers (BATTLE.PRG 0x80069BBC, a word a timer; its data's
+    /// +0x94c to +0x950): set by 0x80086fa8, counted down by the status tick 0x80087ef4 and read ahead by 0x800de030.
+    /// </summary>
+    public uint StatusGroup(int timer) => BitConverter.ToUInt32(_battle, StatusGroups + timer * 4);
+
+    /// <summary>
+    /// How much of a weapon's phantom points count in its blow, by its category (BATTLE.PRG 0x800E82F4, a halfword a
+    /// category, read by the physical damage 0x80081148): its PP times this over its most.
+    /// </summary>
+    public int PhantomShare(int category) => category is >= 0 and < 12 ? BitConverter.ToInt16(_battle, PhantomShares + category * 2) : 0;
+
+    /// <summary>
+    /// The status bit that marks one of Ashley's first four limbs crippled (BATTLE.PRG 0x800E8200, a byte a limb; set and
+    /// cleared by 0x80085008 and the status tick 0x80088244).
+    /// </summary>
+    public int CrippledBit(int limb) => limb is >= 0 and < 4 ? _battle[CrippledBits + limb] : -1;
+
+    /// <summary>
+    /// How an action's target kind (its record's byte 2, high four bits) takes its targets (BATTLE.PRG's four 16-byte
+    /// tables): whether it strikes an area round a point (0x800E8194), may be used on its user (0x800E81B4), takes each
+    /// limb inside its shape rather than the fighter (0x800E81C4), and the side bits a fighter must have to be taken
+    /// (0x800E81D4: 7 for fighters, 0x20 traps, 0x80 map objects).
+    /// </summary>
+    public (bool Area, bool Self, bool Limbs, int Sides) TargetKind(int kind) =>
+        (_battle[TargetKinds + kind] != 0, _battle[TargetKinds + 0x20 + kind] != 0, _battle[TargetKinds + 0x30 + kind] != 0, _battle[TargetKinds + 0x40 + kind]);
 
     /// <summary>
     /// The executable's sine and cosine table (SLUS_010.40 0x80040210, read by its sine 0x80040f28): for each angle
@@ -646,14 +700,19 @@ public sealed class FieldContent
     /// <item>its planning flags (the halfword at 14: 0x10 weighed without reckoning by some, 0x20 passed over nine times
     /// in ten, 0x40 a last resort, 0x4000 help, 0x8000 harm, bits 9 to 11 the troubles a help is for, 0x100 any;
     /// 0x800dcc94, 0x800e4cf4).</item>
+    /// <item>its area (bytes 8 to 11, the same four for the shape round the chosen point; 0x80072734);</item>
+    /// <item>whether it flies to its target (byte 13 bit 6, the word at 12's 0x4000; 0x80085f44);</item>
+    /// <item>its two effects (the words at 0x14 and 0x18, <see cref="ActionEffect"/>).</item>
     /// </list>
     /// </summary>
     public ActionRecord Action(int id)
     {
         int record = InventoryConversion.Actions + id * 52;
-        return new ActionRecord(_executable[record + 2] >> 4, _executable[record + 2] >> 1 & 7, _executable[record + 3],
+        return new ActionRecord(id, _executable[record + 2] >> 4, _executable[record + 2] >> 1 & 7, _executable[record + 3],
             new[] { (int)_executable[record + 4], _executable[record + 5], _executable[record + 6], _executable[record + 7] },
-            _executable[record + 12], BitConverter.ToUInt16(_executable, record + 14));
+            new[] { (int)_executable[record + 8], _executable[record + 9], _executable[record + 10], _executable[record + 11] },
+            _executable[record + 12], BitConverter.ToUInt16(_executable, record + 14), (_executable[record + 13] & 0x40) != 0,
+            new[] { new ActionEffect(BitConverter.ToUInt32(_executable, record + 0x14)), new ActionEffect(BitConverter.ToUInt32(_executable, record + 0x18)) });
     }
 
     /// <summary>
@@ -918,4 +977,4 @@ public sealed class FieldContent
 }
 
 /// <summary>An action's record as an enemy plans with it: see <see cref="FieldContent.Action"/>.</summary>
-public readonly record struct ActionRecord(int TargetKind, int CostKind, int Cost, int[] Range, int Recovery, int Flags);
+public readonly record struct ActionRecord(int Id, int TargetKind, int CostKind, int Cost, int[] Range, int[] Area, int Recovery, int Flags, bool Projectile, ActionEffect[] Effects);

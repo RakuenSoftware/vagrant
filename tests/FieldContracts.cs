@@ -436,9 +436,9 @@ public partial class FieldContracts : Node
             GD.Print($"FIELD: the HUD shows during the event: {_view.HudShown}");
         }
         if (_watchEvery > 0 && _frame % _watchEvery == 0 && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture($"watch_{_frame:d5}");
-        if (_status >= 0 && _view.Controlled && _view.Battle?.Ashley is { } afflicted && !afflicted.Statuses.ContainsKey(_status))
+        if (_status >= 0 && _view.Controlled && _view.Battle?.Ashley is { } afflicted && !afflicted.Has(_status))
         {
-            afflicted.Statuses[_status] = FieldBattle.Duration(_status);
+            afflicted.SetStatus(FieldBattle.StatusBit(_status), _view.Content.Field);
             GD.Print($"FIELD: Ashley takes status {_status}");
         }
         if (_shortcuts && (_view.Controlled || _shortcutStep > 0) && _view.Battle is { } shortcutBattle)
@@ -1347,31 +1347,32 @@ public partial class FieldContracts : Node
         {
             var trap = value.AsGodotDictionary();
             if (actions.GetValueOrDefault(trap["type"].AsInt32().ToString(), new Godot.Collections.Dictionary()).AsGodotDictionary() is not { Count: > 0 } action) continue;
-            Godot.Collections.Dictionary? blow = null;
-            foreach (var effect in action["effects"].AsGodotArray())
-                if (effect.AsGodotDictionary() is var e && e["effect"].AsInt32() == 58) blow = e;
-            if (blow == null) continue;
+            Wol.Games.Vagrant.Installation.ActionEffect? blow = null;
+            foreach (var effect in _view.Content.Field.Action(trap["type"].AsInt32() + 6).Effects)
+                if (effect.Effect == 58) blow = effect;
+            if (blow is not { } struck) continue;
             int hp = fighter.Hp;
-            var statuses = new Dictionary<int, int>(fighter.Statuses);
+            uint statuses = fighter.Status;
+            var limbs = fighter.Limbs.ConvertAll(l => l.Hp);
             fighter.Hp = fighter.MaxHp;
             // The blow lands on one limb at random and varies by 5 either way: it must fall within the limbs' range.
             int least = int.MaxValue, most = 0;
             for (int limb = 0; limb < fighter.Limbs.Count; limb++)
             {
                 if (fighter.Limbs[limb].MaxHp <= 0) continue;
-                int damage = _view.Battle!.TrapDamage(fighter, blow, level, limb, false);
+                int damage = _view.Battle!.TrapDamage(fighter, struck, level, limb, false);
                 least = Math.Min(least, damage);
                 most = Math.Max(most, damage);
             }
-            if (least == int.MaxValue) least = most = _view.Battle!.TrapDamage(fighter, blow, level, -1, false);
+            if (least == int.MaxValue) least = most = _view.Battle!.TrapDamage(fighter, struck, level, -1, false);
             var tile = trap["tile"].AsGodotArray();
             _view.StepOnTrap((tile[0].AsInt32(), tile[1].AsInt32()));
             int lost = fighter.MaxHp - fighter.Hp;
             string text = _view.SystemBox.Text, name = action["name"].AsString();
             GD.Print($"FIELD: the trap {name} (type {trap["type"]}, level {level}) cost {lost} of {fighter.MaxHp}: \"{text}\"");
             fighter.Hp = hp;
-            fighter.Statuses.Clear();
-            foreach (var (status, frames) in statuses) fighter.Statuses[status] = frames;
+            fighter.Status = statuses;
+            for (int i = 0; i < limbs.Count; i++) fighter.Limbs[i].Hp = limbs[i];
             fighter.Dead = false;
             GD.Print($"FIELD: the trap's blow ranges {least} to {most} before its variation");
             if (lost < Math.Max(0, least - 5) || lost > Math.Min(fighter.MaxHp - 1, most + 5)) return $"the trap {name} cost {lost}, outside {least} to {most} (and 5 either way)";

@@ -1048,7 +1048,7 @@ public sealed class MapConversion
     /// <item>two movement profiles, each flags and a speed (0x24 and 0x25, 0x26 and 0x27): flags 0x42 let it walk and
     /// 0x84 run at the profile's speed (BATTLE.PRG 0x800def8c), 0x08 hop up to 128 units a point of speed, 0x10 and
     /// 0x20 fly at it (0x800e6828);</item>
-    /// <item>the AI parameter word (0x2C) and the limb a whole-body hit lands on (0x32);</item>
+    /// <item>the status immunities (the word at 0x28), the AI parameter word (0x2C) and the limb a whole-body hit lands on (0x32);</item>
     /// <item>the weapon: the blade's equipment record at 0x34 and the grip's at 0x64, each 0x30 bytes. An
     /// equipment record holds its weapon model (byte 3), category (4), signed strength, intelligence and agility
     /// (5 to 7), material (0x13) and range (x, y, z, angle at 0x18).</item>
@@ -1070,6 +1070,9 @@ public sealed class MapConversion
             ["agility"] = (int)data[at + 0x22],
             ["moves"] = new JsonArray { new JsonArray { (int)data[at + 0x24], (int)data[at + 0x25] }, new JsonArray { (int)data[at + 0x26], (int)data[at + 0x27] } },
             ["ai"] = (long)BitConverter.ToUInt32(data, at + 0x2C),
+            // The statuses it cannot take (its data's +0x944; a negative word also makes it immune to magic, status bit
+            // 31, BATTLE.PRG 0x80076cec).
+            ["immunity"] = (long)BitConverter.ToUInt32(data, at + 0x28),
             // The limb a blow or spell on the whole character lands on (BATTLE.PRG copies it to the actor's +0x36).
             ["default_limb"] = (int)data[at + 0x32],
             // The two limbs whose loss keeps it slowed as an enemy reckons ahead (copied to its data's +0x34 and +0x35,
@@ -1081,6 +1084,7 @@ public sealed class MapConversion
             ["name"] = DialogueConversion.Decode(data, at + 4).Text,
             ["weapon"] = new JsonObject
             {
+                ["id"] = (int)BitConverter.ToUInt16(data, blade),
                 ["model"] = (int)data[blade + 3],
                 ["category"] = (int)data[blade + 4],
                 ["strength"] = (sbyte)data[blade + 5] + (sbyte)data[grip + 5],
@@ -1088,7 +1092,7 @@ public sealed class MapConversion
                 ["intelligence"] = (sbyte)data[blade + 6] + (sbyte)data[grip + 6],
                 ["material"] = (int)data[at + 0x34 + 0xF0],
                 ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], (int)data[blade + 0x1B] },
-                ["damage_type"] = (int)data[blade + 0x10], ["cost"] = (int)data[blade + 0x12],
+                ["damage_type"] = (int)data[blade + 0x10], ["cost_kind"] = (int)data[blade + 0x11], ["cost"] = (int)data[blade + 0x12],
                 ["dp"] = (int)BitConverter.ToUInt16(data, blade + 8), ["max_dp"] = (int)BitConverter.ToUInt16(data, blade + 0xA),
                 ["pp"] = (int)BitConverter.ToUInt16(data, blade + 0xC), ["max_pp"] = (int)BitConverter.ToUInt16(data, blade + 0xE),
                 ["types"] = Bytes(data, grip + 0x1C, 4), ["classes"] = Bytes(data, blade + 0x20, 8), ["affinities"] = Bytes(data, blade + 0x28, 8),
@@ -1128,7 +1132,7 @@ public sealed class MapConversion
         }
         int blade = at + 0x34, grip = at + 0x64;
         var weapon = Common(blade);
-        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost"] = (int)data[blade + 0x12];
+        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost_kind"] = (int)data[blade + 0x11]; weapon["cost"] = (int)data[blade + 0x12];
         weapon["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], data[blade + 0x1B] & 7 };
         weapon["classes"] = Bytes(data, blade + 0x20, 8); weapon["affinities"] = Bytes(data, blade + 0x28, 8);
         weapon["material"] = (int)data[at + 0x34 + 0xF0];
