@@ -102,6 +102,33 @@ public sealed class FieldBattle
 
         /// <summary>Worn-down DP as a percentage of the most.</summary>
         public int Worn => MaxDp > 0 ? (MaxDp - Dp) * 100 / MaxDp : 0;
+
+        /// <summary>
+        /// A class or affinity value learnt with use (BATTLE.PRG 0x80080a9c for classes, 0x80080534 and 0x800807e8 for
+        /// affinities), on the piece's own record (its bytes at 0x20 and 0x28): one below 100 rises by 1 when a roll
+        /// of 0 to 255 is no more than 70 less a quarter of it and 100; only then each of <paramref name="lowered"/>
+        /// above -100 falls by 1 when a roll is no more than a quarter of it and 100, and 20.
+        /// </summary>
+        /// <remarks>Retail tells Ashley of each change (0x80096768); those messages are not shown here.</remarks>
+        public void Drift(bool affinity, int raised, int[] lowered, Func<int, int> random)
+        {
+            var values = affinity ? Affinities : Classes;
+            var own = Record?.GetValueOrDefault(affinity ? "affinities" : "classes", new Godot.Collections.Array()).AsGodotArray();
+            int Base(int i) => own != null && i < own.Count ? own[i].AsInt32() : values[i];
+            void Move(int i, int by)
+            {
+                if (own != null && i < own.Count) own[i] = Base(i) + by;
+                values[i] += by;
+            }
+            int value = Base(raised);
+            if (value >= 100 || random(256) > 70 - (value + 100) / 4) return;
+            Move(raised, 1);
+            foreach (int other in lowered)
+            {
+                int was = Base(other);
+                if (was >= -99 && random(256) <= (was + 100) / 4 + 20) Move(other, -1);
+            }
+        }
     }
 
     /// <summary>A limb: its hit points, agility bonus, type and affinity defences, armour, damage split and bone.</summary>
@@ -152,6 +179,18 @@ public sealed class FieldBattle
         public FieldPlayer? Mover;
         public string Name = "";
         public int Category, Hp, MaxHp, Mp, MaxMp, Strength, Intelligence, Agility, WeaponStrength, WeaponAgility, Class, Risk, DamageType = 1, Cost;
+        /// <summary>The kind of its weapon's cost (its data's +0x14b, the blade record's byte 0x11; 2 is RISK), which its attack pays (0x8008574c).</summary>
+        public int CostKind;
+        /// <summary>
+        /// Its side bits (its actor's +0x1c, set by BATTLE.PRG 0x80076d50): 1 Ashley, 2 the second actor and characters of
+        /// stance 0, 4 one of stance 2 or drawn, 8 one of stance 3 or sheathed (0x8007c0ac); 0x8000 once it is out of the
+        /// battle (0x8007d08c). Actions take those of the sides their target kind names (0x800E81D4).
+        /// </summary>
+        public int Side;
+        /// <summary>Whether Ashley's kill tally has counted it (its actor's +0x29, 0x8008554c).</summary>
+        public bool Tallied;
+        /// <summary>Whether Analyze has been cast on it (its data's +0x954 bit 17, 0x80083d7c).</summary>
+        public bool Analyzed;
         public Gear Blade = new(), Shield = new(), Accessory = new();
 
         /// <summary>
@@ -454,7 +493,7 @@ public sealed class FieldBattle
     /// Takes a character into battle with its record's statistics: its weapon, shield and accessory, and its limbs,
     /// each aimed at through the rig bone in <paramref name="limbBones"/>.
     /// </summary>
-    public Combatant Enlist(EventActor actor, GDictionary stats, bool hostile, bool marked, bool drawn, Godot.Collections.Array? limbBones = null, Godot.Collections.Array? limbParts = null)
+    public Combatant Enlist(EventActor actor, GDictionary stats, bool hostile, bool marked, bool drawn, Godot.Collections.Array? limbBones = null, Godot.Collections.Array? limbParts = null, int stance = 2)
     {
         var weapon = stats["weapon"].AsGodotDictionary();
         var range = weapon["range"].AsGodotArray();
@@ -465,6 +504,7 @@ public sealed class FieldBattle
             Strength = stats["strength"].AsInt32(), Intelligence = stats.GetValueOrDefault("intelligence", 0).AsInt32(), Agility = stats["agility"].AsInt32(), Class = stats.GetValueOrDefault("class", 0).AsInt32(),
             WeaponStrength = weapon["strength"].AsInt32(), WeaponAgility = weapon["agility"].AsInt32(),
             DamageType = Math.Clamp(weapon.GetValueOrDefault("damage_type", 1).AsInt32(), 1, 3), Cost = weapon.GetValueOrDefault("cost", 0).AsInt32(),
+            CostKind = weapon.GetValueOrDefault("cost_kind", 0).AsInt32(),
             Blade = Gear.From(weapon), Shield = Gear.From(stats.GetValueOrDefault("shield", new GDictionary()).AsGodotDictionary()),
             Accessory = Gear.From(stats.GetValueOrDefault("accessory", new GDictionary()).AsGodotDictionary()),
             Reach = reach,
@@ -537,6 +577,9 @@ public sealed class FieldBattle
             combatant.Limbs.Add(limb);
             for (int k = 0; k < 4; k++) limb.Actions[k] = record["actions"].AsGodotArray()[k].AsInt32();
         }
+        // Its side (0x80076d50): Ashley 1, the second actor 2, else by its room record's stance (0 2, 2 4 and drawn,
+        // 3 8, 1 none).
+        combatant.Side = actor.Id == "slot:0" ? 1 : actor.Id == "slot:1" ? 2 : stance switch { 0 => 2, 2 => 4, 3 => 8, _ => 0 };
         Combatants[actor.Id] = combatant;
         if (actor.Id == "slot:0") Ashley = combatant;
         return combatant;
@@ -555,6 +598,8 @@ public sealed class FieldBattle
         c.Set = drawn ? c.BattleSet : "base";
         if (c == Ashley) Drawn = drawn;
         else if (!c.Dead) c.Hostile = drawn;
+        // One on side 4 or 8 goes to 4 drawn and 8 sheathed (0x8007c124).
+        if (c != Ashley && c.Side is 4 or 8) c.Side = drawn ? 4 : 8;
     }
 
     /// <summary>
@@ -572,6 +617,7 @@ public sealed class FieldBattle
         int intelligence = Int(blade, "intelligence") + Int(grip, "intelligence");
         c.DamageType = Math.Clamp(Int(blade, "damage_type"), 1, 3);
         c.Cost = Int(blade, "cost");
+        c.CostKind = Int(blade, "cost_kind");
         c.Reaching(blade.GetValueOrDefault("range", new Godot.Collections.Array { 3, 2, 3 }).AsGodotArray());
         var gear = Gear.From(blade);
         gear.Types = Gear.From(grip).Types;
@@ -792,11 +838,16 @@ public sealed class FieldBattle
         public int HpMode, MpMode, RiskMode, StrengthMode, IntelligenceMode, AgilityMode, MaxHpMode, MaxMpMode, BladeDpMode, BladePpMode, WearMode, ShieldPpMode;
         /// <summary>The status bits it sets (+0x14) and clears (+0x18).</summary>
         public uint Set, Clear;
+        /// <summary>
+        /// The user's entry marked by Eureka, Fixate or Unlock (mode bits 26 and 27 = 2): nothing reads it but the
+        /// showing (0x80085a34), which it keeps from being a miss; the effect's own script does the work.
+        /// </summary>
+        public bool Marked;
         /// <summary>Each limb's share of the hit points (+0x20 + 4i), and the DP its armour loses with them (+0x22 + 4i).</summary>
         public readonly int[] LimbHp = new int[6], LimbWear = new int[6];
 
         public bool Nothing => HpMode == 0 && MpMode == 0 && RiskMode == 0 && StrengthMode == 0 && IntelligenceMode == 0 && AgilityMode == 0 && MaxHpMode == 0
-            && MaxMpMode == 0 && BladeDpMode == 0 && BladePpMode == 0 && WearMode == 0 && ShieldPpMode == 0 && Set == 0 && Clear == 0;
+            && MaxMpMode == 0 && BladeDpMode == 0 && BladePpMode == 0 && WearMode == 0 && ShieldPpMode == 0 && !Marked && Set == 0 && Clear == 0;
 
         /// <summary>Clears what it holds but its fighter and limb (0x80085718), as for a crate that takes nothing.</summary>
         public void Reset()
@@ -804,6 +855,7 @@ public sealed class FieldBattle
             Hp = Mp = Risk = Strength = Intelligence = Agility = MaxHp = MaxMp = BladeDp = BladePp = Wear = ShieldPp = 0;
             HpMode = MpMode = RiskMode = StrengthMode = IntelligenceMode = AgilityMode = MaxHpMode = MaxMpMode = BladeDpMode = BladePpMode = WearMode = ShieldPpMode = 0;
             Set = Clear = 0;
+            Marked = false;
             Array.Clear(LimbHp);
             Array.Clear(LimbWear);
             Chance = 0;
@@ -826,6 +878,10 @@ public sealed class FieldBattle
     // last hit roll (0x800F1A04), the last amount (0x800F1A08) and whether the last blow was a critical (0x800F1A0C).
     private bool _prerequisite, _hitRolled, _critical;
     private int _previous;
+    // The exchange's counts ([0x800F19CC]+0 and +4): the chain links made (0 as an action starts, one more as each
+    // link resolves, 0x8006fe3c), whose count less one a chain's amounts add; and the actions in it (1 as it starts,
+    // one more for each link or defense, 0x8006fe38, 0x8006ff28), from 10 of which a chain link costs more.
+    private int _links, _exchanges = 1;
     // The room's trap level, as a trap's reckoning reads it (0x8008e4c4).
     private int _trapLevel;
 
@@ -850,10 +906,7 @@ public sealed class FieldBattle
     /// showing (0x80085a34). A live resolve charges the cost (0x8008574c) at once, whatever lands.
     /// </summary>
     /// <remarks>
-    /// Not done: a missile's line of fire (record word 0x0C bit 0x4000, 0x800e6c34), which retail walks from the user
-    /// to the target in 32 steps and turns onto whatever stands in the way; the equipment's class and affinity drift
-    /// after a real hit (0x80080f78, 0x80080c9c), whose bodies were not read; and the kill tally (0x8008554c), which the
-    /// room counts by <see cref="Felled"/>.
+    /// A missile (record word 0x0C bit 0x4000) is walked to each target first (<see cref="LineOfFire"/>).
     /// </remarks>
     public Resolution Resolve(int action, Combatant? caster, List<(Combatant Who, int Limb)> targets, bool live)
     {
@@ -882,6 +935,7 @@ public sealed class FieldBattle
                 default:
                     foreach (var target in r.Targets)
                     {
+                        if (live && record.Projectile && caster != null && !target.Who.Object) LineOfFire(r, target);
                         if (target.Void) continue;
                         _prerequisite = Prerequisite(effect, index, target);
                         if (!_prerequisite) { if (index == 0) target.Chance = 255; continue; }
@@ -1052,11 +1106,22 @@ public sealed class FieldBattle
     private void Step(Resolution r, ActionEffect effect, int index, Outcome target, bool live)
     {
         var who = target.Who;
-        if (!target.Void && who.Object) { target.HpMode = 1; target.Hp += 999; return; }
-        if (r.Record.CostKind != 1) { Handle(r, effect, index, target, live); return; }
-        if (!target.Void && (who.Status & 0x80040000) != 0) _previous = 0;
-        else Handle(r, effect, index, target, live);
-        if (!target.Void) target.Clear |= who.Status & 0x61000;
+        if (!target.Void && who.Object) { target.HpMode = 1; target.Hp += 999; }
+        else if (r.Record.CostKind != 1) Handle(r, effect, index, target, live);
+        else
+        {
+            if (!target.Void && (who.Status & 0x80040000) != 0) _previous = 0;
+            else Handle(r, effect, index, target, live);
+            if (!target.Void) target.Clear |= who.Status & 0x61000;
+        }
+        // Ashley's kill tally (0x8008554c): her attack, chain ability or art (costs 2, 3 and 6) whose amount reaches a
+        // fighter's hit points counts once for that fighter towards her weapon's arts.
+        if (live && r.Caster == Ashley && r.Self != null && !target.Void && !who.Object && who != Ashley && r.Record.CostKind is 2 or 3 or 6
+            && target.Hp >= who.Hp && !who.Tallied)
+        {
+            who.Tallied = true;
+            _view.CountKill();
+        }
     }
 
     /// <summary>
@@ -1088,9 +1153,10 @@ public sealed class FieldBattle
     /// PP, 62 and 63 restore hit or magic points, 64 and 65 add PP or DP to the weapon, 66 lowers RISK.
     /// </summary>
     /// <remarks>
-    /// Effects 33 (Eureka), 36 (Fixate) and 39 (Unlock) only mark the user's entry (mode bits 26 and 27), whose reader
-    /// was not found; the room does Eureka's and Unlock's work itself. Analyze (14) also sets its target's +0x954 bit 17,
-    /// whose reader was not found either.
+    /// Effects 33 (Eureka), 36 (Fixate) and 39 (Unlock) only mark the user's entry (<see cref="Outcome.Marked"/>); their
+    /// work is done by their effect's script on the place the request names (0x8006cdd8 marks a trap seen, 0x8006ce70
+    /// breaks a seal), here by the room (<see cref="FieldView.Cast"/>). Analyze (14) marks its target analysed (its data's
+    /// +0x954 bit 17); no reader of that bit is in BATTLE.PRG.
     /// </remarks>
     private void Handle(Resolution r, ActionEffect effect, int index, Outcome t, bool live)
     {
@@ -1099,6 +1165,10 @@ public sealed class FieldBattle
         {
             case >= 1 and <= 26:
                 Afflict(t, StatusBits[effect.Effect]);
+                if (effect.Effect == 14 && live) who.Analyzed = true;
+                break;
+            case 33 or 36 or 39:
+                if (r.Self != null) r.Self.Marked = true;
                 break;
             case 27: Cure(t, 13); break;
             case 28: Cure(t, 14); break;
@@ -1285,15 +1355,12 @@ public sealed class FieldBattle
     /// landed (9 and 19 only for a spell, 10 and 20 not); 21 a tenth per factor of the spell's cost; 23 the shield's PP;
     /// 24 a tenth per factor of the last amount.
     /// </summary>
-    /// <remarks>
-    /// The links added are the chain so far; retail adds the exchange's count less one ([0x800F19CC]+0), whose writer was
-    /// not traced.
-    /// </remarks>
+    /// <remarks>The links added are the exchange's count less one ([0x800F19CC]+0): the chain's links before this one, -1 outside a chain.</remarks>
     private int Amount(Resolution r, ActionEffect effect, int index, Outcome t, bool live)
     {
         var c = r.Caster;
         var who = t.Who;
-        int f = effect.Factor, links = _chain;
+        int f = effect.Factor, links = _links - 1;
         var taken = _view.Content.Field.Action(_blowAction);
         int amount = !t.Void && who.Object ? 999 : effect.Reckoning switch
         {
@@ -1351,8 +1418,9 @@ public sealed class FieldBattle
     /// bit 1 (Ashley's crippled right arm) is halved; and a live attack (actions 0 to 5) doubles on a critical, a roll
     /// under a tenth of RISK and 10.
     /// </summary>
-    /// <remarks>The weapon's type value is the grip's for the damage type; retail reads one byte of the weapon at +0x145
-    /// (0x800813c8), whose writer was not traced.</remarks>
+    /// <remarks>The weapon's type value is one byte, its data's +0x145 (read at 0x800813c8): the grip's value for the
+    /// weapon's own damage type (0x8006a334 copies grip byte 0x1c + the blade's type there), whatever type the blow
+    /// strikes with. A live first effect on a fighter then drifts the gear (<see cref="WeaponDrift"/>, <see cref="GuardDrift"/>).</remarks>
     private int Physical(Resolution r, ActionEffect effect, Outcome target, int index, bool live, bool arts)
     {
         var a = r.Caster;
@@ -1366,7 +1434,7 @@ public sealed class FieldBattle
         {
             var blade = a.Blade;
             strength += blade.Strength;
-            term = blade.Types[type] + blade.Affinities[affinity] + blade.Classes[tc] - blade.Worn;
+            term = blade.Types[a.DamageType] + blade.Affinities[affinity] + blade.Classes[tc] - blade.Worn;
             if (blade.MaxPp != 0) term += blade.Pp * _view.Content.Field.PhantomShare(a.Category) / blade.MaxPp;
         }
         term += a.Accessory.Types[type] + a.Accessory.Classes[tc] + a.Accessory.Affinities[affinity];
@@ -1393,7 +1461,81 @@ public sealed class FieldBattle
             damage = (damage & 0xFFFF) * 2;
             _critical = true;
         }
+        if (live && index == 0 && !target.Void)
+        {
+            // The target's strongest defence by affinity at the struck limb (with its drawn shield's), above 0.
+            int strongest = 0, most = 0;
+            for (int i = 0; i < 7; i++)
+            {
+                int guard = limb.Affinities[i] + armour.Affinities[i] + (d.Drawn ? d.Shield.Affinities[i] : 0);
+                if (guard > most) (strongest, most) = (i, guard);
+            }
+            WeaponDrift(r.Record, a, tc + 1, strongest + 1);
+            GuardDrift(r.Record, d, ac + 1, affinity + 1, target.Limb);
+        }
         return (short)damage;
+    }
+
+    /// <summary>
+    /// The user's weapon learns from a real blow (BATTLE.PRG 0x80080f78), unless the action costs magic points or it has
+    /// none: its class value against the target's class (<paramref name="classArg"/> less one; 0 for none) rises,
+    /// the next two classes round falling (0x80080a9c); and its affinity value opposite the target's strongest defence
+    /// (<paramref name="affinityArg"/> less one, or the effect's own affinity) rises, the physical value and the defence's
+    /// falling (0x80080534: air and earth, fire and water, light and dark trade places; physical lowers all six).
+    /// </summary>
+    private void WeaponDrift(ActionRecord record, Combatant c, int classArg, int affinityArg)
+    {
+        if (record.CostKind == 1 || c.Blade.Id == 0) return;
+        if (classArg != 0) ClassDrift(c.Blade, classArg - 1);
+        int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
+        if (affinityArg == 0 || index is < 0 or > 6) return;
+        int raised = new[] { 0, 3, 4, 1, 2, 6, 5 }[index];
+        c.Blade.Drift(true, raised, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, index }, Random);
+    }
+
+    /// <summary>
+    /// The target's guard learns from a real hit (BATTLE.PRG 0x80080c9c): one of the pieces the action's target kind
+    /// reaches, picked at random (the table at 0x80068B28: kinds 1 to 4 its drawn shield and every armoured limb; 5, 7
+    /// and 14 its drawn shield and the struck limb's armour; 6, 8, 11 and 12 the struck limb's armour; others none), has
+    /// its class value against the user's class rise (0x80080a9c; <paramref name="classArg"/> less one, 0 for none) and
+    /// its affinity value for the blow's affinity rise, the physical value and the opposite affinity falling
+    /// (0x800807e8; <paramref name="affinityArg"/> less one, or the effect's own affinity).
+    /// </summary>
+    private void GuardDrift(ActionRecord record, Combatant c, int classArg, int affinityArg, int limb)
+    {
+        var pieces = new List<Gear>();
+        bool shield = c.Drawn && c.Shield.Id != 0;
+        bool Armoured(int l) => l >= 0 && l < c.Limbs.Count && c.Limbs[l].MaxHp != 0 && c.Limbs[l].Armour.Id != 0;
+        switch (record.TargetKind)
+        {
+            case >= 1 and <= 4:
+                if (shield) pieces.Add(c.Shield);
+                for (int l = 0; l < 6; l++) if (Armoured(l)) pieces.Add(c.Limbs[l].Armour);
+                break;
+            case 5 or 7 or 14:
+                if (shield) pieces.Add(c.Shield);
+                if (Armoured(limb)) pieces.Add(c.Limbs[limb].Armour);
+                break;
+            case 6 or 8 or 11 or 12:
+                if (Armoured(limb)) pieces.Add(c.Limbs[limb].Armour);
+                break;
+        }
+        if (pieces.Count == 0) return;
+        var piece = pieces[Random(pieces.Count)];
+        if (classArg != 0) ClassDrift(piece, classArg - 1);
+        int index = record.Effects[0].Affinity != 0 ? record.Effects[0].Affinity - 1 : affinityArg - 1;
+        if (affinityArg == 0 || index is < 0 or > 6) return;
+        piece.Drift(true, index, index == 0 ? new[] { 1, 2, 3, 4, 5, 6 } : new[] { 0, new[] { 0, 3, 4, 1, 2, 6, 5 }[index] }, Random);
+    }
+
+    /// <summary>
+    /// A class value learnt (BATTLE.PRG 0x80080a9c): classes 0 to 5 rise with the next two round them falling; for
+    /// classes 6 and 7 retail's fallers are whatever its registers held, so only the rise is kept.
+    /// </summary>
+    private void ClassDrift(Gear gear, int c)
+    {
+        if (c is < 0 or > 7) return;
+        gear.Drift(false, c, c < 6 ? new[] { (c + 1) % 6, (c + 2) % 6 } : Array.Empty<int>(), Random);
     }
 
     /// <summary>
@@ -1423,6 +1565,7 @@ public sealed class FieldBattle
         int damage = GemScale(r.Record, (short)(attack - MindDefence(d, target.Limb, type, affinity, affinity >= 0)), a, d);
         if (damage < 0) damage = 0;
         if (live) damage += 1 + Random(5);
+        if (live && index == 0 && affinity != 0 && !target.Void) GuardDrift(r.Record, d, 0, affinity + 1, target.Limb);
         return (short)damage;
     }
 
@@ -1431,8 +1574,9 @@ public sealed class FieldBattle
     /// affinity is the effect's alone, its terms counted only when it is not physical; no 1 to 5, but a bunched 5 either
     /// way when live, and at least 0 after.
     /// </summary>
-    /// <remarks>With an affinity of 0 retail reads the weapon's affinity term from an unset stack slot (0x80082ab0);
-    /// no action does so, and it is taken as 0.</remarks>
+    /// <remarks>With a physical affinity (index 0) retail skips the store at 0x80082ac0 and reads the weapon's term
+    /// from a stack slot left by whatever ran before; with none (index 255) it reads past the arrays. No action does
+    /// either (only Heal uses this, with light), and both are taken as 0.</remarks>
     private int Mending(Resolution r, ActionEffect effect, Outcome target, int index, bool live)
     {
         var a = r.Caster;
@@ -1454,6 +1598,7 @@ public sealed class FieldBattle
         int result = GemScale(r.Record, amount - MindDefence(d, target.Limb, type, affinity, affine), a, d);
         if (result < 0) result = 0;
         if (live) result = Math.Max(0, result + Bell(11) - 5);
+        if (live && index == 0 && affine && !target.Void) GuardDrift(r.Record, d, 0, affinity + 1, target.Limb);
         return (short)result;
     }
 
@@ -1547,13 +1692,13 @@ public sealed class FieldBattle
     /// nothing. A chain ability from the tenth link on costs the links squared over 10 more. RISK past 100 is held at 100
     /// and the action goes ahead; any other cost not met fails and takes nothing. <paramref name="apply"/> charges it.
     /// </summary>
-    /// <remarks>Kind 6 takes the weapon's cost kind from its data's +0x14b, whose writer was not traced: it is taken as
-    /// RISK, as every weapon's cost is.</remarks>
+    /// <remarks>Kind 6 takes the weapon's cost kind and amount (its data's +0x14b and +0x146, the blade record's bytes
+    /// 0x11 and 0x12, copied by 0x8006a334). The tenth-link rule counts the exchange's actions (<see cref="_exchanges"/>).</remarks>
     public bool Pay(ActionRecord record, Combatant c, bool apply)
     {
         int kind = record.CostKind, cost = record.Cost;
-        if (kind == 6) (kind, cost) = (2, c.Cost);
-        if (record.Id is >= 22 and <= 39 && kind == 2 && _chain >= 10) cost += _chain * _chain / 10;
+        if (kind == 6) (kind, cost) = (c.CostKind, c.Cost);
+        if (record.Id is >= 22 and <= 39 && kind == 2 && _exchanges >= 10) cost += _exchanges * _exchanges / 10;
         int have;
         switch (kind)
         {
@@ -1692,7 +1837,7 @@ public sealed class FieldBattle
     /// bits, 0x800E81D4: 7 for fighters; the user only when the kind allows, 0x800E81B4), each by its middle, or for a kind
     /// that takes limbs (0x800E81C4) each of their limbs by its point (0x800a1b9c).
     /// </summary>
-    /// <remarks>Fighters are the hostile ones and the user; retail tests each actor's side bits (+0x1c), not kept here.</remarks>
+    /// <remarks>Only fighters are scanned here; traps (0x20) and map objects (0x80) are the room's (<see cref="FieldView.Cast"/>).</remarks>
     private List<(Combatant Who, int Limb)> Scan(ActionRecord record, Combatant caster, Shape shape)
     {
         var kind = _view.Content.Field.TargetKind(record.TargetKind);
@@ -1700,7 +1845,7 @@ public sealed class FieldBattle
         if ((kind.Sides & 7) == 0) return found;
         foreach (var c in Combatants.Values)
         {
-            if (c == caster ? !kind.Self || c.Dead || c.Hp == 0 : !c.Targetable) continue;
+            if (c == caster && !kind.Self || !Takes(c, kind.Sides)) continue;
             if (!kind.Limbs) { if (shape.Holds(Middle(c))) found.Add((c, c.Struck)); continue; }
             for (int limb = 0; limb < c.Limbs.Count; limb++)
                 if (c.Limbs[limb].MaxHp > 0 && shape.Holds(Aim(c, limb))) found.Add((c, limb));
@@ -1735,6 +1880,88 @@ public sealed class FieldBattle
             }
             default:
                 return Request(record, target, limb);
+        }
+    }
+
+    /// <summary>
+    /// Whether a fighter can be taken by an action whose kind names <paramref name="sides"/> (BATTLE.PRG 0x80071f68): one
+    /// of its sides, not out of the battle (0x8000), and present (0x800a0be0's flags 0x3000001 = 1: living, shown).
+    /// </summary>
+    private static bool Takes(Combatant c, int sides) =>
+        (c.Side & sides) != 0 && (c.Side & 0x8000) == 0 && !c.Dead && c.Hp > 0 && !c.Suspended && !c.Cube && c.Actor.Visible;
+
+    /// <summary>
+    /// What an action launched at <paramref name="target"/> takes (BATTLE.PRG 0x80072ec4 then 0x80070f28, the same for
+    /// Ashley and the enemies): for an area kind, those its range shape holds round its user (turned with it) and then
+    /// its area (<see cref="Area"/>); else the target alone.
+    /// </summary>
+    private List<(Combatant Who, int Limb)> Targets(ActionRecord record, Combatant caster, Combatant target, int limb)
+    {
+        if (record.TargetKind is not (2 or 4 or 6 or 8 or 11 or 12)) return Request(record, target, limb);
+        var range = Shape.Of(record.Range[0] == 255 ? caster.WeaponRange : record.Range, caster.Actor.Facing, Middle(caster));
+        return Area(record, caster, target, limb, Scan(record, caster, range));
+    }
+
+    /// <summary>
+    /// What the planner reckons an area action on one target with (BATTLE.PRG 0x800863a4): the shape round the target (the
+    /// record's area, kinds 2, 4, 6 and 8) or aimed at it from the user (its range, 11 and 12); then kinds 1 to 4 take
+    /// the target whole, 5 and 7 its given limb, and 6, 8, 11 and 12 each of the target's limbs inside the shape, and no
+    /// other fighter.
+    /// </summary>
+    private List<(Combatant Who, int Limb)> Reckoned(ActionRecord record, Combatant caster, Combatant target, int limb)
+    {
+        var point = Middle(target);
+        Shape shape;
+        if (record.TargetKind is 11 or 12)
+        {
+            var from = Middle(caster);
+            var to = point - from;
+            int pitch = (int)(Mathf.Atan2(to.Y, new Vector2(to.X, to.Z).Length()) * 4096 / Mathf.Tau / 16) + 64;
+            shape = new Shape(record.Range[3] & 7, record.Range[0], record.Range[1], record.Range[2], pitch, caster.Actor.FacingToward(point), from);
+        }
+        else shape = Shape.Of(record.Area, 0, point);
+        var taken = new List<(Combatant, int)>();
+        switch (record.TargetKind)
+        {
+            case <= 4: taken.Add((target, target.Struck)); break;
+            case 5 or 7: taken.Add((target, limb)); break;
+            case 6 or 8 or 11 or 12:
+                for (int l = 0; l < target.Limbs.Count; l++)
+                    if (target.Limbs[l].MaxHp > 0 && shape.Holds(Aim(target, l))) taken.Add((target, l));
+                break;
+        }
+        return taken;
+    }
+
+    /// <summary>
+    /// A missile's line of fire to an entry (BATTLE.PRG 0x800e6c34, from 0x80085f44 on a live resolve): from the user's
+    /// middle to the target's point in 32 steps, each step testing every fighter but the user on sides 1, 4 or 0x10 (a
+    /// box 63 units each way across and 128 high on its feet, ahead of the user) and then the floor. A fighter in the
+    /// way takes the entry, at its own limb, unless it is the target (the result is marked redirected, +0x48); the floor
+    /// makes the entry a place (+0x40), which every effect passes by.
+    /// </summary>
+    /// <remarks>Retail sizes Ashley's box from her record (+0x63c, +0x63e), not kept here, and also stops at room
+    /// objects listed by 0x8008d2c0 (0x800e6ba0), not modelled.</remarks>
+    private void LineOfFire(Resolution r, Outcome entry)
+    {
+        if (entry.Void || r.Caster is not { } caster) return;
+        var from = Middle(caster);
+        var to = entry.Limb >= 0 ? Aim(entry.Who, entry.Limb) : Middle(entry.Who);
+        var step = new Vector3(Mathf.Floor((to.X - from.X) / 32), Mathf.Floor((to.Y - from.Y) / 32), Mathf.Floor((to.Z - from.Z) / 32));
+        var point = from;
+        for (int i = 0; i < 32; i++)
+        {
+            point += step;
+            foreach (var c in Combatants.Values)
+            {
+                if (c == caster || c.Dead || c.Cube || !c.Actor.Visible || (c.Side & 0xFFEA) != 0) continue;
+                var at = c.Actor.Position;
+                if (Math.Abs(at.X - point.X) >= 63 || Math.Abs(at.Y - 64 - point.Y) >= 64 || Math.Abs(at.Z - point.Z) >= 63) continue;
+                if ((at.X - from.X) * step.X + (at.Z - from.Z) * step.Z < 0) continue;
+                if (c != entry.Who) { entry.Who = c; entry.Limb = c.Struck; }
+                return;
+            }
+            if (_view.FloorAt(point) is { } floor && point.Y >= floor) { entry.Void = true; return; }
         }
     }
 
@@ -1804,6 +2031,9 @@ public sealed class FieldBattle
         // Its flash: a resident small effect, on the one struck for a chain, on Ashley for a defense.
         int visual = ability.GetValueOrDefault("visual", 0).AsInt32();
         if (visual > 0) _view.PlayResident(visual, chain ? Ashley.Actor : _lastStruck.Actor, chain ? _lastStruck.Actor : Ashley.Actor);
+        // A chain link counts a link and an action, a defense an action (0x8006fe38, 0x8006ff28), before it is resolved.
+        if (chain) _links++;
+        _exchanges++;
         var result = Resolve(id, Ashley, new List<(Combatant, int)> { (other, chain ? _victimLimb : other.Struck) }, live: true);
         if (result.Self != null) Apply(result.Self);
         foreach (var target in result.Targets)
@@ -1835,6 +2065,8 @@ public sealed class FieldBattle
                 aim = (c, c.Limbs.FindIndex(limb => limb.MaxHp > 0));
         }
         if (aim is not { } target) return _view.RetailMessage(0);
+        _links = 0;
+        _exchanges = 1;
         _resolution = Resolve(id, Ashley, Request(_view.Content.Field.Action(id), target.Who, target.Limb), live: true);
         player.Halt();
         _spell = art;
@@ -1908,6 +2140,8 @@ public sealed class FieldBattle
         if (Ashley == null) return;
         var record = _view.Content.Field.Action(id);
         if (!Pay(record, Ashley, apply: false)) return;
+        _links = 0;
+        _exchanges = 1;
         _resolution = Resolve(id, Ashley, Area(record, Ashley, target, limb, found), live: true);
         _view.Acted(id);
         player.Halt();
@@ -2072,13 +2306,13 @@ public sealed class FieldBattle
     /// it would restore or take (footage: Heal on Ashley at 116 of 250 reads "HP 59", and she is at 175 after it), else
     /// the target's own; and its chance.
     /// </summary>
-    /// <remarks>Damage reads one more than the preview's amount, as it did; which call retail's readout makes, and so
-    /// whether it has the live blow's 1 to 5, was not traced.</remarks>
+    /// <remarks>Retail's readouts (0x800707e4, 0x80071e18, 0x80071ed8, 0x800722d4, 0x8007239c) all preview through
+    /// 0x8008631c, unvaried: no 1 to 5.</remarks>
     private (int Points, int Chance) SpellReadout(int action, Combatant target, int limb)
     {
         var record = _view.Content.Field.Action(action);
         var preview = Resolve(action, Ashley, Request(record, target, limb), live: false).Targets[0];
-        int points = preview.HpMode switch { 2 => preview.Hp, 1 or 3 => preview.Hp + 1, _ => target.Hp };
+        int points = preview.HpMode is 1 or 2 or 3 ? preview.Hp : target.Hp;
         return (points, preview.Chance);
     }
 
@@ -2094,19 +2328,16 @@ public sealed class FieldBattle
 
     /// <summary>
     /// A trap's action on Ashley (a room trap of type n is action n + 6, <see cref="Installation.InventoryConversion.TrapActions"/>),
-    /// resolved with no user at the room's trap level and applied at once, on one of her limbs at random (how retail picks
-    /// the limb was not read): damage (<see cref="Trapped"/>), a heal panel's healing (the same less its defence, with
+    /// resolved with no user at the room's trap level and applied at once, on her own limb (her data's +0x36, as
+    /// BATTLE.PRG 0x80073d30 requests it): damage (<see cref="Trapped"/>), a heal panel's healing (the same less its defence, with
     /// no cap) and its RISK cut, a status, or a cure.
     /// </summary>
     public void Trap(int action, int visual, int level)
     {
         if (Ashley is not { } ashley || ashley.Dead) return;
         _view.PlayEffect(visual, ashley.Actor, ashley.Actor);
-        var limbs = new List<int>();
-        for (int l = 0; l < ashley.Limbs.Count; l++) if (ashley.Limbs[l].MaxHp > 0) limbs.Add(l);
-        int limb = limbs.Count > 0 ? limbs[_random.RandiRange(0, limbs.Count - 1)] : -1;
         _trapLevel = level;
-        Release(Resolve(action, null, new List<(Combatant, int)> { (ashley, limb) }, live: true));
+        Release(Resolve(action, null, new List<(Combatant, int)> { (ashley, ashley.Struck) }, live: true));
         ShowStatus();
     }
 
@@ -2145,6 +2376,7 @@ public sealed class FieldBattle
     private void Die(Combatant c)
     {
         c.Dead = true;
+        c.Side |= 0x8000;
         Play(c, Death, 4, once: true);
         if (c == Ashley) { _phase = Phase.Dying; _frames = 90; return; }
         if (c.FelledBy >= 0) Felled?.Invoke(c, c.FelledBy);
@@ -2339,7 +2571,7 @@ public sealed class FieldBattle
         if (enemy.WeighsLightly && (record.Flags & 0x10) != 0) { bonus = 1; weight = 40; }
         else if (action != 0 && target != null)
         {
-            var result = Resolve(action, enemy, Request(record, target, limb), live: false);
+            var result = Resolve(action, enemy, Targeting(record).Kind == 3 ? Reckoned(record, enemy, target, limb) : Request(record, target, limb), live: false);
             // 0x800dc30c: mode 2 adds, any other takes off, held between 0 and the most.
             static int Moved(int value, int most, int by, int mode) => Math.Clamp(mode == 2 ? value + by : value - by, 0, most);
             var user = standings[enemy];
@@ -2723,11 +2955,6 @@ public sealed class FieldBattle
         }
     }
 
-    /// <summary>Whether a limb is at death's door: 1 hit point or none, with any to lose.</summary>
-    private static bool Crippled(Combatant c, int limb) => limb < c.Limbs.Count && c.Limbs[limb].MaxHp > 0 && c.Limbs[limb].Hp <= 1;
-
-    /// <summary>Ashley's legs are crippled: she moves at half speed.</summary>
-    public bool Lame => Ashley != null && Crippled(Ashley, 4);
 
     /// <summary>A limb's aim point: its bone, or the body's middle without one.</summary>
     private static Vector3 Aim(Combatant c, int limb) =>
@@ -2851,6 +3078,8 @@ public sealed class FieldBattle
             int limb = chosen[_part];
             CloseSphere();
             // The attack is resolved, and its RISK paid, as it starts (BATTLE.PRG 0x80070f28).
+            _links = 0;
+            _exchanges = 1;
             _blow = Resolve(1, Ashley!, Request(_view.Content.Field.Action(1), who, limb), live: true);
             Strike(Ashley!, who, limb);
         }
@@ -3413,7 +3642,10 @@ public sealed class FieldBattle
             enemy.Cooldown = _view.Document.GetValueOrDefault("cooldown", 150).AsInt32();
             if (move.Action is < 22 or > 53) enemy.Recovery += ((record.Recovery == 255 ? 0 : record.Recovery) + enemy.RecoveryBonus) * 256;
             // It is resolved, and its cost paid, as it sets out (BATTLE.PRG 0x80073d30).
-            var blow = Resolve(move.Action, enemy, Request(record, move.Target, move.Limb), live: true);
+            enemy.Actor.Facing = enemy.Actor.FacingToward(move.Target.Actor.Position);
+            _links = 0;
+            _exchanges = 1;
+            var blow = Resolve(move.Action, enemy, Targets(record, enemy, move.Target, move.Limb), live: true);
             if (EnemySpell(enemy, move.Action, move.Target, blow)) return;
             _blow = blow;
             _attacker = enemy;
@@ -3564,9 +3796,8 @@ public sealed class FieldBattle
     private int _clock, _mending;
 
     /// <summary>
-    /// How far the battle clock runs a frame ([0x8005E24C]). Retail writes 1, 2 and 4 to it (0x8006fc90, 0x800742c4,
-    /// 0x800703e4, 0x80074218, 0x8007c384) and which holds in play was not traced; 2 keeps RISK's fall at the 60 frames
-    /// measured from the footage.
+    /// How far the battle clock runs a frame ([0x8005E24C]): the vertical blanks a frame takes, 2 in play (30 frames a
+    /// second; 4 only in room changes and one script operation, at 15).
     /// </summary>
     private const int ClockStep = 2;
 

@@ -743,7 +743,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             Battle.AshleyActed += () => _reclaimCheck = true;
             Battle.Felled += (felled, action) =>
             {
-                CountKill();
                 RecordKill(felled, action);
             };
             if (Player is { } enlisted)
@@ -2592,7 +2591,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // Stance 2 is a hostile character with its weapon drawn; the record's marked byte flags it for the room's
             // conditions.
             bool hostile = entry["stance"].AsInt32() == 2;
-            var combatant = Battle!.Enlist(actor, entry["stats"].AsGodotDictionary(), hostile, entry.GetValueOrDefault("marked", false).AsBool(), hostile, LimbBones(actor.Character), LimbParts(actor.Character));
+            var combatant = Battle!.Enlist(actor, entry["stats"].AsGodotDictionary(), hostile, entry.GetValueOrDefault("marked", false).AsBool(), hostile, LimbBones(actor.Character), LimbParts(actor.Character), entry["stance"].AsInt32());
             combatant.Drops = entry["stats"].AsGodotDictionary().GetValueOrDefault("drops", new GDictionary()).AsGodotDictionary();
             combatant.DropItems = entry.GetValueOrDefault("items", new GArray()).AsGodotArray();
             _roomActorIndex[reference] = index;
@@ -4007,9 +4006,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (Battle is not { Busy: true } && Battle?.GameOver != true)
         {
             var stick = Input.GetVector("ps_left", "ps_right", "ps_up", "ps_down");
-            // Crippled legs and slowing halve her pace, quickening adds a quarter; paralysis holds her.
+            // Paralysis holds her.
             var fighter = Battle?.Ashley;
-            _control.Pace = (Battle?.Lame == true ? 0.5f : 1) * (fighter?.Has(FieldBattle.Slow) == true ? 0.5f : 1) * (fighter?.Has(FieldBattle.Quicken) == true ? 1.25f : 1);
+            // Slow or numbness halve the pace, else Quicken adds a quarter (BATTLE.PRG 0x80086fa8, on any of statuses 0x8810).
+            _control.Pace = fighter == null ? 1 : (fighter.Status & 0x8010) != 0 ? 0.5f : fighter.Has(FieldBattle.Quicken) ? 1.25f : 1;
             if (fighter?.Has(FieldBattle.Paralysis) == true) stick = Vector2.Zero;
             // Carrying a block she walks, and does not jump; the block rides on her head.
             _control.Step(stick.Length() > 0.25f ? Gameplay.Heading(stick) : null, Input.IsActionPressed("ps_r2") || _carried != null, _jumpPressed && _carried == null);
@@ -4251,7 +4251,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var made = (GDictionary)a.Duplicate(true);
         made["id"] = id;
         made["material"] = material;
-        foreach (string key in blades ? new[] { "model", "category", "cost", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
+        foreach (string key in blades ? new[] { "model", "category", "cost", "cost_kind", "damage_type", "range" } : shields ? new[] { "category", "model", "gem_slots" } : new[] { "category" })
             made[key] = kind[key];
         made["strength"] = Int(kind, "strength") + bonus[0].AsInt32();
         made["intelligence"] = Int(kind, "intelligence") + bonus[1].AsInt32();
@@ -4819,7 +4819,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// A kill by Ashley's own hand counts towards the arts of her weapon's category, once the story has reached flag
     /// 0x82 = 10, up to the kills its next art takes (BATTLE.PRG 0x80085500); the art is reclaimed after her action.
     /// </summary>
-    private void CountKill()
+    public void CountKill()
     {
         if (Battle?.Ashley is not { } ashley || FlagValue(0x82) < 10 || ashley.Category <= 0) return;
         int category = ashley.Category, row = category % 10, learned = ArtsLearned(category);
