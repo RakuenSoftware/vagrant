@@ -1021,7 +1021,7 @@ public sealed class MapConversion
                 ["intelligence"] = (sbyte)data[blade + 6] + (sbyte)data[grip + 6],
                 ["material"] = (int)data[at + 0x34 + 0xF0],
                 ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], (int)data[blade + 0x1B] },
-                ["damage_type"] = (int)data[blade + 0x10], ["cost"] = (int)data[blade + 0x12],
+                ["damage_type"] = (int)data[blade + 0x10], ["cost_kind"] = (int)data[blade + 0x11], ["cost"] = (int)data[blade + 0x12],
                 ["dp"] = (int)BitConverter.ToUInt16(data, blade + 8), ["max_dp"] = (int)BitConverter.ToUInt16(data, blade + 0xA),
                 ["pp"] = (int)BitConverter.ToUInt16(data, blade + 0xC), ["max_pp"] = (int)BitConverter.ToUInt16(data, blade + 0xE),
                 ["types"] = Bytes(data, grip + 0x1C, 4), ["classes"] = Bytes(data, blade + 0x20, 8), ["affinities"] = Bytes(data, blade + 0x28, 8),
@@ -1061,7 +1061,7 @@ public sealed class MapConversion
         }
         int blade = at + 0x34, grip = at + 0x64;
         var weapon = Common(blade);
-        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost"] = (int)data[blade + 0x12];
+        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost_kind"] = (int)data[blade + 0x11]; weapon["cost"] = (int)data[blade + 0x12];
         weapon["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], data[blade + 0x1B] & 7 };
         weapon["classes"] = Bytes(data, blade + 0x20, 8); weapon["affinities"] = Bytes(data, blade + 0x28, 8);
         weapon["material"] = (int)data[at + 0x34 + 0xF0];
