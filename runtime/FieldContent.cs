@@ -39,6 +39,7 @@ public sealed class FieldContent
     private const int WanderTimes = 0x143C;      // BATTLE.PRG 0x80069C3C
     private const int PatrolOdds = 0x1408;       // BATTLE.PRG 0x80069C08
     private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
+    private const int SwoopSteps = 0x88FDC;      // BATTLE.PRG 0x800F17DC
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -606,6 +607,21 @@ public sealed class FieldContent
     /// (BATTLE.PRG's bytes at 0x80069C08, by its room record's +0x14 bit 14, 0x800e5dd4; 9 and 7).
     /// </summary>
     public int PatrolTurns(int bit) => _battle[PatrolOdds + (bit & 1)];
+
+    /// <summary>
+    /// Guildenstern's final form's swoop (BATTLE.PRG's s16 pairs at 0x800F17DC, read by 0x800e7698): a step a frame,
+    /// how far along its heading it moves and how far down (y grows downward), to the (0, 0) that ends the path.
+    /// </summary>
+    public (int Ahead, int Down)[] SwoopPath()
+    {
+        var steps = new List<(int, int)>();
+        for (int at = SwoopSteps; ; at += 4)
+        {
+            int ahead = BitConverter.ToInt16(_battle, at), down = BitConverter.ToInt16(_battle, at + 2);
+            if (ahead == 0 && down == 0) return steps.ToArray();
+            steps.Add((ahead, down));
+        }
+    }
 
     /// <summary>
     /// The enemy planner's three passes (BATTLE.PRG 0x80069BF0 and 0x80069BFC, read by 0x800de3e4): how far ahead

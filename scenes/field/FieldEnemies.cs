@@ -30,17 +30,27 @@ public sealed partial class FieldBattle
         public Vector3 Origin => Cube ? Actor.Position + new Vector3(0, 64 - 150, 0) : Actor.Position;
     }
 
-    /// <summary>The behaviour routines of BATTLE.PRG's table at 0x800F1790, by a room actor record's bits 4 to 8.</summary>
-    public enum Behaviour { Fighter, KeepsDistance, FollowsAlly, Escort, PackHunter, Bodyguard, Patroller, ScaredEscort, Berserk, None }
+    /// <summary>
+    /// The behaviour routines of BATTLE.PRG's table at 0x800F1790, by a room actor record's bits 4 to 8; and
+    /// Guildenstern's final form's own (0x800e7f8c), which the setup gives characters 172 and 173 in place of the
+    /// record's (0x800e5e3c).
+    /// </summary>
+    public enum Behaviour { Fighter, KeepsDistance, FollowsAlly, Escort, PackHunter, Bodyguard, Patroller, ScaredEscort, Berserk, None, FinalForm }
 
     /// <summary>
     /// What the AI has an enemy's body do this frame (the actor command it writes, 0x800deefc): stand (0), turn to a
-    /// facing (4), walk for its goal (6, by way of 0x800e50a0), or step along a heading while facing elsewhere (5/7).
+    /// facing (4), walk for its goal (6, by way of 0x800e50a0), step along a heading while facing elsewhere (5/7), or
+    /// fly to a point (8, actor code 19).
     /// </summary>
-    public enum Order { Stand, Turn, Path, Away }
+    public enum Order { Stand, Turn, Path, Away, Fly }
 
-    /// <summary>An action made: who made it, which, and on whom (the action block BATTLE.PRG hands its replan, 0x800dec88).</summary>
-    public sealed record Acted(Combatant Caster, int Action, Combatant Target);
+    /// <summary>An action made: who made it, which, and on whom, with the target's hit points as it began.</summary>
+    /// <remarks>The action block BATTLE.PRG hands its replan (0x800dec88); its results' amounts (+4) are told here by the
+    /// hit points the target has lost since.</remarks>
+    public sealed record Acted(Combatant Caster, int Action, Combatant Target)
+    {
+        public int TargetHp { get; } = Target.Hp;
+    }
 
     /// <summary>
     /// An actor's AI record (BATTLE.PRG, 0x484 bytes): what it perceives of every actor, how it stands to them, its
@@ -128,6 +138,10 @@ public sealed partial class FieldBattle
         public bool Run;
         public float Heading, TurnTo, TurnRate = 128;
         public Order Order;
+        /// <summary>The point it flies to with command 8 (+0x17c, +0x184, +0x180: 20.12 fixed, here whole units).</summary>
+        public (int X, int Y, int Z) FlyTo;
+        /// <summary>It never remembers failing (+0x19, set for Guildenstern's final form; 0x800e4c8c then does nothing).</summary>
+        public bool NeverRemembers;
         /// <summary>The move it set out to make (+0x22c).</summary>
         public PlanEntry? Executing;
         /// <summary>How it stood to Ashley when last in this room (+0x42, 0x800e6694's halfword), -1 none.</summary>
@@ -300,6 +314,14 @@ public sealed partial class FieldBattle
         m.HopReach = (m.FlagsA & 8) != 0 ? m.SpeedA << 7 : (m.FlagsB & 8) != 0 ? m.SpeedB << 7 : 0;
         if ((long)(m.HopReach - 64) * (m.HopReach - 64) > m.SightSquared) m.HopReach = Root(m.SightSquared) - 64;
         c.Mind = m;
+        // Guildenstern's final form (characters 172 and 173, 0x800e5e3c): its own routine, no memory of failing, and the
+        // fight's block for its orbit and swoop (0x800e7660).
+        if (stats.GetValueOrDefault("id", 0).AsInt32() is 172 or 173)
+        {
+            m.Behaviour = Behaviour.FinalForm;
+            m.NeverRemembers = true;
+            _finalForm = new FinalFormBlock { Owner = c, Path = _view.Content.Field.SwoopPath() };
+        }
         Relate(c);
         // Leaders (0x800e5998): one without finds the first actor, Ashley first, whose group is its leader's group.
         foreach (var follower in Fighters())
@@ -965,7 +987,7 @@ public sealed partial class FieldBattle
     private void Remember(Combatant c)
     {
         var m = c.Mind!;
-        if (c.Plans.Count == 0) return;
+        if (c.Plans.Count == 0 || m.NeverRemembers) return;
         m.Memory = m.Tile;
         m.MemoryTarget = c.Plans[0].Target.Index;
         m.MemoryTimer = 900;
@@ -1100,6 +1122,8 @@ public sealed partial class FieldBattle
                 // 0x800dbc0c: won over, it pursues once its telegraph is done, else keeps by Ashley at 256.
                 if (m.Token >= 32 && Pursue(c, fighters)) return true;
                 return Chase(c, Ashley!, 256, false) || HoldRange(c, Ashley!);
+            case Behaviour.FinalForm:
+                return FinalForm(c);
             default:
                 return false;
         }
@@ -1771,6 +1795,8 @@ public sealed partial class FieldBattle
     private bool Unstick(Combatant c)
     {
         var m = c.Mind!;
+        // With Guildenstern's final form's block about, no one steps off (0x800db0bc returns at once).
+        if (_finalForm != null) return false;
         if (m.Memory != m.Tile) { m.Unstick = 0; return false; }
         m.CrossesZones = true;
         if (m.Unstick == 0)
@@ -1850,6 +1876,8 @@ public sealed partial class FieldBattle
         }
         m.Relations[c.Index] = m.Relations[c.Index] & ~(0x1Fu << 15) | 28u << 15;
         if (!Harms(record, acted.Action, s, help: false)) return;
+        // Harm from Ashley that costs hit points spoils Guildenstern's final form's swoop (0x800dd220).
+        if (_finalForm is { } form && c == Ashley && s.Hp < acted.TargetHp) form.Unhurt = false;
         if (c == Ashley && m.Convertible) Calm(s);
         if (m.Retaliates && (!m.Avenges || c == Ashley)) { Antagonise(s, c); return; }
         uint own = m.Relations[c.Index];
@@ -1961,4 +1989,257 @@ public sealed partial class FieldBattle
         if (actor.Position.Y < 3000) _view.PlayActorSound(actor, $"c{actor.Character:X2}_{m.Cue}_p128");
         m.Cue = 0;
     }
+
+    /// <summary>
+    /// Guildenstern's final form's block (BATTLE.PRG's 32 bytes at [0x800f5920], made by 0x800e7660 as the boss joins,
+    /// its swoop cooldown at 900). That it exists at all keeps every actor from stepping off a tile (0x800db0bc), has
+    /// Ashley's harm spoil the swoop (0x800dd220) and hides the boss's plan as the planner ends (0x800dea40). Its +0x18
+    /// and +0x1a (the swoop's starting x and z) are written and never read, and are not kept.
+    /// </summary>
+    private sealed class FinalFormBlock
+    {
+        /// <summary>The boss it serves (the actor whose node's +0x1a is 172 or 173).</summary>
+        public Combatant Owner = null!;
+        /// <summary>The swoop's path (<see cref="Runtime.FieldContent.SwoopPath"/>).</summary>
+        public (int Ahead, int Down)[] Path = System.Array.Empty<(int, int)>();
+        /// <summary>Its angle about the room's centre (+0, a turn 4096) and whether it has taken it up (+0x1c); its radius squared (+4) and whether it has measured it (+3).</summary>
+        public int Angle, RadiusSquared;
+        public bool Orbiting, Measured;
+        /// <summary>Its cruising height (+0x12, y growing downward).</summary>
+        public int Cruise;
+        /// <summary>The swoop: under way (+2), the step it has come to (+0xb), its heading (+0x10), and unhurt by Ashley since it began (+0xa).</summary>
+        public bool Swooping, Unhurt;
+        public int Step, Heading;
+        /// <summary>The frames before it may ask for a swoop again (+0xc), whether it would (+0xe), and the hit-point stages it has asked at (+0x14: 0 none, 1 three quarters, 2 a quarter).</summary>
+        public int Cooldown = 900, Stage;
+        public bool Requested;
+        /// <summary>Its plan, put aside from the swoop's asking to its end (+0x16, and its count at +0x17); null while shown.</summary>
+        public List<PlanEntry>? Hidden;
+        /// <summary>Its body's command is the dive (command 24 on limb slot 4's first action) until it next flies.</summary>
+        public bool Dived;
+    }
+
+    private FinalFormBlock? _finalForm;
+    /// <summary>The final form's orbit: its angular speed (word [0x800f5918], 16.16 angle units a frame) and its height offset (word [0x800f591c], -100 to 500, upward).</summary>
+    private int _orbitSpeed, _altitudeOffset;
+    /// <summary>The scenario variable the final form and its room's scenes hand the swoop over by (byte 0x80061598 + 166: 0 orbit, 1 a swoop asked for, 4 under way, 5 the dive made, 6 broken off hurt).</summary>
+    private const int SwoopVariable = 166;
+    /// <summary>The middle of a 31-tile room, about which the final form circles.</summary>
+    private const int RoomCentre = 1984;
+
+    /// <summary>
+    /// Guildenstern's final form's routine (BATTLE.PRG 0x800e7f8c; it always gives an order, so it never wanders):
+    /// with its first move due it takes a token; its swoop cooldown runs; then by the swoop variable. At 0 it shows its
+    /// plan, is not hurt in a swoop, circles (<see cref="Orbit"/>), and asks for a swoop (1, its plan hidden, the
+    /// cooldown 900 again) when one is wanted, due and its dive limb (slot 4) stands. At 4, set by the room's scene,
+    /// it lets its token go and swoops (<see cref="Swoop"/>); at the path's end, unhurt, it dives on Ashley if the limb
+    /// stands, takes its height as its cruise and shows its plan, while hurt it ends the swoop (6); either way the
+    /// orbit's speed and height offset start again. Other values leave it hovering for the scenes. It gives no order
+    /// while its own move is under way.
+    /// </summary>
+    private bool FinalForm(Combatant c)
+    {
+        var b = _finalForm!;
+        // While its own move is under way it gives no order, as retail's tick skips an actor in an action (0x800d8ef4);
+        // the port's AI otherwise runs on through an enemy's spell.
+        if (_acted?.Caster == c) return true;
+        if (Due(c)) AcquireToken(c);
+        int v = _view.Flags[SwoopVariable];
+        if (b.Cooldown > 0) b.Cooldown--;
+        switch (v)
+        {
+            case 0:
+                Reveal(c);
+                b.Unhurt = false;
+                Orbit(c);
+                if (b.Requested && b.Cooldown == 0 && DiveReady(c))
+                {
+                    b.Cooldown = 900;
+                    b.Requested = false;
+                    b.Hidden = new List<PlanEntry>(c.Plans);
+                    c.Plans.Clear();
+                    v = 1;
+                }
+                break;
+            case 4:
+                b.Orbiting = false;
+                ReleaseToken(c);
+                if (!Swoop(c)) break;
+                if (b.Unhurt)
+                {
+                    if (DiveReady(c)) Dive(c);
+                    b.Cruise = (int)c.Actor.Position.Y;
+                    Reveal(c);
+                }
+                else v = 6;
+                _altitudeOffset = 0;
+                b.Requested = false;
+                _orbitSpeed = 0;
+                break;
+        }
+        _view.Flags[SwoopVariable] = v & 0xFF;
+        return true;
+    }
+
+    /// <summary>Whether its first planned move is due (BATTLE.PRG 0x800e78f4): it has one, it is ready for it, and the planner's clock is past its frame.</summary>
+    private bool Due(Combatant c) => c.Plans.Count != 0 && Ready(c, c.Plans[0]) && c.Plans[0].Horizon < _planClock;
+
+    /// <summary>Whether the final form's dive limb (slot 4, its data's +0x708) has 2 hit points or more.</summary>
+    private static bool DiveReady(Combatant c) => c.Limbs.Count > 4 && c.Limbs[4].Hp >= 2;
+
+    /// <summary>Puts the final form's hidden plan back (its +0x470 from the block's +0x17, the block's +0x16 cleared).</summary>
+    private void Reveal(Combatant c)
+    {
+        var b = _finalForm!;
+        if (b.Hidden == null) return;
+        c.Plans.Clear();
+        c.Plans.AddRange(b.Hidden);
+        b.Hidden = null;
+    }
+
+    /// <summary>
+    /// The final form circles the room (BATTLE.PRG 0x800e7960): from its angle about the centre taken up as it begins
+    /// (with its height as its cruise) and its distance, the radius comes in to 1024 at 32 a frame and the cruise to
+    /// 160 at 12 (at once within 16). With its move due and its telegraph done it makes for Ashley's bearing from the
+    /// centre, else the far side. Its angular speed gains a 16.16 unit a frame toward the way it turns, an eighth of
+    /// itself more past 0x280000 while its mark lies ahead, a quarter while behind, the gain reversed while the mark
+    /// is behind and either it means to strike or the mark is over 222 off; it is kept within 0x820000. Without a
+    /// cooldown it asks for a swoop as its hit points first fall to three quarters and to under a quarter, or, slow,
+    /// striking and low enough, at a roll of 1 in 512. It faces Ashley at its point on the circle, its height
+    /// offset drifting toward -80 striking with its mark ahead, toward 300 heading round, and back toward 10 when
+    /// neither, by the speed over the angle left (more than four times the speed: back to none, or down by that, as
+    /// BATTLE.PRG does), then flies there (command 8), never lower than 255.
+    /// </summary>
+    private void Orbit(Combatant c)
+    {
+        var b = _finalForm!;
+        var m = c.Mind!;
+        int x = (int)c.Actor.Position.X, y = (int)c.Actor.Position.Y, z = (int)c.Actor.Position.Z;
+        if (!b.Orbiting)
+        {
+            b.Angle = (3072 - (Angle(RoomCentre - x, RoomCentre - z) & 0xFFF)) & 0xFFF;
+            b.Orbiting = true;
+            b.Cruise = (short)y;
+        }
+        if (!b.Measured)
+        {
+            b.RadiusSquared = (RoomCentre - x) * (RoomCentre - x) + (RoomCentre - z) * (RoomCentre - z);
+            b.Measured = true;
+        }
+        int radius = Root(b.RadiusSquared);
+        if (radius < 1024) radius += 32;
+        if (radius > 1024) radius -= 32;
+        if (Math.Abs(radius - 1024) < 32) radius = 1024;
+        b.RadiusSquared = radius * radius;
+        b.Cruise = (short)(Math.Abs(b.Cruise - 160) < 16 ? 160 : b.Cruise < 160 ? b.Cruise + 12 : b.Cruise - 12);
+        var player = Ashley!.Actor.Position;
+        int pa = Angle(RoomCentre - (int)player.X, RoomCentre - (int)player.Z), ma = Angle(RoomCentre - x, RoomCentre - z);
+        bool attack = Due(c) && m.Token >= 32;
+        int mark = attack ? pa : pa + 2048;
+        int sign = _orbitSpeed < 0 ? -1 : 1;
+        bool ahead = sign * (Cos(3072 - ma) * Sin(3072 - mark) - Sin(3072 - ma) * Cos(3072 - mark)) >= 0;
+        int gain = ahead ? (Math.Abs(_orbitSpeed) > 0x280000 ? _orbitSpeed / 8 + sign * 0x10000 : sign * 0x10000) : _orbitSpeed / 4 + sign * 0x10000;
+        if (!ahead && (attack || Cos(ma - mark) < Cos(222))) gain = -gain;
+        _orbitSpeed += gain;
+        if (Math.Abs(_orbitSpeed) > 0x820000) _orbitSpeed = Math.Sign(_orbitSpeed) * 0x820000;
+        if (b.Cooldown == 0)
+        {
+            int share = c.MaxHp == 0 ? 0 : (c.Hp << 16) / c.MaxHp;
+            if (b.Stage == 0 && share <= 0xBFFF || b.Stage == 1 && share < 0x4000)
+            {
+                b.Stage++;
+                b.Requested = true;
+            }
+            else if (Math.Abs(_orbitSpeed) <= 0x3FFFF && attack && _altitudeOffset < 30 && (_random.Randi() & 0x1FF) == 0) b.Requested = true;
+        }
+        b.Angle = (b.Angle + (_orbitSpeed >> 16)) & 0xFFFF;
+        m.FaceTarget = 0;
+        int goalX = (RoomCentre << 12) + radius * Cos(b.Angle), goalZ = (RoomCentre << 12) + radius * Sin(b.Angle);
+        int left, toward;
+        if (attack && ahead) (left, toward) = (ma - pa, -80 - _altitudeOffset);
+        else if (attack || ahead) (left, toward) = (pa - (ma - 2048), 300 - _altitudeOffset);
+        else (left, toward) = (Math.Abs(_orbitSpeed) >> 16, 10);
+        left &= 0xFFF;
+        if (left > 2048) left = 4096 - left;
+        if (left == 0) (left, toward) = (1, 0);
+        int speed = Math.Abs(_orbitSpeed);
+        int drift = unchecked((int)((long)speed * toward)) / left;
+        if (Math.Abs(drift) > 4 * speed) drift = drift < 0 ? -4 * speed : 0;
+        _altitudeOffset = Math.Clamp(_altitudeOffset + (drift >> 16), -100, 500);
+        int height = (b.Cruise << 12) - (_altitudeOffset << 12);
+        FlyFor(c, goalX, Math.Min(height, 0xFF000), goalZ);
+    }
+
+    /// <summary>
+    /// The final form's swoop (BATTLE.PRG 0x800e7698), its plan hidden throughout: begun, it is unhurt, heads for the
+    /// room's centre from where it is and starts its path; each frame it flies the path's next step on from where it
+    /// is (<see cref="Runtime.FieldContent.SwoopPath"/>). At the path's end it waits facing while Ashley is off the
+    /// ground (and, in the port, while another move is under way, as it makes one at a time), then takes up its
+    /// angle about the centre again and is done (returns true). Its body's flag 0x10 at +0x5b0 for the first 14 steps
+    /// is not carried.
+    /// </summary>
+    private bool Swoop(Combatant c)
+    {
+        var b = _finalForm!;
+        c.Plans.Clear();
+        int x = (int)c.Actor.Position.X, y = (int)c.Actor.Position.Y, z = (int)c.Actor.Position.Z;
+        if (!b.Swooping)
+        {
+            b.Unhurt = true;
+            b.Heading = (3072 - (Angle(x - RoomCentre, z - RoomCentre) & 0xFFF)) & 0xFFF;
+            b.Step = 0;
+            b.Swooping = true;
+        }
+        else if (b.Step >= b.Path.Length)
+        {
+            if (_player is { Busy: true } || _phase != Phase.Free || _enemyCast != null || _enemyRelease != null) { Face(c); return false; }
+            b.Swooping = false;
+            b.Angle = (3072 - (Angle(RoomCentre - x, RoomCentre - z) & 0xFFF)) & 0xFFF;
+            return true;
+        }
+        var (ahead, down) = b.Path[b.Step];
+        FlyFor(c, (x << 12) + Cos(b.Heading) * ahead, (y + down) << 12, (z << 12) + Sin(b.Heading) * ahead);
+        b.Measured = false;
+        b.Step++;
+        return false;
+    }
+
+    /// <summary>
+    /// The final form's dive at the swoop's end (BATTLE.PRG 0x800e80d0): command 24 on its own, limb slot 4's first
+    /// action at Ashley (retail aims at her middle, her y less half her height). The planner's end marks it made
+    /// (<see cref="Planned"/>).
+    /// </summary>
+    private void Dive(Combatant c)
+    {
+        _finalForm!.Dived = true;
+        int action = c.Limbs[4].Actions[0];
+        if (action != 0) Execute(c, new PlanEntry { Action = action, Slot = 4, Index = 0, Target = Ashley!, Limb = Ashley!.Struck, Weight = 128 });
+    }
+
+    /// <summary>
+    /// Has an enemy fly to a point (command 8, BATTLE.PRG 0x800df574: actor code 19 with the point at +0x17c, +0x180 and
+    /// +0x184 in 20.12 fixed, whole units taken toward 0).
+    /// </summary>
+    private void FlyFor(Combatant c, int x, int y, int z)
+    {
+        var m = c.Mind!;
+        m.Order = Order.Fly;
+        m.FlyTo = (x / 4096, y / 4096, z / 4096);
+        if (_finalForm?.Owner == c) _finalForm.Dived = false;
+    }
+
+    /// <summary>
+    /// The planner's end with the final form's block about (BATTLE.PRG 0x800dea40): with the swoop under way (4) and
+    /// the planned enemy's command the dive, the dive is made (5); and the final form's new plan stays hidden while
+    /// it is set aside.
+    /// </summary>
+    private void Planned(Combatant enemy)
+    {
+        if (_finalForm is not { } b) return;
+        if (_view.Flags[SwoopVariable] == 4 && b.Dived && b.Owner == enemy) _view.Flags[SwoopVariable] = 5;
+        if (b.Hidden == null || b.Owner != enemy) return;
+        b.Hidden = new List<PlanEntry>(enemy.Plans);
+        enemy.Plans.Clear();
+    }
+
 }

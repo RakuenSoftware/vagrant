@@ -1040,6 +1040,8 @@ public sealed class MapConversion
     /// <summary>
     /// Reads a character record:
     /// <list type="bullet">
+    /// <item>its character id (the u16 at 0; BATTLE.PRG copies it to the actor's +0x1a, 0x80076f24, where the AI
+    /// tells Guildenstern's final form, 173, by it);</item>
     /// <item>the model (low byte of the u16 at 2) and reach (low five bits of byte 3);</item>
     /// <item>hit and magic points (s16 at 0x1C and 0x1E);</item>
     /// <item>strength, intelligence and agility (bytes 0x20 to 0x22);</item>
@@ -1058,6 +1060,7 @@ public sealed class MapConversion
         int blade = at + 0x34, grip = at + 0x64;
         return new JsonObject
         {
+            ["id"] = (int)BitConverter.ToUInt16(data, at),
             ["model"] = (int)data[at + 2],
             ["reach"] = data[at + 3] & 31,
             ["hp"] = (int)BitConverter.ToInt16(data, at + 0x1C),

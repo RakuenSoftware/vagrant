@@ -1345,6 +1345,11 @@ public sealed partial class FieldBattle
                 m.Command = Body.Stand;
                 Move(enemy, 1, (int)m.Heading);
                 break;
+            case Order.Fly:
+                // Guildenstern's final form's command 8: the point it flies to, the whole way in the frame.
+                m.Course = new Vector3(m.FlyTo.X, m.FlyTo.Y, m.FlyTo.Z);
+                m.Command = Body.Glide;
+                break;
         }
         Perform(enemy);
     }
@@ -1381,8 +1386,15 @@ public sealed partial class FieldBattle
                 Fly(enemy);
                 break;
             case Body.Glide:
+            {
+                // Actor code 19 (0x800b6530 with 0x800a291c): there in the frame, with no change of animation, turning a
+                // twelfth of the way a frame toward whom it faces, else along its flight.
+                float? want = At(m.FaceTarget) is { } faced ? actor.FacingToward(faced.Actor.Position)
+                    : ((m.Course - actor.Position) with { Y = 0 }).LengthSquared() > 0 ? actor.FacingToward(m.Course) : null;
                 actor.Position = m.Course;
+                if (want is { } turn) actor.Facing = Mathf.PosMod(actor.Facing + Mathf.Wrap(turn - actor.Facing, -2048, 2048) / 12, 4096);
                 break;
+            }
         }
         m.Glance = null;
         if (actor.Head != null) actor.HeldYaw = m.Twist == 0 ? null : m.Twist;
