@@ -6,9 +6,11 @@ Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wo
 
 ## Current state
 
-The title runs as on the retail disc: the publisher and developer logos, the opening movie (its music continues under the title), and the title screen. The menu wheel has the retail New Game, Continue, Vibration (On/Off) and Sound (Stereo/Mono), plus an added Settings item between Sound and New Game. Settings opens the shared engine's display and graphics panel and a master volume slider. Its word is composed from the disc's own menu lettering. The title loops back through the intro after leaving or idling. New Game and Continue go no further yet; they show a notice and return to the title. Menu sound effects are not converted yet.
+The title presents the publisher and developer logos, opening movie, title screen and menu wheel. New Game enters the prologue and then field play; Continue loads a memory-card save. The retail Sound and Vibration options and the added Settings panel control audio, controller vibration, display and graphics settings.
 
-`TitleSequence` owns the title's screens and settings and presents each screen with the retail frame timing. See [docs/TITLE.md](docs/TITLE.md).
+The field runtime decodes the player's disc at runtime: rooms, characters, event scripts, dialogue, music, sound effects, battle effects, menus, results and ending credits. Combat and enemy planning share one action resolver. Enemy movement includes steering, jumping, flight, moving platforms and scripted walks. Installation, title, event, effect and field contracts exercise these paths; visual fidelity still requires comparison with retail footage.
+
+See [docs/TITLE.md](docs/TITLE.md) for the title and [docs/FIELD.md](docs/FIELD.md) for the field runtime.
 
 ## Build
 
@@ -33,11 +35,18 @@ godot-dotnet --headless --path . res://tests/install_contracts.tscn -- --disc=/p
 godot-dotnet --headless --path . res://tests/event_contracts.tscn -- --disc=/path/disc.cue
 # The prologue played through, battle, doors and rooms; --room=ZONE,MAP plays one room's event alone.
 godot-dotnet --headless --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation
+# Movement timing and distance, followed separately by the final boss's swoop and event handoff.
+godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=13,1 --movement
+godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
+# Every visual effect's records, programs, frame tables and vibration envelopes.
+godot-dotnet --headless --path . res://tests/effect_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-effects
 # The title flow, timings, menu wheel and both option pickers, driven with pad input.
 godot-dotnet --headless --fixed-fps 60 --path . res://tests/title_sequence_contracts.tscn -- --install-root=/path/to/installation
 # The same run on an isolated display, saving frames.
 gamescope --backend headless -w 1280 -h 960 -W 1280 -H 960 -- godot-dotnet --fixed-fps 60 --path . res://tests/title_sequence_contracts.tscn -- --install-root=/path/to/installation --capture=/tmp/vs-captures
 ```
+
+Run checks sharing an installation one at a time: each build replaces that installation’s decoded cache. Keep captures and logs outside the repository. Rendering checks require an isolated display.
 
 ## License
 

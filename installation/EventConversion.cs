@@ -1281,10 +1281,21 @@ public sealed class EventConversion
                 // level of detail. The field's mipmapped textures choose their own detail, so nothing changes here.
                 return null;
             case 0xa9:
-                // Shakes the controller: 0xFF stops it, other values pick a pattern (the table at 0x800f4bc0, not
-                // read; here a short shake).
-                Command("pad.vibrate", new JsonObject { ["pattern"] = Byte(pc + 1) == 0xFF ? -1 : Byte(pc + 1) });
+            {
+                // BATTLE.PRG 0x800bab14: bit 3 copies the low-three-bit pattern to a scratch buffer; both paths
+                // play its envelope at record +8 on the first free channel, tagged 2. FF stops only tag 2.
+                int pattern = Byte(pc + 1);
+                var envelope = new JsonArray();
+                if (pattern != 0xFF)
+                {
+                    int table = _script + BitConverter.ToUInt16(_map, _script + 6), slot = (pattern & 8) != 0 ? pattern & 7 : pattern;
+                    int entry = BitConverter.ToUInt16(_map, table + slot * 2);
+                    if (entry != 0)
+                        foreach (byte value in Runtime.VibrationDriver.Decode(_map.AsSpan(table + entry + 8))) envelope.Add((int)value);
+                }
+                Command("pad.vibrate", new JsonObject { ["pattern"] = pattern == 0xFF ? -1 : pattern, ["envelope"] = envelope });
                 return null;
+            }
             case 0x74: case 0x76:
                 // Loads the room's sky image (the variant from room sub-section 15; the disc has one a room) or
                 // releases it: the sky is drawn while loaded.

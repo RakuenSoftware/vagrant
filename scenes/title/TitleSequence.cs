@@ -83,7 +83,7 @@ public partial class TitleSequence : Control
         Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
     };
     public bool MonoSound { get; private set; }
-    public bool Vibration { get; private set; } = true;
+    public bool Vibration { get => VibrationDriver.Enabled; private set => VibrationDriver.Enabled = value; }
     public int SelectedItem { get; private set; }
     public bool SettingsOpen => _settings.Visible;
     public AcceptDialog SettingsDialog => _settings;

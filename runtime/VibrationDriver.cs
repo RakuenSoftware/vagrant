@@ -13,6 +13,24 @@ namespace Wol.Games.Vagrant.Runtime;
 /// </summary>
 public sealed class VibrationDriver
 {
+    /// <summary>The title's vibration setting, reset to On when the game starts (SLUS [0x8006002b]).</summary>
+    public static bool Enabled { get; set; } = true;
+
+    /// <summary>Decodes the two motor tracks' extent, keeping their bytes for the frame interpreter.</summary>
+    public static byte[] Decode(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 2) throw new System.IO.InvalidDataException("The vibration envelope is truncated.");
+        int end = 1;
+        foreach (int start in new[] { 1, (int)data[0] })
+        {
+            int at = start;
+            while (at + 1 < data.Length && data[at] != 0) at += 2;
+            if (at + 1 >= data.Length) throw new System.IO.InvalidDataException("The vibration track is truncated.");
+            end = Math.Max(end, at + 2);
+        }
+        return data[..end].ToArray();
+    }
+
     private sealed class Motor
     {
         public bool On;
@@ -49,10 +67,17 @@ public sealed class VibrationDriver
     }
 
     /// <summary>Stops every channel (0x80043668).</summary>
-    public void Stop()
+    public void Stop(int id = 0)
     {
-        foreach (var channel in _channels) { channel.On = false; channel.Data = null; channel.Motors[0].On = channel.Motors[1].On = false; channel.Motors[0].Level = channel.Motors[1].Level = 0; }
-        Send(0, 0);
+        foreach (var channel in _channels)
+        {
+            if (id != 0 && channel.Id != id) continue;
+            channel.On = false;
+            channel.Data = null;
+            channel.Motors[0].On = channel.Motors[1].On = false;
+            channel.Motors[0].Level = channel.Motors[1].Level = 0;
+        }
+        if (id == 0) Send(0, 0);
     }
 
     /// <summary>One frame (0x800436B4).</summary>
@@ -68,13 +93,13 @@ public sealed class VibrationDriver
                 var motor = channel.Motors[m];
                 if (motor.Left == 0)
                 {
-                    int duration = Byte(data, motor.At), level = Byte(data, motor.At + 1) << 8;
+                    int duration = (motor.At >= 0 && motor.At < data.Length ? data[motor.At] : 0), level = (motor.At + 1 >= 0 && motor.At + 1 < data.Length ? data[motor.At + 1] : 0) << 8;
                     motor.Left = duration;
                     motor.Target = motor.Level = level;
                     if (duration == 0) { motor.Level = 0; motor.On = false; }
                     else
                     {
-                        motor.Target = Byte(data, motor.At + 3) << 8;
+                        motor.Target = (motor.At + 3 >= 0 && motor.At + 3 < data.Length ? data[motor.At + 3] : 0) << 8;
                         // Only the large motor slides between levels.
                         motor.Step = m == 1 ? (motor.Target - motor.Level) / duration : 0;
                         motor.On = true;
@@ -91,13 +116,11 @@ public sealed class VibrationDriver
         Send(small >> 8, large >> 8);
     }
 
-    private static int Byte(byte[] data, int at) => at >= 0 && at < data.Length ? data[at] : 0;
-
     /// <summary>Sets the pad's motors: the small one is on or off, the large one runs at its level.</summary>
     private void Send(int small, int large)
     {
         Levels = (small, large);
-        float weak = small > 0 ? 1 : 0, strong = large / 255f;
+        float weak = Enabled && small > 0 ? 1 : 0, strong = Enabled ? large / 255f : 0;
         if (weak == _small && strong == _large) return;
         (_small, _large) = (weak, strong);
         foreach (int pad in Input.GetConnectedJoypads())

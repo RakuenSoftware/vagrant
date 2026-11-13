@@ -420,11 +420,9 @@ public static class EffectConversion
             int b = rumbleBlock.At, count = S32(b);
             for (int i = 0; i < count; i++)
             {
-                int start = U16(b + 4 + i * 2), end = start + p[b + start];
-                // The large motor's track ends the entry.
-                while (end + 1 < rumbleBlock.Length && p[b + end] != 0) end += 2;
+                int start = U16(b + 4 + i * 2);
                 var bytes = new JsonArray();
-                for (int at = start; at <= Math.Min(end + 1, rumbleBlock.Length - 1); at++) bytes.Add((int)p[b + at]);
+                foreach (byte value in Runtime.VibrationDriver.Decode(p.AsSpan(b + start, rumbleBlock.Length - start))) bytes.Add((int)value);
                 rumbles.Add(bytes);
             }
         }

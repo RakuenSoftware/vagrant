@@ -141,7 +141,6 @@ public sealed partial class BattleHud : RetailScreen
     private (int Grade, int Word, int Age)? _timing;
     private (int Count, int Age)? _chains;
 
-    /// <summary>Shows the red "!" over Ashley's head (a point in the field) for <paramref name="frames"/> frames (BATTLE.PRG 0x80096FF0).</summary>
     /// <summary>Shows the red "!" for some frames at Ashley's head as it is on the screen now: the point is taken once and held (BATTLE.PRG 0x80096ff0).</summary>
     public void Cue(Vector3 head, int frames, Func<Vector3, Vector2?> project)
     {
@@ -263,17 +262,6 @@ public sealed partial class BattleHud : RetailScreen
     private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30), new(160, 17, 20, 13), new(160, 17, 20, 13) };
     private static readonly Vector2[] MarkOffsets = { new(-2, -16), new(-14, -16), new(0, -21), new(-7, -21) };
 
-    /// <summary>
-    /// A sprite's place by its offset from the head's screen point: retail adds them as one 32-bit word each (y in
-    /// the high half), so an x taken back past 0 borrows one from y and leaves it a row lower (0x80095c18).
-    /// </summary>
-    private static Vector2 Packed(Vector2 point, Vector2 offset)
-    {
-        int x = (int)point.X, y = (int)point.Y, dx = (int)offset.X, dy = (int)offset.Y;
-        int word = (y << 16 | x & 0xFFFF) + (dy << 16 | dx & 0xFFFF);
-        return new Vector2((short)word, (short)(word >> 16));
-    }
-
     private void DrawBalloons()
     {
         if (_emotes == null || _project == null || _balloons.Count == 0) return;
@@ -318,11 +306,19 @@ public sealed partial class BattleHud : RetailScreen
             var target = new Rect2(point + corners.Position, corners.Size);
             if (side == 1) target = new Rect2(target.Position + new Vector2(target.Size.X, 0), new Vector2(-target.Size.X, target.Size.Y));
             DrawTextureRectRegion(_emotes, target, texels);
-            if (kind <= 3)
-                for (int k = 0; k < kind; k++) DrawTextureRectRegion(_emotes, new Rect2(Packed(Packed(point, new Vector2(k * 6, 0)), MarkOffsets[side]), new Vector2(5, 5)), new Rect2(90, 18, 5, 5));
-            else if (kind == 4) DrawTextureRectRegion(_emotes, new Rect2(Packed(point, MarkOffsets[shape]), new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
-            // Won over (0x80095ecc): its 16 by 16 mark in the rounded balloon, 2 right and 3 up of the dots' place.
-            else if (kind == 5) DrawTextureRectRegion(_emotes, new Rect2(Packed(Packed(point, MarkOffsets[side]), new Vector2(2, -3)), new Vector2(16, 16)), new Rect2(152, 32, 16, 16));
+            if (kind <= 5)
+            {
+                var mark = MarkOffsets[kind == 4 ? shape : side];
+                var region = kind <= 3 ? new Rect2(90, 18, 5, 5) : kind == 4 ? new Rect2(152, 17, 7, 12) : new Rect2(152, 32, 16, 16);
+                for (int k = 0; k < (kind <= 3 ? kind : 1); k++)
+                {
+                    // 0x80095c18 adds packed screen coordinates: an x offset borrowing past zero also changes y.
+                    int dx = kind <= 3 ? k * 6 : kind == 5 ? 2 : 0, dy = kind == 5 ? -3 : 0;
+                    int word = unchecked(((int)point.Y << 16 | (int)point.X & 0xFFFF)
+                        + ((int)mark.Y << 16 | (int)mark.X & 0xFFFF) + (dy << 16 | dx & 0xFFFF));
+                    DrawTextureRectRegion(_emotes, new Rect2(new Vector2((short)word, (short)(word >> 16)), region.Size), region);
+                }
+            }
         }
         DrawSetTransform(Vector2.Zero);
     }

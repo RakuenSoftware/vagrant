@@ -1408,6 +1408,29 @@ public partial class FieldContracts : Node
     /// </summary>
     private string CheckCombatRules()
     {
+        // Two independent motor tracks and tagged channels (SLUS 0x800433b4, 0x800434a4, 0x800436b4).
+        // The second channel clips their combined level; stopping event tag 2 leaves effect tag 1 running.
+        bool vibrationEnabled = VibrationDriver.Enabled;
+        VibrationDriver.Enabled = false;
+        var vibration = new VibrationDriver();
+        try
+        {
+            byte[] source = { 5, 2, 1, 0, 0, 2, 100, 2, 200, 0, 0, 99 };
+            var envelope = VibrationDriver.Decode(source);
+            if (envelope.Length != 11) return "the vibration decoder did not stop at the two tracks' ends";
+            vibration.Start(envelope, 1);
+            vibration.Start(envelope, 2);
+            vibration.Start(envelope, 3); // Both channels are occupied.
+            vibration.Step();
+            if (vibration.Levels != (2, 255)) return $"the combined motors were {vibration.Levels}, not (2, 255)";
+            vibration.Stop(2);
+            vibration.Step();
+            if (vibration.Levels != (1, 200)) return $"stopping event vibration left {vibration.Levels}, not the effect's (1, 200)";
+            for (int i = 0; i < 3; i++) vibration.Step();
+            if (vibration.Levels != (0, 0)) return $"the vibration envelope ended at {vibration.Levels}";
+            GD.Print("FIELD: vibration tracks interpolate, combine and stop by tag as retail does");
+        }
+        finally { vibration.Stop(); VibrationDriver.Enabled = vibrationEnabled; }
         var content = _view.Content;
         for (int id = 0; id < 256; id++)
             foreach (var effect in content.Field.Action(id).Effects)

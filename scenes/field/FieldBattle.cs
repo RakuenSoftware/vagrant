@@ -3664,35 +3664,26 @@ public sealed partial class FieldBattle
     /// <summary>A map point's place on the window, or null behind the camera.</summary>
     private Vector2? Project(Vector3 point) => _view.Field?.Camera is { } c && c.IsInsideTree() && !c.IsPositionBehind(EventActor.RetailSpace * point) ? c.UnprojectPosition(EventActor.RetailSpace * point) : null;
 
-    private void Number(Combatant target, string text)
+    public void Number(Combatant? target, string text, Vector3? position = null)
     {
         // A number of damage is the HUD's large digits over the target (footage: grey for both sides, each digit
         // dropping into place from the left, held until it goes after about 32 frames).
+        var parent = target?.Actor.Node.GetParent() ?? _view.Field?.Geometry;
+        if (parent == null) return;
+        var at = position ?? target!.Actor.Position + new Vector3(0, -150, 0);
         if (int.TryParse(text, out int value) && value >= 0)
         {
-            _popups.Add((target.Actor.Position + new Vector3(0, -150, 0), value, 0));
+            _popups.Add((at, value, 0));
             return;
         }
-        Popup(target.Actor.Node.GetParent(), target.Actor.Position + new Vector3(0, -150, 0), text, target == Ashley);
-    }
-
-    /// <summary>A popup's text (BATTLE.PRG's popup of kind 3, "Miss") at a point of the room.</summary>
-    private void Popup(Node parent, Vector3 at, string text, bool ashley)
-    {
         var label = new Label3D
         {
             Text = text, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, FontSize = 48, OutlineSize = 12,
-            Modulate = ashley ? new Color(1, 0.5f, 0.5f) : Colors.White,
+            Modulate = target == Ashley ? new Color(1, 0.5f, 0.5f) : Colors.White,
         };
         parent.AddChild(label);
         label.GlobalPosition = EventActor.RetailSpace * at;
         _numbers.Add((label, 40));
-    }
-
-    /// <summary>An action that came to nothing on a place of the room, as Unlock's on a seal it does not break (0x80093b04: popup kind 3 at the place).</summary>
-    public void Missed(Vector3 at)
-    {
-        if (_view.Field?.Geometry is { } room) Popup(room, at, "Miss", false);
     }
 
     /// <summary>Ages the damage numbers by a frame, rising as they go; each lasts 40 frames.</summary>

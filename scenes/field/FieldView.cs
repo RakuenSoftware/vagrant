@@ -351,7 +351,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         foreach (var actor in Actors.Values) CharacterQuality.Apply(actor.Node, _content.Character(actor.Character).GetValueOrDefault("head_bone", -1).AsInt32());
     }
 
-    public override void _ExitTree() => CharacterQuality.Changed -= RedrawCharacters;
+    public override void _ExitTree()
+    {
+        CharacterQuality.Changed -= RedrawCharacters;
+        Vibration.Stop();
+    }
 
     public override void _Ready()
     {
@@ -1626,12 +1630,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 FrameStep = args["blanks"].AsInt32();
                 return Error.Ok;
             case "pad.vibrate":
-                foreach (int pad in Input.GetConnectedJoypads())
+            {
+                if (args["pattern"].AsInt32() < 0) Vibration.Stop(2);
+                else
                 {
-                    if (args["pattern"].AsInt32() < 0) Input.StopJoyVibration(pad);
-                    else Input.StartJoyVibration(pad, 0.4f, 0.6f, 0.4f);
+                    var values = args["envelope"].AsGodotArray();
+                    var envelope = new byte[values.Count];
+                    for (int i = 0; i < envelope.Length; i++) envelope[i] = (byte)values[i].AsInt32();
+                    Vibration.Start(envelope, 2);
                 }
                 return Error.Ok;
+            }
             case "skip.section":
                 _skippable = args["open"].AsBool();
                 if (!_skippable) _skipRequested = false;
@@ -1849,6 +1858,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 ProcessMode = ProcessModeEnum.Disabled;
                 Screen.AddChild(ending);
                 return Error.Ok;
+            }
             case "timer.hold":
                 // Holds the timer where it stands (its mode kept aside) or lets it run on again.
                 if (args["held"].AsBool()) { if (_timer != 0) { _heldTimer = _timer; _timer = 0; } }
@@ -5135,7 +5145,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         {
             var place = new Vector3(x * 128 + 64, 0, z * 128 + 64);
             place.Y = FloorAt(place) ?? 0;
-            Battle.Missed(place);
+            Battle.Number(null, "Miss", place);
             return "";
         }
         seal["lock"] = 0;

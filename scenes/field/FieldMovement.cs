@@ -233,7 +233,7 @@ public sealed partial class FieldBattle
         for (int d = 0; d < 8; d += 2)
         {
             int nx = x + Directions[d].X, nz = z + Directions[d].Z;
-            if ((uint)nx < 32 && (uint)nz < 32 && (_cells[nz * 32 + nx] & 0x20) != 0 && (_floors[nz * 32 + nx] & 0x2000) == 0) Fill(nx, nz, level);
+            if ((uint)nx < 32 && (uint)nz < 32 && (_cells![nz * 32 + nx] & 0x20) != 0 && (_floors[nz * 32 + nx] & 0x2000) == 0) Fill(nx, nz, level);
         }
     }
 
@@ -2365,19 +2365,15 @@ public sealed partial class FieldBattle
                 {
                     own.Script = null;
                     own.Held = false;
-                    CopyBody(walk, own);
+                    (own.Airborne, own.Aground, own.Settling, own.SettleFrames, own.SettleLeft, own.SettleFacing, own.SettleTo, own.Settled) = (walk.Airborne, walk.Aground, walk.Settling, walk.SettleFrames, walk.SettleLeft, walk.SettleFacing, walk.SettleTo, walk.Settled);
+                    (own.Twist, own.Pitch, own.TwistMode, own.PitchTarget, own.TwistTarget, own.TwistRate) = (walk.Twist, walk.Pitch, walk.TwistMode, walk.PitchTarget, walk.TwistTarget, walk.TwistRate);
+                    (own.TurnFrames, own.TurnLeft, own.Code, own.CodeValue, own.Posted, own.Command, own.Direction) = (walk.TurnFrames, walk.TurnLeft, walk.Code, walk.CodeValue, walk.Posted, walk.Command, walk.Direction);
+                    (own.LeapTile, own.Bound, own.Course) = (walk.LeapTile, walk.Bound, walk.Course);
                 }
             }
             finally { c.Mind = own; }
         }
     }
 
-    /// <summary>The body's state the walk record carried while it walked (BATTLE.PRG keeps it on the body), given back to the AI's own record as the walk ends.</summary>
-    private static void CopyBody(Mind from, Mind to)
-    {
-        (to.Airborne, to.Aground, to.Settling, to.SettleFrames, to.SettleLeft, to.SettleFacing, to.SettleTo, to.Settled) = (from.Airborne, from.Aground, from.Settling, from.SettleFrames, from.SettleLeft, from.SettleFacing, from.SettleTo, from.Settled);
-        (to.Twist, to.Pitch, to.TwistMode, to.PitchTarget, to.TwistTarget, to.TwistRate) = (from.Twist, from.Pitch, from.TwistMode, from.PitchTarget, from.TwistTarget, from.TwistRate);
-        (to.TurnFrames, to.TurnLeft, to.Code, to.CodeValue, to.Posted, to.Command, to.Direction) = (from.TurnFrames, from.TurnLeft, from.Code, from.CodeValue, from.Posted, from.Command, from.Direction);
-        (to.LeapTile, to.Bound, to.Course) = (from.LeapTile, from.Bound, from.Course);
-    }
+
 }
