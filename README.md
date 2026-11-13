@@ -42,6 +42,8 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --path . res://tests/effect_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-effects
 # The title flow, timings, menu wheel and both option pickers, driven with pad input.
 godot-dotnet --headless --fixed-fps 60 --path . res://tests/title_sequence_contracts.tscn -- --install-root=/path/to/installation
+# GPU blend rules over a known background, checked through both LDR and HDR compositing.
+gamescope --backend headless -w 640 -h 448 -W 640 -H 448 -- godot-dotnet --fixed-fps 60 --audio-driver Dummy --path . res://tests/retail_screen_contracts.tscn
 # The same run on an isolated display, saving frames.
 gamescope --backend headless -w 1280 -h 960 -W 1280 -H 960 -- godot-dotnet --fixed-fps 60 --path . res://tests/title_sequence_contracts.tscn -- --install-root=/path/to/installation --capture=/tmp/vs-captures
 ```

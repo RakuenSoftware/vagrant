@@ -19,8 +19,8 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// as it is); a semi-transparent primitive blends where its texel's top bit is set (everywhere when untextured) by the
 /// texture page's mode (half and half, added, subtracted, or a quarter added); polygons are dithered when the draw
 /// mode asks, sprites never; a polygon more than 1023 pixels across or 511 down is dropped. What lies behind the
-/// frame (the field, or black) stays a weight of each pixel, so the frame is laid over it as the GPU's blending would
-/// leave it.
+/// frame (the field, or black) is resolved through each pixel's 32-level channel transfer, so saturation between
+/// primitives applies to the actual background.
 /// </remarks>
 public abstract partial class RetailScreen : Control
 {
@@ -30,12 +30,14 @@ public abstract partial class RetailScreen : Control
     /// <summary>The PlayStation's video memory, 1024 by 512 16-bit words.</summary>
     protected readonly ushort[] Vram = new ushort[1024 * 512];
 
-    // The frame's 5-bit channels, and how much (of 255) of what lies behind the frame still shows at each pixel.
-    private readonly byte[] _red = new byte[FrameWidth * FrameHeight], _green = new byte[FrameWidth * FrameHeight], _blue = new byte[FrameWidth * FrameHeight];
-    private readonly byte[] _behind = new byte[FrameWidth * FrameHeight];
-    private readonly byte[] _rgba = new byte[FrameWidth * FrameHeight * 4];
+    // For each possible 5-bit background level, the GPU's resulting channel value. Keeping the transfer for all
+    // 32 levels preserves saturation between primitives, including subtract-then-add over the live field.
+    private byte[] _pixels = Array.Empty<byte>();
+    private static byte[]? _identity;
+    private int _levels;
     private Image? _image;
     private ImageTexture? _picture;
+    private BackBufferCopy? _background;
     private List<Action>[] _order = Array.Empty<List<Action>>();
 
     // The GPU's draw mode: the texture page (its corner in video memory, blend and depth) and dithering.
@@ -93,10 +95,24 @@ public abstract partial class RetailScreen : Control
             for (int i = 0; i < entries; i++) _order[i] = new List<Action>();
         }
         foreach (var entry in _order) entry.Clear();
-        Array.Clear(_red);
-        Array.Clear(_green);
-        Array.Clear(_blue);
-        Array.Fill(_behind, black ? (byte)0 : (byte)255);
+        _levels = black ? 1 : 32;
+        int size = FrameWidth * FrameHeight * _levels * 4;
+        if (_pixels.Length != size) _pixels = new byte[size];
+        if (black) Array.Clear(_pixels);
+        else
+        {
+            if (_identity == null)
+            {
+                _identity = new byte[FrameWidth * FrameHeight * 32 * 4];
+                for (int level = 0; level < 32; level++)
+                    for (int pixel = 0; pixel < FrameWidth * FrameHeight; pixel++)
+                    {
+                        int at = (level * FrameWidth * FrameHeight + pixel) * 4;
+                        _identity[at] = _identity[at + 1] = _identity[at + 2] = (byte)level;
+                    }
+            }
+            Buffer.BlockCopy(_identity, 0, _pixels, 0, size);
+        }
     }
 
     /// <summary>Puts a primitive at the head of an ordering-table entry (AddPrim): it is drawn before those already there.</summary>
@@ -107,24 +123,30 @@ public abstract partial class RetailScreen : Control
     {
         for (int entry = _order.Length - 1; entry >= 0; entry--)
             foreach (var primitive in _order[entry]) primitive();
-        for (int i = 0; i < _behind.Length; i++)
+        int height = FrameHeight * _levels;
+        if (_image == null || _image.GetHeight() != height)
         {
-            _rgba[i * 4] = (byte)(_red[i] << 3 | _red[i] >> 2);
-            _rgba[i * 4 + 1] = (byte)(_green[i] << 3 | _green[i] >> 2);
-            _rgba[i * 4 + 2] = (byte)(_blue[i] << 3 | _blue[i] >> 2);
-            _rgba[i * 4 + 3] = (byte)(255 - _behind[i]);
-        }
-        if (_image == null)
-        {
-            _image = Image.CreateFromData(FrameWidth, FrameHeight, false, Image.Format.Rgba8, _rgba);
+            _image?.Dispose();
+            _picture?.Dispose();
+            _image = Image.CreateFromData(FrameWidth, height, false, Image.Format.Rgba8, _pixels);
             _picture = ImageTexture.CreateFromImage(_image);
-            Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.PremultAlpha };
         }
         else
         {
-            _image.SetData(FrameWidth, FrameHeight, false, Image.Format.Rgba8, _rgba);
+            _image.SetData(FrameWidth, height, false, Image.Format.Rgba8, _pixels);
             _picture!.Update(_image);
         }
+        if (Material is not ShaderMaterial)
+        {
+            Material = new ShaderMaterial { Shader = new Shader { Code = CompositeShader } };
+            _background = new BackBufferCopy { CopyMode = BackBufferCopy.CopyModeEnum.Disabled, ShowBehindParent = true };
+            AddChild(_background);
+        }
+        var material = (ShaderMaterial)Material;
+        material.SetShaderParameter("transfer", _picture);
+        material.SetShaderParameter("levels", _levels);
+        material.SetShaderParameter("linear", GetViewport().UseHdr2D);
+        _background!.CopyMode = _levels == 1 ? BackBufferCopy.CopyModeEnum.Disabled : BackBufferCopy.CopyModeEnum.Viewport;
         QueueRedraw();
     }
 
@@ -251,27 +273,52 @@ public abstract partial class RetailScreen : Control
     private void Plot(int x, int y, int r, int g, int b, bool semi)
     {
         if (x < _areaLeft || x >= _areaRight || y < _areaTop || y >= _areaBottom) return;
-        int i = y * FrameWidth + x;
-        if (!semi)
+        for (int level = 0; level < _levels; level++)
         {
-            (_red[i], _green[i], _blue[i], _behind[i]) = ((byte)r, (byte)g, (byte)b, 0);
-            return;
-        }
-        switch (_blend)
-        {
-            case 0:
-                (_red[i], _green[i], _blue[i]) = ((byte)((_red[i] + r) >> 1), (byte)((_green[i] + g) >> 1), (byte)((_blue[i] + b) >> 1));
-                _behind[i] >>= 1;
-                break;
-            case 1:
-                (_red[i], _green[i], _blue[i]) = ((byte)Math.Min(31, _red[i] + r), (byte)Math.Min(31, _green[i] + g), (byte)Math.Min(31, _blue[i] + b));
-                break;
-            case 2:
-                (_red[i], _green[i], _blue[i]) = ((byte)Math.Max(0, _red[i] - r), (byte)Math.Max(0, _green[i] - g), (byte)Math.Max(0, _blue[i] - b));
-                break;
-            default:
-                (_red[i], _green[i], _blue[i]) = ((byte)Math.Min(31, _red[i] + (r >> 2)), (byte)Math.Min(31, _green[i] + (g >> 2)), (byte)Math.Min(31, _blue[i] + (b >> 2)));
-                break;
+            int i = ((level * FrameHeight + y) * FrameWidth + x) * 4;
+            if (!semi)
+            {
+                (_pixels[i], _pixels[i + 1], _pixels[i + 2]) = ((byte)r, (byte)g, (byte)b);
+                continue;
+            }
+            switch (_blend)
+            {
+                case 0:
+                    (_pixels[i], _pixels[i + 1], _pixels[i + 2]) = ((byte)((_pixels[i] + r) >> 1), (byte)((_pixels[i + 1] + g) >> 1), (byte)((_pixels[i + 2] + b) >> 1));
+                    break;
+                case 1:
+                    (_pixels[i], _pixels[i + 1], _pixels[i + 2]) = ((byte)Math.Min(31, _pixels[i] + r), (byte)Math.Min(31, _pixels[i + 1] + g), (byte)Math.Min(31, _pixels[i + 2] + b));
+                    break;
+                case 2:
+                    (_pixels[i], _pixels[i + 1], _pixels[i + 2]) = ((byte)Math.Max(0, _pixels[i] - r), (byte)Math.Max(0, _pixels[i + 1] - g), (byte)Math.Max(0, _pixels[i + 2] - b));
+                    break;
+                default:
+                    (_pixels[i], _pixels[i + 1], _pixels[i + 2]) = ((byte)Math.Min(31, _pixels[i] + (r >> 2)), (byte)Math.Min(31, _pixels[i + 1] + (g >> 2)), (byte)Math.Min(31, _pixels[i + 2] + (b >> 2)));
+                    break;
+            }
         }
     }
+
+    private const string CompositeShader = @"shader_type canvas_item;
+render_mode unshaded, blend_disabled;
+uniform sampler2D screen : hint_screen_texture, repeat_disable, filter_nearest;
+uniform sampler2D transfer : repeat_disable, filter_nearest;
+uniform int levels = 1;
+uniform bool linear = false;
+void fragment() {
+    ivec2 pixel = ivec2(clamp(floor(UV * vec2(320.0, 224.0)), vec2(0.0), vec2(319.0, 223.0)));
+    ivec3 background = ivec3(0);
+    if (levels != 1) {
+        vec3 c = textureLod(screen, SCREEN_UV, 0.0).rgb;
+        if (linear) c = mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+        background = ivec3(floor(clamp(c, vec3(0.0), vec3(1.0)) * 255.0 / 8.0));
+    }
+    vec3 result = vec3(texelFetch(transfer, pixel + ivec2(0, background.r * 224), 0).r,
+                       texelFetch(transfer, pixel + ivec2(0, background.g * 224), 0).g,
+                       texelFetch(transfer, pixel + ivec2(0, background.b * 224), 0).b);
+    result = floor(result * 255.0 + 0.5);
+    result = (result * 8.0 + floor(result / 4.0)) / 255.0;
+    if (linear) result = mix(result / 12.92, pow((result + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), result));
+    COLOR = vec4(result, 1.0);
+}";
 }
