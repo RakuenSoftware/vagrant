@@ -1853,7 +1853,8 @@ public sealed partial class FieldBattle
     /// <summary>
     /// Plans the fight anew (BATTLE.PRG 0x800dec88, after any move ends and as fighters join or leave): the clock goes
     /// back to 0; every enemy lets go of its chase and back-off latches and its pause, and the one that made
-    /// <paramref name="acted"/> its 90 frames after a release; each heeds the action (<see cref="React"/>); and each
+    /// <paramref name="acted"/> its 90 frames after a release, and builds its fallback move (<see cref="BuildFallback"/>,
+    /// 0x800dd604); each heeds the action (<see cref="React"/>); and each
     /// hostile enemy plans its moves (<see cref="PlanMoves"/>), taking a state for its first (<see cref="Choose"/>), or
     /// state 7 with none, its converted mark shown again.
     /// </summary>
@@ -1866,6 +1867,7 @@ public sealed partial class FieldBattle
             mind.FaceLatch = false;
             mind.Pause = 0;
             if (acted?.Caster == c) mind.AfterRelease = 0;
+            BuildFallback(c);
         }
         React(acted);
         var fighters = Fighters();
@@ -2031,20 +2033,15 @@ public sealed partial class FieldBattle
             if (parts.Count > 0) _targets.Add((c, parts));
         }
         // The crates the sphere reaches are targets too, each taken whole and named by its fighter record (Episode 4,
-        // 6:01: "Cube", the stack's bottom crate lit). The stand-in's place is 150 under the crate's middle, where an
-        // actor without bones is aimed at and struck.
-        if (_view.Field != null)
-            foreach (var crate in _view.Crates)
-            {
-                var middle = new Vector3(crate.X * 128 + 64, crate.Bottom - 64, crate.Z * 128 + 64);
-                if (!_view.Field.Actors.TryGetValue(crate.Id, out var node) || !Reaches(Ashley!, middle)) continue;
-                var cube = new Combatant
-                {
-                    Actor = new EventActor(crate.Id, -1, node) { Position = middle + new Vector3(0, 150, 0) },
-                    Name = _view.Content.Data("battle_text").GetValueOrDefault("cube", "").AsString(), Hp = 1, MaxHp = 1, Cube = true, CubeKind = crate.Kind,
-                };
-                _targets.Add((cube, new List<int> { -1 }));
-            }
+        // 6:01: "Cube", the stack's bottom crate lit): the crates' actors (<see cref="PlaceObjects"/>), whose stand-in
+        // stands 150 under the crate's middle, where an actor without bones is aimed at and struck.
+        PlaceObjects();
+        foreach (var crate in _view.Crates)
+        {
+            var middle = new Vector3(crate.X * 128 + 64, crate.Bottom - 64, crate.Z * 128 + 64);
+            if (_objects.Find(o => o.Actor.Id == crate.Id) is not { } cube || !Reaches(Ashley!, middle)) continue;
+            _targets.Add((cube, new List<int> { -1 }));
+        }
         // With nothing in range the sphere still shows, for as long as the message under CAUTION (retail footage).
         if (_targets.Count == 0) { _view.Message(_view.RetailMessage(0), header: 1, lines: 4); ShowRange(true); _emptySphere = 30; return; }
         player.Halt();
