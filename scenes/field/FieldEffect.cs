@@ -25,16 +25,18 @@ public sealed partial class FieldEffect : Node3D
         public EventActor? Actor;
         public Vector3 Point;
         public int Bone = -1;
+        /// <summary>Where each bone (or, at -1, the actor whole) was last seen, which an actor an event deletes leaves behind.</summary>
+        private readonly System.Collections.Generic.Dictionary<int, Vector3> _lastSeen = new();
 
         public Vector3 Position(int bone = -1)
         {
-            // An actor an event deletes while its effect plays leaves the effect where it last stood.
-            if (Actor == null || !GodotObject.IsInstanceValid(Actor.Node)) return Point;
             int b = bone >= 0 ? bone : Bone;
+            if (Actor == null) return Point;
+            // An actor an event deletes while its effect plays leaves the effect where it last stood.
+            if (!GodotObject.IsInstanceValid(Actor.Node)) return _lastSeen.TryGetValue(b, out var last) ? last : Point;
             // An actor taken whole stands at its root bone (the hips), which goes with it when it lies down (the dying
             // soldier of E232, MAP010); one without a skeleton, 150 above its feet.
-            if (bone < 0) return Point = b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
-            return Actor.BonePosition(b);
+            return _lastSeen[b] = b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
         }
     }
 
