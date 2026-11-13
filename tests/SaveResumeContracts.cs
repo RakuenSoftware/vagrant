@@ -33,6 +33,8 @@ public partial class SaveResumeContracts : Node
             _view.ProcessMode = ProcessModeEnum.Disabled;
             if (_phase == 0)
             {
+                if (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1) throw new InvalidOperationException("New Game's normal-play flags were not initialized");
+                _view.Rename(_view.Weapons().Find(_view.Holds)!, "ABCDEFGHIJKLMNOPQRST");
                 if (ashley.Blade.MaxDp < 8) throw new InvalidOperationException("the starting weapon cannot be worn");
                 ashley.Blade.Wear(7);
                 ashley.Blade.Gain(11);
@@ -59,6 +61,7 @@ public partial class SaveResumeContracts : Node
             if (ashley.Blade.Dp != _dp || ashley.Blade.Pp != _pp)
                 throw new InvalidOperationException($"phase {_phase}: starting weapon DP/PP {_dp}/{_pp} became {ashley.Blade.Dp}/{ashley.Blade.Pp}");
             var held = _view.Weapons().Find(_view.Holds) ?? throw new InvalidOperationException("no carried weapon is equipped");
+            if (held["name"].AsString() != "ABCDEFGHIJKLMNOPQRST") throw new InvalidOperationException("the twenty-character weapon name changed on resume");
             var blade = held["blade"].AsGodotDictionary();
             if (blade["dp"].AsInt32() != _dp || blade["pp"].AsInt32() != _pp)
                 throw new InvalidOperationException("battle's weapon condition differs from the carried inventory");

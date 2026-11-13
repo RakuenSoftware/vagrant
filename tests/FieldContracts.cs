@@ -34,6 +34,11 @@ public partial class FieldContracts : Node
     private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount;
     private bool _repairAllCheck;
     private bool _combineCheck;
+    private bool _nameCheck, _assemblyCheck;
+    private int _assemblyFrame, _campaignStory;
+    private string _assemblyBefore = "";
+    private int _nameFrame;
+    private string _nameOriginal = "";
     private int _combineFrame;
     private string _combineBefore = "";
     private Godot.Collections.Dictionary? _combineFirst, _combineSecond, _combinePreview;
@@ -140,6 +145,9 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
             if (argument == "--workshop-combine") _combineCheck = true;
+            if (argument.StartsWith("--campaign-story=", StringComparison.Ordinal)) _campaignStory = int.Parse(argument["--campaign-story=".Length..]);
+            if (argument == "--workshop-assembly") _assemblyCheck = true;
+            if (argument == "--workshop-name") _nameCheck = true;
             if (argument == "--defeat") _defeat = true;
             if (argument == "--remember") _remember = true;
             if (argument == "--skip") _skip = true;
@@ -313,6 +321,8 @@ public partial class FieldContracts : Node
         if (_campaign) { StepCampaign(); return; }
         if (_repairAllCheck) { StepWorkshopRepair(); return; }
         if (_combineCheck) { StepWorkshopCombine(); return; }
+        if (_nameCheck) { StepWorkshopName(); return; }
+        if (_assemblyCheck) { StepWorkshopAssembly(); return; }
         if (_room != null) { StepRoom(); return; }
         if (_battleFrame != 0) { StepBattle(); return; }
         if (_controlFrame != 0) { StepControl(); return; }
@@ -339,6 +349,83 @@ public partial class FieldContracts : Node
 
     private int _controlFrame;
     private Vector3 _start, _startEye;
+
+    /// <summary>Assembly cancellation keeps loose parts intact; YES consumes each part/gem exactly once, before naming.</summary>
+    private void StepWorkshopAssembly()
+    {
+        if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (!_view.Controlled) { if (_frame % 30 == 0) Tap("ps_circle"); return; }
+        switch (++_assemblyFrame)
+        {
+            case 1:
+                _view.Disassemble(_view.Weapons()[0]);
+                _view.Parts(null, grips: true)[0]["record"].AsGodotDictionary()["gem_slots"] = 2;
+                foreach (int id in new[] { 269, 270 }) _view.Equipment.Add(new Godot.Collections.Dictionary { ["kind"] = "gem", ["record"] = new Godot.Collections.Dictionary { ["id"] = id } });
+                _assemblyBefore = Json.Stringify(_view.Equipment);
+                Tap("ps_triangle"); break;
+            case 20: if (!_view.MenuOpen) { _assemblyFrame--; if (_frame % 20 == 0) Tap("ps_triangle"); } break;
+            case 30 or 80 or 100 or 140 or 160 or 200 or 220 or 280 or 340 or 360 or 380 or 400 or 440 or 460 or 500 or 520 or 560 or 580 or 640 or 720: Tap("ps_circle"); break;
+            case 60 or 120 or 320 or 420 or 480 or 540 or 680 or 700: Tap("ps_down"); break;
+            case 180 or 620: Tap("ps_up"); break;
+            case 240 or 300 or 600 or 660: Tap("ps_start"); break;
+            case 260:
+                if (Json.Stringify(_view.Equipment) != _assemblyBefore || _view.Weapons().Count != 0)
+                { Finish("assembly consumed components before YES"); return; }
+                if (_view.ItemRows.Count != 3 || !_view.ItemHelpShown.Text.Contains("Complete attachment", StringComparison.OrdinalIgnoreCase))
+                { Finish($"assembly did not show the native confirmation: {_view.ItemHelpShown.Text}"); return; }
+                Capture("assembly_confirmation"); break;
+            case 350:
+                if (Json.Stringify(_view.Equipment) != _assemblyBefore) { Finish("Cancel assembly changed its loose components"); return; }
+                break;
+            case 590: Capture("assembly_components"); break;
+            case 650:
+                if (_view.Weapons().Count != 1 || _view.Gems().Count != 0 || FieldView.GemsOf(_view.Weapons()[0]).Count != 2
+                    || _view.Parts(null).Count != 0 || _view.Parts(null, grips: true).Count != 0)
+                { Finish("YES did not consume both loose parts and both selected gems exactly once"); return; }
+                break;
+            case 740:
+                if (_view.Weapons().Count != 1 || _view.Weapons()[0]["name"].AsString() != _view.ItemName(_view.Weapons()[0]["blade"].AsGodotDictionary()["id"].AsInt32()))
+                { Finish("Cancel change after assembly did not retain the weapon with its blade name"); return; }
+                GD.Print("FIELD: assembly grip-first/blade-first, NO/Cancel, two gems, YES ownership and default naming passed");
+                Finish(""); return;
+        }
+        if (_frame > 2400) Finish("the assembly menu did not settle");
+    }
+
+    /// <summary>The disc keyboard's replace, insert, delete, backspace, caret, confirmation and twenty-cell limit.</summary>
+    private void StepWorkshopName()
+    {
+        if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (!_view.Controlled) { if (_frame % 30 == 0) Tap("ps_circle"); return; }
+        switch (++_nameFrame)
+        {
+            case 1: _nameOriginal = _view.Weapons()[0]["name"].AsString(); Tap("ps_triangle"); break;
+            case 20: if (!_view.MenuOpen) { _nameFrame--; if (_frame % 20 == 0) Tap("ps_triangle"); } break;
+            case 30 or 80 or 160 or 180 or 210 or 250 or 350 or 390 or 510 or 585 or 625 or 1065: Tap("ps_circle"); break;
+            case 60 or 110 or 125 or 140 or 490 or 550 or 565: Tap("ps_down"); break;
+            case 230: Tap("ps_right"); break;
+            case 270: Tap("ps_triangle"); break;
+            case 290: Tap("ps_square"); break;
+            case 310 or 450: Tap("ps_cross"); break;
+            case 330: Tap("ps_l1"); break;
+            case 370: Tap("ps_r1"); break;
+            case 410 or 470 or 530 or 1045: Tap("ps_start"); break;
+            case 200: Capture("name_keyboard"); break;
+            case 430:
+                if (!_view.ItemHelpShown.Text.Contains("BnBango", StringComparison.Ordinal) || _view.Weapons()[0]["name"].AsString() != _nameOriginal)
+                { Finish($"the naming edits or confirmation changed the weapon early: {_view.ItemHelpShown.Text}"); return; }
+                Capture("name_confirmation"); break;
+            case 605:
+                if (_view.Weapons()[0]["name"].AsString() != _nameOriginal) { Finish("Cancel change did not keep the original weapon name"); return; }
+                break;
+            case 1085:
+                if (_view.Weapons()[0]["name"].AsString() != new string('A', 20)) { Finish("the naming keyboard did not commit all twenty cells"); return; }
+                GD.Print("FIELD: disc naming keyboard, replace/insert/delete/backspace, L1/R1 caret, No/Cross/Cancel and twenty-cell YES passed");
+                Finish(""); return;
+        }
+        if (_nameFrame is >= 645 and <= 1025 && (_nameFrame - 645) % 20 == 0) Tap("ps_circle");
+        if (_frame > 2400) Finish("the naming menu did not settle");
+    }
 
     /// <summary>Combining must show a preview and preserve both inputs until YES, including NO, Cross and CANCEL COMBINE.</summary>
     private void StepWorkshopCombine()
@@ -517,6 +604,8 @@ public partial class FieldContracts : Node
     /// <summary>Explores doors and fights through the normal pad path, preserving one New Game's earned state.</summary>
     private void StepCampaign()
     {
+        if (_view.Battle != null && _view.Battle.Combatants.Values.Any(c => !GodotObject.IsInstanceValid(c.Actor.Node)))
+        { Finish("campaign: battle retained a deleted actor's scene nodes"); return; }
         if (_frame == 1 && _campaignLoad.Length == 0 && (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1))
         { Finish("campaign: New Game did not initialize retail's normal-play flags"); return; }
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
@@ -655,11 +744,13 @@ public partial class FieldContracts : Node
             if (_campaignPuzzle == 2 && (_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square");
             return;
         }
+        if ((_view.Zone, _view.Map) == (9, 17) && _view.Flags[130] >= 10
+            && battle.Combatants.Values.Where(c => c.Targetable).All(c => c.Name == "Dummy")) _campaignBypassEnemies = true;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
             // jumping platform; attacking his limbs through the barrier correctly fails the line-of-fire test.
-            if ((_view.Zone, _view.Map) == (9, 7) && ashley.Actor.Position.Z < 1152
+            if ((_view.Zone, _view.Map) == (9, 7) && _view.Flags[180] < 2 && ashley.Actor.Position.Z < 1152
                 && battle.Combatants.Values.Where(c => c.Targetable).All(c => c.Actor.Position.Z >= 896))
             {
                 if (battle.Paused) { Tap("ps_cross"); return; }
@@ -705,11 +796,23 @@ public partial class FieldContracts : Node
         }
         // Room 9,12's three-high stack has no adjacent raised floor from which to lift its top block.
         // Break one through the targeting sphere, then carry the two surviving blocks to the south ledge.
-        if ((_view.Zone, _view.Map) == (9, 12) && battle.HostileCount() == 0 && _view.Crates.Count(c => c.X == 0 && c.Z == 7) == 3)
+        if (_view.Zone == 9 && _view.Map is 11 or 12 && battle.HostileCount() == 0
+            && _view.Crates.Count(c => c.X == (_view.Map == 11 ? 2 : 0) && c.Z == (_view.Map == 11 ? 2 : 7)) == 3)
         {
-            if (battle.Paused) { Steer(Vector2.Zero); Tap("ps_circle"); return; }
+            if (_campaignHallAt == 0) _campaignHallAt = _frame;
+            if (_frame - _campaignHallAt > 1800) { Finish($"campaign: could not break a stone block in {_view.Zone},{_view.Map}"); return; }
+            if (battle.Paused)
+            {
+                Steer(Vector2.Zero);
+                if (_press > 0) return;
+                // Room 9,11's bottom wooden crate rolls and cannot be broken. Strike the stone block above it.
+                if (_view.Map == 11 && _campaignCubePicks == 0) { Tap("ps_right"); _campaignCubePicks = 1; }
+                else Tap("ps_circle");
+                return;
+            }
             if (battle.Busy) { Steer(Vector2.Zero); return; }
-            var point = new Vector3(192, 0, 960);
+            _campaignCubePicks = 0;
+            var point = _view.Map == 11 ? new Vector3(320, 0, 448) : new Vector3(192, 0, 960);
             if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 20)
             { Steer(Vector2.Zero); if (_frame % 20 == 0) Tap("ps_circle"); return; }
             var steps = _view.Path(ashley.Actor.Position, point, 256);
@@ -721,7 +824,7 @@ public partial class FieldContracts : Node
         }
         if (battle.Busy) { Steer(Vector2.Zero); return; }
         if (battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0)
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory)
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
@@ -801,6 +904,11 @@ public partial class FieldContracts : Node
                         7 => _view.Flags[180] >= 2 ? 13 : 8, 8 => 10, 13 => 10, 10 => 11, 11 => 12, 12 => 17, _ => -1 };
                     if (_view.Map == 17 ? zone != 12 : next >= 0 && (zone != 9 || candidate["map"].AsInt32() != next)) cost += 10000;
                 }
+                if (_view.Zone == 9 && _view.Flags[130] >= 10 && _campaignCheckpoint is { Zone: 11 or 13 })
+                {
+                    int next = _view.Map switch { 17 => 12, 12 => 11, 11 => 10, 10 => 13, 13 => 7, 7 => 6, 6 => 5, 5 => 4, 4 => 1, 1 => 2, 2 => 15, _ => -1 };
+                    if (_view.Map == 15 ? zone != 11 : next >= 0 && (zone != 9 || candidate["map"].AsInt32() != next)) cost += 10000;
+                }
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }
             if (_campaignDoor < 0) { Finish($"campaign: no available door in {_view.Zone},{_view.Map}, story {_view.Flags[0x82]}"); return; }
@@ -828,13 +936,20 @@ public partial class FieldContracts : Node
         }
         // The south exit in room 9,10 is 512 units above the floor. Carry two of the north stack's blocks
         // to its foot, then climb their 256-unit stack. Only pad input moves and places the blocks.
-        if (((_view.Zone, _view.Map, _campaignDoor) == (9, 10, 2) || (_view.Zone, _view.Map, _campaignDoor) == (9, 12, 1)) && _campaignPuzzle < 12)
+        if (((_view.Zone, _view.Map, _campaignDoor) == (9, 10, 2) || (_view.Zone, _view.Map, _campaignDoor) == (9, 12, 1)
+            || (_view.Zone, _view.Map, _campaignDoor) == (9, 11, 2)) && _campaignPuzzle < 12)
         {
             bool south = _view.Map == 12;
+            bool lever = _view.Map == 11;
             _campaignDoorAt = _frame;
             if (_frame - _campaignPuzzleAt > 1800)
             { Finish($"campaign: south ledge puzzle step {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
-            var point = south ? _campaignPuzzle switch
+            var point = lever ? _campaignPuzzle switch
+            {
+                0 or 1 or 5 or 6 => new Vector3(320, 0, 448),
+                3 or 8 => new Vector3(832, 0, 1088),
+                10 => new Vector3(832, -128, 1216), _ => new Vector3(832, -512, 1472),
+            } : south ? _campaignPuzzle switch
             {
                 0 or 1 or 5 or 6 => new Vector3(192, 0, 960),
                 3 or 8 => new Vector3(448, -128, 1600),
@@ -849,30 +964,80 @@ public partial class FieldContracts : Node
             if (_campaignPuzzle is 2 or 4 or 7 or 9)
             {
                 Steer(Vector2.Zero);
-                int source = _view.Crates.Count(c => c.X == 0 && c.Z == (south ? 7 : 5));
-                int placed = _view.Crates.Count(c => c.X == (south ? 3 : 2) && c.Z == (south ? 13 : 12));
-                if ((_campaignPuzzle == 2 && source == (south ? 1 : 2)) || (_campaignPuzzle == 4 && placed == 1)
-                    || (_campaignPuzzle == 7 && source == (south ? 0 : 1)) || (_campaignPuzzle == 9 && placed == 2))
-                { _campaignPuzzle++; _campaignPuzzleAt = _frame; return; }
+                int source = _view.Crates.Count(c => c.X == (lever ? 2 : 0) && c.Z == (lever ? 2 : south ? 7 : 5));
+                int placed = _view.Crates.Count(c => c.X == (lever ? 6 : south ? 3 : 2) && c.Z == (lever ? 9 : south ? 13 : 12));
+                if ((_campaignPuzzle == 2 && source == (south || lever ? 1 : 2)) || (_campaignPuzzle == 4 && placed == 1)
+                    || (_campaignPuzzle == 7 && source == (south || lever ? 0 : 1)) || (_campaignPuzzle == 9 && placed == 2))
+                { _campaignPuzzle = lever && _campaignPuzzle == 4 ? 10 : _campaignPuzzle + 1; _campaignPuzzleAt = _frame; return; }
                 if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
                 return;
             }
             // Face the interaction tile before stopping; turning takes twelve field frames.
-            if (_campaignPuzzle == 6 || south && _campaignPuzzle == 1)
+            if (_campaignPuzzle == 6 || (south || lever) && _campaignPuzzle == 1)
             {
-                point = new Vector3(64, 0, south ? 960 : 704);
+                point = lever ? new Vector3(320, 0, 320) : new Vector3(64, 0, south ? 960 : 704);
                 if (_frame - _campaignPuzzleAt >= 24)
                 { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
                 if (_frame - _campaignPuzzleAt > 1) { Steer(Vector2.Zero); return; }
             }
-            var steps = _campaignPuzzle == 6 || south ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            if (lever && _campaignPuzzle == 11 && _frame - _campaignPuzzleAt < 40) { Steer(Vector2.Zero); return; }
+            var steps = _campaignPuzzle == 6 || south || lever ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
             while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
             var next = steps.Count > 0 ? steps[0] : point;
             float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             Input.ActionPress("ps_r2");
-            if (_campaignPuzzle != 6 && !(south && _campaignPuzzle == 1) && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12
+            if (lever && _campaignPuzzle == 11)
+            {
+                Input.ActionRelease("ps_r2");
+                if ((_frame - _campaignPuzzleAt) % 60 == 41) Tap("ps_square");
+            }
+            if (_campaignPuzzle != 6 && !((south || lever) && _campaignPuzzle == 1) && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12
                 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+            return;
+        }
+        if ((_view.Zone, _view.Map, _campaignDoor) == (9, 11, 2))
+        {
+            _campaignDoorAt = _frame;
+            if (_view.Flags[100] == 0)
+            {
+                if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: lever step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+                var point = _campaignPuzzle == 12 ? new Vector3(832, -512, 1600) : new Vector3(682, -512, 1600);
+                if (_campaignPuzzle == 12 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12)
+                { _campaignPuzzle = 13; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (_campaignPuzzle == 13 && _frame - _campaignPuzzleAt >= 24)
+                { _campaignPuzzle = 14; _campaignPuzzleAt = _frame; }
+                if (_campaignPuzzle == 14)
+                { Steer(Vector2.Zero); if (_frame % 20 == 0) Tap("ps_cross"); return; }
+                if (_campaignPuzzle == 13 && _frame - _campaignPuzzleAt > 1) { Steer(Vector2.Zero); return; }
+                float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                return;
+            }
+            if (_campaignPuzzle < 15) _campaignPuzzle = 15;
+            // Align with the narrow exit before running south, rather than pushing diagonally into its corner.
+            var exit = _campaignPuzzle == 15 ? new Vector3(448, 0, 1600) : new Vector3(448, 0, 1728);
+            Input.ActionRelease("ps_r2");
+            if (new Vector2(exit.X - ashley.Actor.Position.X, exit.Z - ashley.Actor.Position.Z).Length() < 20)
+            {
+                if (_campaignPuzzle == 15) _campaignPuzzle = 16;
+                Steer(Vector2.Zero); return;
+            } // The exit's event requires standing still, not another Cross press.
+            float direction = (ashley.Actor.FacingToward(exit) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(direction), -Mathf.Cos(direction)));
+            return;
+        }
+        // Returning north through the lever room uses the two-block stack, then a jump to the 512-high doorway.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (9, 11, 1) && _campaignPuzzle < 3)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: north stack step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch { 0 => new Vector3(320, 0, 448), 1 => new Vector3(320, -256, 320), _ => new Vector3(448, -512, 192) };
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle > 0 && (_frame - _campaignPuzzleAt) % 80 == 30) Tap("ps_square");
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
             { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }

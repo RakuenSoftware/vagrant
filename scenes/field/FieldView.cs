@@ -348,7 +348,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Redraws the characters shown as the Settings now choose.</summary>
     private void RedrawCharacters()
     {
-        foreach (var actor in Actors.Values) CharacterQuality.Apply(actor.Node, _content.Character(actor.Character).GetValueOrDefault("head_bone", -1).AsInt32());
+        foreach (var actor in Actors.Values)
+            if (actor.Character != 0x7F) CharacterQuality.Apply(actor.Node, _content.Character(actor.Character).GetValueOrDefault("head_bone", -1).AsInt32());
     }
 
     public override void _ExitTree()
@@ -1377,16 +1378,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 foreach (var actor in new List<EventActor>(Targets(args)))
                 {
                     if (actor.Id == "slot:1") continue;
-                    Actors.Remove(actor.Id);
-                    foreach (var other in Actors.Values)
-                        if (other.Parent == actor)
-                        {
-                            // What it held keeps its numbers, now as a place in the room.
-                            var (place, facing) = (other.Position, other.Facing);
-                            other.Parent = null;
-                            (other.Position, other.Facing) = (place, facing);
-                        }
-                    var removed = Field.RemoveActor(actor.Id);
+                    var removed = DeleteActor(actor);
                     if (removed != Error.Ok) return removed;
                 }
                 return Error.Ok;
@@ -2518,11 +2510,46 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return Actor(args) is { } actor ? new[] { actor } : Array.Empty<EventActor>();
     }
 
+    /// <summary>Removes a game actor and its battle references before the engine frees its scene nodes.</summary>
+    private Error DeleteActor(EventActor actor)
+    {
+        RememberEnemies();
+        Battle?.RemoveActor(actor.Id);
+        _roomActorIndex.Remove(actor.Id);
+        Actors.Remove(actor.Id);
+        foreach (var other in Actors.Values)
+            if (other.Parent == actor)
+            {
+                var (place, facing) = (other.Position, other.Facing);
+                other.Parent = null;
+                (other.Position, other.Facing) = (place, facing);
+            }
+        return Field.RemoveActor(actor.Id);
+    }
+
     /// <summary>Retail 20: creates an actor from a character's rig. It stays hidden until a flags command shows it.</summary>
     private Error Spawn(GDictionary args)
     {
         string reference = args["actor"].AsString();
         int character = args["character"].AsInt32();
+        if (Actors.TryGetValue(reference, out var replaced))
+        {
+            var deleted = DeleteActor(replaced);
+            if (deleted != Error.Ok) return deleted;
+        }
+        if (character == 0x7F || args.GetValueOrDefault("virtual", false).AsBool())
+        {
+            // BATTLE.PRG 0x80077330 skips model and animation loading for template 0x7f.
+            if (Field.Actors.ContainsKey(reference)) Field.RemoveActor(reference);
+            var anchor = new Node3D { Name = "Interaction_" + reference.Replace(':', '_') };
+            Field.Geometry.AddChild(anchor); Field.Actors[reference] = anchor;
+            var target = new EventActor(reference, character, anchor) { Scene = Field, Flags = 1 };
+            var at = args["tile"].AsGodotArray();
+            target.Position = new Vector3(at[0].AsInt32() * 128 + 64, 0, at[1].AsInt32() * 128 + 64);
+            target.Position = target.Position with { Y = FloorHeight(target.Position) };
+            Actors[reference] = target;
+            return Error.Ok;
+        }
         string name = "character_" + character.ToString("X2");
         if (!_content.Has(name)) { MissingCharacters.Add(character); return Error.Ok; }
         Node3D rig;
@@ -2663,10 +2690,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (slot == 0) for (slot = 2; slot < 10 && (Actors.ContainsKey("slot:" + slot) || reserved.Contains(slot)); slot++) { }
             if (slot >= 10) break;
             string reference = "slot:" + slot;
-            var result = Spawn(new GDictionary { ["actor"] = reference, ["character"] = entry["character"], ["tile"] = entry["tile"] });
+            bool virtualActor = entry.GetValueOrDefault("virtual", false).AsBool();
+            var result = Spawn(new GDictionary { ["actor"] = reference, ["character"] = entry["character"], ["tile"] = entry["tile"], ["virtual"] = virtualActor });
             if (result != Error.Ok) return result;
             if (!Actors.TryGetValue(reference, out var actor)) continue;
             actor.Facing = entry["facing"].AsSingle();
+            if (virtualActor) continue;
             // Keep the shown, animated and shadow flags in sync with the room actor's initial presentation.
             actor.Flags = 0x47;
             actor.Visible = true;
@@ -4238,12 +4267,14 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         CheckConditions(0x20);
         // Stepping onto a tile tests what the tile holds: its conditions (bit 13), then a door (bit 14).
         var tile = ((int)Mathf.Floor(player.Position.X / 128), (int)Mathf.Floor(player.Position.Z / 128));
+        long attributes = TileAttributes(tile.Item1, tile.Item2);
+        // A tile event can require standing still (condition 9); it must still be tested after movement stops
+        // on the tile, as in room 9,11's timed lever exit.
+        if ((attributes & 1 << 13) != 0) CheckConditions(0x02);
         if (tile != _tile && Controlled)
         {
             _tile = tile;
             SavePoint = 0;
-            long attributes = TileAttributes(tile.Item1, tile.Item2);
-            if ((attributes & 1 << 13) != 0) CheckConditions(0x02);
             if (Controlled && (attributes & 1 << 16) != 0) StepOnTrap(tile);
             // A pit under a platform she stands on is crossed on the platform.
             if (Controlled && (attributes & 1 << 17) != 0 && PlatformTop(player.Position) == null) FallInPit();
@@ -4402,7 +4433,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// The loose blades Ashley carries, or with a blade picked, the loose grips that fit it: each the equipment entry.
     /// A carried weapon's own parts are not loose.
     /// </summary>
-    public List<GDictionary> Parts(GDictionary? blade, bool includeSet = false)
+    public List<GDictionary> Parts(GDictionary? blade, bool includeSet = false, bool grips = false)
     {
         var used = SetParts();
         int family = blade == null ? 0 : GripFamily(blade["record"].AsGodotDictionary()["category"].AsInt32());
@@ -4413,7 +4444,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             string kind = entry["kind"].AsString();
             var record = entry["record"].AsGodotDictionary();
             if (!includeSet && (kind is "blades" or "grips") && used.Contains((kind, record.GetValueOrDefault("slot", 0).AsInt32()))) continue;
-            if (blade == null ? kind is "blade" or "blades" : kind is "grip" or "grips" && record["category"].AsInt32() == family) list.Add(entry);
+            if (grips ? kind is "grip" or "grips" : blade == null ? kind is "blade" or "blades" : kind is "grip" or "grips" && record["category"].AsInt32() == family) list.Add(entry);
         }
         if (includeSet && blade == null)
             foreach (var weapon in Weapons())
@@ -4581,12 +4612,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return mixed;
     }
 
-    /// <summary>The workshop's Rename: a weapon's name, which the save keeps (at most 18 letters; blank keeps it).</summary>
+    /// <summary>The workshop's Rename: twenty character cells (MENU8 0x80105394), with trailing blanks trimmed.</summary>
     public string Rename(GDictionary weapon, string name)
     {
-        name = name.Trim();
+        name = name.TrimEnd();
         if (name.Length == 0) return "The name was kept.";
-        if (name.Length > 18) name = name[..18];
+        if (name.Length > 20) name = name[..20];
         weapon["entry"].AsGodotDictionary()["record"].AsGodotDictionary()["name"] = name;
         if (EquippedWeapon is { } held && Holds(weapon)) held["name"] = name;
         return $"The weapon is now called {name}.";
@@ -4732,6 +4763,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         Refit(weapon, inUse);
         return $"The {ItemName(gem["id"].AsInt32())} was taken out.";
     }
+
+    /// <summary>The blade category selects the grip family in MENUC.</summary>
+    public static bool Fits(GDictionary blade, GDictionary grip) => GripFamily(blade["record"].AsGodotDictionary()["category"].AsInt32()) == grip["record"].AsGodotDictionary()["category"].AsInt32();
 
     /// <summary>Fits a loose grip to a loose blade, making a weapon named for its blade.</summary>
     public string Assemble(GDictionary blade, GDictionary grip)
@@ -5502,6 +5536,20 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public void Interact(EventActor ashley)
     {
         var (x, z, quadrant) = Front(ashley);
+        EventActor? nearest = null;
+        float closest = 160 * 160;
+        foreach (var actor in Actors.Values)
+        {
+            if (actor == ashley || (actor.Flags & 1) == 0 || Math.Abs(actor.Position.Y - ashley.Position.Y) > 128) continue;
+            var offset = actor.Position - ashley.Position;
+            float distance = offset.X * offset.X + offset.Z * offset.Z;
+            if (distance > closest || Math.Abs(Mathf.Wrap(ashley.FacingToward(actor.Position) - ashley.Facing, -2048, 2048)) > 1024) continue;
+            nearest = actor; closest = distance;
+        }
+        // 0x80079c34/0x800a3760 selects an interaction actor within 160 across, 128 vertically and a forward
+        // half-turn. Condition 6 (0x800bf17c) compares the acting and selected slots, with no tile argument.
+        if (nearest != null) CheckConditions(0x04, participants: (ashley.Id, nearest.Id));
+        if (!Controlled || _pendingChain.Length != 0) return;
         // BATTLE.PRG 0x80074860 tests type-4 events against the tile ahead before doors and chests.
         CheckConditions(0x04, (x, z));
         if (!Controlled || _pendingChain.Length != 0) return;
@@ -5824,7 +5872,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// event whose tests all hold: one of the room's own, or an event file. Type 0x20 is tested every frame of play,
     /// 0x08 when an enemy falls, 0x10 when the puzzle timer runs out.
     /// </summary>
-    private void CheckConditions(int type, (int X, int Z)? interaction = null)
+    private void CheckConditions(int type, (int X, int Z)? interaction = null, (string Source, string Target)? participants = null)
     {
         if (!Controlled || _pendingChain.Length != 0 || Battle?.GameOver == true) return;
         foreach (var value in Document.GetValueOrDefault("conditions", new GArray()).AsGodotArray())
@@ -5835,7 +5883,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             foreach (var test in record["tests"].AsGodotArray())
             {
                 var entry = test.AsGodotDictionary();
-                if (Condition(entry["op"].AsInt32(), entry["bytes"].AsGodotArray(), interaction) == entry["negate"].AsBool()) { holds = false; break; }
+                if (Condition(entry["op"].AsInt32(), entry["bytes"].AsGodotArray(), interaction, participants) == entry["negate"].AsBool()) { holds = false; break; }
             }
             if (!holds) continue;
             int id = record["event"].AsInt32();
@@ -5857,7 +5905,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </list>
     /// Other tests do not hold yet.
     /// </summary>
-    private bool Condition(int op, GArray bytes, (int X, int Z)? interaction)
+    private bool Condition(int op, GArray bytes, (int X, int Z)? interaction, (string Source, string Target)? participants)
     {
         int B(int i) => bytes[i].AsInt32();
         int U16(int i) => B(i) | B(i + 1) << 8;
@@ -5882,6 +5930,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 if (flag != 0) { Store(flag, count); return true; }
                 return count != 0;
             }
+            case 6: return interaction == null && participants == (Reference(U16(0)), Reference(U16(2)));
             case 7:
             {
                 string actor = Reference(U16(0));

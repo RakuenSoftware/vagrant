@@ -750,6 +750,27 @@ public sealed partial class FieldBattle
         }
     }
 
+    /// <summary>An event removes or replaces a body: release its battle references before its nodes are freed.</summary>
+    public void RemoveActor(string id)
+    {
+        if (!Combatants.Remove(id, out var removed)) return;
+        ReleaseToken(removed);
+        _walking.Remove(removed);
+        removed.Plans.Clear();
+        foreach (var other in Combatants.Values) other.Plans.RemoveAll(plan => plan.Target == removed);
+        _targets.RemoveAll(target => target.Who == removed);
+        _target = Math.Clamp(_target, 0, Math.Max(0, _targets.Count - 1));
+        removed.Weapon = removed.ShieldModel = null;
+        if (_enemyCast is { } cast && (cast.Caster == removed || cast.Target == removed))
+        {
+            _enemyCast = null;
+            if (_enemyChant != null && GodotObject.IsInstanceValid(_enemyChant)) _enemyChant.Mode = 0;
+            _enemyChant = null;
+        }
+        if (_enemyRelease is { } release && release.Caster == removed) { _enemyRelease = null; _enemyEffect = null; }
+        if (Ashley == removed) Ashley = null;
+    }
+
     private readonly HashSet<Combatant> _walking = new();
 
     /// <summary>How near two fighters' centres may come: their bodies' radii (FieldPlayer.Radius) together, about.</summary>

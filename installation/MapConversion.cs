@@ -1233,43 +1233,48 @@ public sealed class MapConversion
             // Type 0 is a character; other types place objects.
             if (_map[record] != 0) continue;
             int template = _map[record + 4];
-            // Template 0x7f is made through the player's creation path rather than from the zone; not converted yet.
-            if (template == 0x7F) continue;
-            if (template >= templates || first + (template + 1) * 0x464 > _zone.Length) throw new InvalidDataException("A room actor names a missing character template.");
-            // The template's last word indexes the zone's unit files (sector, size), which hold its model, weapon and
-            // animations.
-            int unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
-            if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
-            // The record's word at 0x14 goes to the actor's +0x34 (BATTLE.PRG 0x80077c30): with bit 0 its bits 1 to 11
-            // take the place of the AI word's bits 21 to 31 (0x800e5a74); bit 13 lets its planner fall back on its last
-            // resorts, bit 12 has it weigh the moves flagged 0x10 without reckoning them (0x800e5dc8).
-            var stats = CharacterRecord(_zone, first + template * CharacterRecordSize);
-            uint planning = BitConverter.ToUInt32(_map, record + 0x14);
-            if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
-            stats["last_resorts"] = (planning >> 13 & 1) != 0;
-            // Bit 14 chooses how often a patroller turns back on its route (BATTLE.PRG's table at 0x80069C08, 0x800e5dd4).
-            stats["patrol_turns"] = (int)(planning >> 14 & 1);
-            stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
-            // The record's word at 0x10 goes to the actor's +0x30: bits 4 to 8 choose its behaviour routine (BATTLE.PRG's
-            // table at 0x800F1790, 0x800e5e70), bits 0 to 3 are its group and bits 9 to 13 the group of the leader it
-            // keeps by (0x800e5998).
-            uint behaviour = BitConverter.ToUInt32(_map, record + 0x10);
-            stats["behaviour"] = (int)(behaviour >> 4 & 0x1F);
-            stats["group"] = (int)(behaviour & 0xF);
-            stats["leader"] = (int)(behaviour >> 9 & 0x1F);
-            // Bits 14 and 15 are the room's patrol route it walks (0x800e5e04).
-            stats["route"] = (int)(behaviour >> 14 & 3);
-            // Bits 22 to 26 and 27 to 31 are the home tile it wanders about and bits 16 to 21 how far (0x800e5e14, 63 a
-            // free wander); byte 0x26 has it lie dormant until stirred (0x800e6538).
-            stats["home"] = new JsonArray { (int)(behaviour >> 22 & 0x1F), (int)(behaviour >> 27) };
-            stats["home_radius"] = (int)(behaviour >> 16 & 0x3F);
-            stats["dormant"] = _map[record + 0x26] != 0;
+            // Template 0x7f is an actor without a model (0x80077330), used as an interaction target.
+            int unit = 0;
+            var stats = new JsonObject();
+            if (template != 0x7F)
+            {
+                if (template >= templates || first + (template + 1) * 0x464 > _zone.Length) throw new InvalidDataException("A room actor names a missing character template.");
+                // The template's last word indexes the zone's unit files (sector, size), which hold its model, weapon and
+                // animations.
+                unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
+                if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
+                // The record's word at 0x14 goes to the actor's +0x34 (BATTLE.PRG 0x80077c30): with bit 0 its bits 1 to 11
+                // take the place of the AI word's bits 21 to 31 (0x800e5a74); bit 13 lets its planner fall back on its last
+                // resorts, bit 12 has it weigh the moves flagged 0x10 without reckoning them (0x800e5dc8).
+                stats = CharacterRecord(_zone, first + template * CharacterRecordSize);
+                uint planning = BitConverter.ToUInt32(_map, record + 0x14);
+                if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
+                stats["last_resorts"] = (planning >> 13 & 1) != 0;
+                // Bit 14 chooses how often a patroller turns back on its route (BATTLE.PRG's table at 0x80069C08, 0x800e5dd4).
+                stats["patrol_turns"] = (int)(planning >> 14 & 1);
+                stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
+                // The record's word at 0x10 goes to the actor's +0x30: bits 4 to 8 choose its behaviour routine (BATTLE.PRG's
+                // table at 0x800F1790, 0x800e5e70), bits 0 to 3 are its group and bits 9 to 13 the group of the leader it
+                // keeps by (0x800e5998).
+                uint behaviour = BitConverter.ToUInt32(_map, record + 0x10);
+                stats["behaviour"] = (int)(behaviour >> 4 & 0x1F);
+                stats["group"] = (int)(behaviour & 0xF);
+                stats["leader"] = (int)(behaviour >> 9 & 0x1F);
+                // Bits 14 and 15 are the room's patrol route it walks (0x800e5e04).
+                stats["route"] = (int)(behaviour >> 14 & 3);
+                // Bits 22 to 26 and 27 to 31 are the home tile it wanders about and bits 16 to 21 how far (0x800e5e14, 63 a
+                // free wander); byte 0x26 has it lie dormant until stirred (0x800e6538).
+                stats["home"] = new JsonArray { (int)(behaviour >> 22 & 0x1F), (int)(behaviour >> 27) };
+                stats["home_radius"] = (int)(behaviour >> 16 & 0x3F);
+                stats["dormant"] = _map[record + 0x26] != 0;
+            }
             actors.Add(new JsonObject
             {
-                ["unit_sector"] = (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
+                ["virtual"] = template == 0x7F,
+                ["unit_sector"] = template == 0x7F ? 0L : (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
                 ["stats"] = stats,
                 ["slot"] = (int)_map[record + 5],
-                ["character"] = (int)_zone[first + template * 0x464 + 2],
+                ["character"] = template == 0x7F ? 127 : (int)_zone[first + template * 0x464 + 2],
                 ["tile"] = new JsonArray { (int)_map[record + 12], (int)_map[record + 14] },
                 ["level"] = _map[record + 13] & 1,
                 ["facing"] = _map[record + 15] * 1024 % 4096,

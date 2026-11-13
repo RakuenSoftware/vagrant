@@ -24,8 +24,6 @@ public sealed partial class FieldMenu : PanelContainer
     public static readonly string[] Rows = { "Magic", "Break Arts", "Battle Abilities", "Items", "Status", "Map", "Data", "Options", "Score", "Quick Manual" };
     private const int Magic = 0, Arts = 1, Abilities = 2, Items = 3, Status = 4, Map = 5, Data = 6, Options = 7, Score = 8, Manual = 9, Container = 10, Chest = 11, Reclaim = 12;
     /// <summary>The Quick Manual's open topic (-1 for the list) and the first line shown.</summary>
-    /// <summary>The weapon row waiting for a second Square to be taken apart from Ashley's hand (-1 none).</summary>
-    private int _confirming = -1;
     private int _topic = -1, _scroll;
     /// <summary>The area the map shows: 0 for Ashley's own.</summary>
     private int _area;
@@ -38,19 +36,17 @@ public sealed partial class FieldMenu : PanelContainer
     // Retail's command list, over the whole screen beside the panel.
     private MenuList _list = null!;
     private int _row = Items, _page = -1, _cursor;
-    /// <summary>The Items page's tab: other items, weapons or armour (L1 and R1 switch).</summary>
-    private int _tab;
-    private static readonly string[] Tabs = { "Items", "Weapons", "Armour", "Workshop", "Gems", "Combine", "Repair" };
     /// <summary>In a workshop, the blade picked to fit a grip to.</summary>
-    private GDictionary? _blade;
-    private int TabCount => _view.Workshop ? 7 : 3;
+    private GDictionary? _blade, _grip;
+    private readonly List<GDictionary?> _assemblyGems = new();
+    private int _assemblySlot;
     /// <summary>In the Combine tab, the first blade picked (null while choosing it).</summary>
     private GDictionary? _combining;
     private GDictionary? _combineSecond, _combineResult;
-    private LineEdit _rename = null!;
     private GDictionary? _renaming;
-    /// <summary>In the Gems tab, the weapon picked to take a gem (null while choosing the weapon).</summary>
-    private GDictionary? _gemWeapon;
+    private readonly char[] _nameLetters = new char[20];
+    private int _nameCaret, _nameColumn, _nameRow, _nameCommand = -1, _nameWait, _nameAnswer = -1;
+    private string _nameCandidate = "";
 
     /// <summary>The loose blades, shields and armour that can be combined: all but the one already picked.</summary>
     private List<GDictionary> CombineList()
@@ -76,16 +72,6 @@ public sealed partial class FieldMenu : PanelContainer
         foreach (var piece in Armour())
             if (piece.GetValueOrDefault("id", 0).AsInt32() is >= 127 and <= 142)
                 list.Add(new GDictionary { ["entry"] = new GDictionary { ["record"] = piece }, ["name"] = _view.ItemName(piece["id"].AsInt32()), ["shield"] = true });
-        return list;
-    }
-
-    /// <summary>What the workshop can repair: each weapon's blade (by the weapon's name), and the shields and armour.</summary>
-    private List<(GDictionary Record, string Name)> RepairList()
-    {
-        var list = new List<(GDictionary, string)>();
-        foreach (var weapon in _view.Weapons()) list.Add((weapon["blade"].AsGodotDictionary(), weapon["name"].AsString()));
-        foreach (var piece in Armour())
-            if (piece.GetValueOrDefault("max_dp", 0).AsInt32() > 0) list.Add((piece, _view.ItemName(piece["id"].AsInt32())));
         return list;
     }
 
@@ -161,23 +147,12 @@ public sealed partial class FieldMenu : PanelContainer
         _map = new MapCanvas { Name = "Map", Visible = false };
         itemLayer.AddChild(_map);
         _map.Configure(view.Content);
-        // The workshop's Rename: the weapon's new name, typed, and Enter to keep it.
-        _rename = new LineEdit { Visible = false, MaxLength = 18, CustomMinimumSize = new Vector2(300, 0) };
-        _rename.TextSubmitted += text =>
-        {
-            if (_renaming != null) _note = _view.Rename(_renaming, text);
-            _renaming = null;
-            _rename.Visible = false;
-            Draw();
-        };
-        AddChild(_rename);
     }
 
     private GDictionary? _chest;
     private GadgetBag _bag = null!;
 
-    // The item menu ITEMS opens: its category (0 WEAPONS to 6 MISC, 7 OPTIONS). EQUIP and SETUP still open the
-    // pages drawn as text (_legacy) until their retail screens are built.
+    // ITEMS owns its categories (0 WEAPONS to 6 MISC, 7 OPTIONS); SETUP owns every workshop page.
     private ItemMenu _items = null!;
     /// <summary>The memory card screens, over the item menu's backdrop: the container's save and a save point's.</summary>
     private MemoryCardMenu _cards = null!;
@@ -203,7 +178,6 @@ public sealed partial class FieldMenu : PanelContainer
     /// <summary>The item menu's help as shown, and whether it is under CAUTION.</summary>
     public (string Text, bool Caution) ItemHelpShown => _items.Help;
     private int _category = ItemMenu.Options;
-    private bool _legacy;
     /// <summary>EQUIP's stage (0 not open, 1 the slots, 2 a slot's list) and its slot (0 WEAPON to 7 ACCESSORY).</summary>
     private int _equip, _slot, _statPage;
     /// <summary>Each slot's place among the worn armour (-3 the shield, 0 to 4 the limbs, -1 the accessory).</summary>
@@ -849,7 +823,6 @@ public sealed partial class FieldMenu : PanelContainer
         if (command == 0)
         {
             _page = Items;
-            _legacy = false;
             _category = 6;
             _items.Enter();
             _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1");
@@ -1156,6 +1129,40 @@ public sealed partial class FieldMenu : PanelContainer
                     || _combineSecond != null && (_view.Badge(_combineSecond) != 0 || _combineSecond.ContainsKey("assembly"));
                 foreach (int word in new[] { 34, 35, 85 }) rows.Add(new ItemMenu.Row(SetupString(word), -1, -1, undo ? SetupString(86) : "", Caution: undo));
                 break;
+            case 10:
+                headers = new List<string> { SetupString(62) };
+                foreach (var (entry, empty, help) in new[] { (_blade, 14, 54), (_grip, 15, 55) })
+                {
+                    GadgetBag.Entry? item = entry == null ? null : _view.BagEntry(entry);
+                    rows.Add(new ItemMenu.Row(item?.Name ?? SetupString(empty), -1, item?.Icon ?? -1, SetupString(help), item?.Material ?? -1));
+                }
+                foreach (var gem in _assemblyGems)
+                {
+                    GadgetBag.Entry? item = gem == null ? null : _view.BagEntry(gem);
+                    rows.Add(new ItemMenu.Row(item?.Name ?? SetupString(16), -1, item?.Icon ?? -1, SetupString(56), item?.Material ?? -1));
+                }
+                rows.Add(new ItemMenu.Row(NameString(9), -1, -1, SetupString(57), Greyed: _blade == null || _grip == null));
+                break;
+            case 11:
+            case 12:
+            case 13:
+                headers = new List<string> { SetupString(_setup == 11 ? 63 : _setup == 12 ? 65 : 67) };
+                icons = true;
+                var entries = _setup == 13 ? _view.Gems() : _view.Parts(null, grips: _setup == 12);
+                foreach (var entry in entries)
+                {
+                    if (_setup == 13 && _assemblyGems.Exists(g => g != null && g.RecursiveEqual(entry))) continue;
+                    var item = _view.BagEntry(entry);
+                    bool material = _setup == 11 && !_view.Works(entry["record"].AsGodotDictionary());
+                    bool fits = _setup == 11 ? _grip == null || FieldView.Fits(entry, _grip) : _setup != 12 || _blade == null || FieldView.Fits(_blade, entry);
+                    rows.Add(new ItemMenu.Row(item.Name, -1, item.Icon, SetupString(material ? 20 : !fits ? _setup == 11 ? 19 : 18 : _setup == 11 ? 64 : _setup == 12 ? 66 : 68), item.Material, Greyed: material || !fits, Caution: material || !fits));
+                }
+                break;
+            case 14:
+                headers = new List<string> { SetupString(62) };
+                foreach (int word in new[] { 34, 35, 36 }) rows.Add(new ItemMenu.Row(SetupString(word), -1, -1, SetupString(69), Caution: true));
+                break;
+
         }
         // What the last setup did stands as the information until the cursor moves.
         if (_setupNote.Length > 0 && _setupCursor < rows.Count) rows[_setupCursor] = rows[_setupCursor] with { Help = _setupNote, Caution = false };
@@ -1164,12 +1171,29 @@ public sealed partial class FieldMenu : PanelContainer
 
     /// <summary>
     /// A frame of SETUP. Up and down choose; Circle goes on (a greyed row refuses with the invalid sound), Cross and
-    /// Triangle go back a page, from the commands to OPTIONS. At a workshop ASSEMBLE and COMBINE still open the
-    /// workshop's pages drawn as text.
+    /// Triangle go back a page, from the commands to OPTIONS. Assembly keeps its components loose until YES.
     /// </summary>
     private bool StepSetup(Func<string, bool> pressed, int step)
     {
-        if (_setup is >= 7 and <= 9 && pressed("ps_square"))
+        if (_setup == 10)
+        {
+            if (pressed("ps_triangle")) { _setup = 0; _setupCursor = Assemble; _blade = _grip = null; _assemblyGems.Clear(); _view.MenuSound(FieldView.MenuLeave); Draw(); return true; }
+            if (pressed("ps_cross"))
+            {
+                if (_setupCursor == 0) _blade = null;
+                else if (_setupCursor == 1) { _grip = null; _assemblyGems.Clear(); }
+                else if (_setupCursor - 2 < _assemblyGems.Count) _assemblyGems[_setupCursor - 2] = null;
+                else { _setup = 0; _setupCursor = Assemble; }
+                _view.MenuSound(FieldView.MenuLeave); Draw(); return true;
+            }
+            if (pressed("ps_start"))
+            {
+                if (_blade != null && _grip != null) { _setup = 14; _setupCursor = 1; _view.MenuSound(FieldView.MenuSelect); }
+                else _view.MenuSound(FieldView.MenuInvalid);
+                Draw(); return true;
+            }
+        }
+        if ((_setup is >= 7 and <= 9 || _setup is >= 11 and <= 13) && pressed("ps_square"))
         { _statPage = (_statPage + 1) % 3; _view.MenuSound(FieldView.MenuChange); Draw(); return true; }
         if (_setup == 5)
         {
@@ -1189,6 +1213,7 @@ public sealed partial class FieldMenu : PanelContainer
                 case 1: _setup = 0; _setupCursor = _setupCommand; break;
                 case 2: _setup = _setupCommand == Rename ? 0 : 1; _setupCursor = _setupCommand == Rename ? Rename : _setupKind; break;
                 case 4 when _setupCommand == Repair: _setup = 0; _setupCursor = Repair; break;
+                case 11: case 12: case 13: case 14: _setup = 10; _setupCursor = _assemblySlot; break;
                 case 6: _setup = 0; _setupCursor = Combine; break;
                 case 7: _setup = 6; _setupCursor = _setupKind; _combining = null; break;
                 case 8: _setup = 7; _setupCursor = 0; _combining = null; break;
@@ -1211,7 +1236,42 @@ public sealed partial class FieldMenu : PanelContainer
                 else if (chosen == Rename) { _setup = 2; _setupKind = 0; _setupCursor = 0; }
                 else if (chosen == Repair) { _setup = 4; _setupCursor = 0; }
                 else if (chosen == Combine) { _setup = 6; _setupCursor = 0; _combining = _combineSecond = _combineResult = null; }
-                else { _setup = -1; _legacy = true; _tab = chosen switch { Assemble => 3, Combine => 5, _ => 6 }; _cursor = 0; }
+                else if (chosen == Assemble)
+                {
+                    if (_view.BagCounts()[0] >= GadgetBag.Limits[0]) { _setupNote = SetupString(51); _view.MenuSound(FieldView.MenuInvalid); }
+                    else { _setup = 10; _setupCursor = 0; _blade = _grip = null; _assemblyGems.Clear(); }
+                }
+                break;
+            case 10:
+                _assemblySlot = chosen;
+                if (chosen == 2 + _assemblyGems.Count) { _setup = 14; _setupCursor = 1; }
+                else { _setup = chosen == 0 ? 11 : chosen == 1 ? 12 : 13; _setupCursor = 0; }
+                break;
+            case 11:
+                _blade = _view.Parts(null)[chosen]; _setup = 10; _setupCursor = 0;
+                break;
+            case 12:
+                _grip = _view.Parts(null, grips: true)[chosen];
+                int slots = _grip["record"].AsGodotDictionary().GetValueOrDefault("gem_slots", 0).AsInt32();
+                while (_assemblyGems.Count > slots) _assemblyGems.RemoveAt(_assemblyGems.Count - 1);
+                while (_assemblyGems.Count < slots) _assemblyGems.Add(null);
+                _setup = 10; _setupCursor = 1;
+                break;
+            case 13:
+                _assemblyGems[_assemblySlot - 2] = _view.Gems().FindAll(g => !_assemblyGems.Exists(selected => selected != null && selected.RecursiveEqual(g)))[chosen];
+                _setup = 10; _setupCursor = _assemblySlot;
+                break;
+            case 14:
+                if (chosen == 0)
+                {
+                    _view.Assemble(_blade!, _grip!);
+                    var weapon = _view.Weapons().Find(w => w["blade"].AsGodotDictionary().RecursiveEqual(_blade!["record"].AsGodotDictionary()))!;
+                    foreach (var gem in _assemblyGems) if (gem != null) _view.Attach(weapon, gem);
+                    _setup = 0; _setupCursor = Assemble; _blade = _grip = null; _assemblyGems.Clear();
+                    NameWeapon(weapon, assembled: true);
+                }
+                else if (chosen == 1) { _setup = 10; _setupCursor = _assemblySlot; }
+                else { _setup = 0; _setupCursor = Assemble; _blade = _grip = null; _assemblyGems.Clear(); }
                 break;
             case 1:
                 _setupKind = chosen;
@@ -1246,10 +1306,7 @@ public sealed partial class FieldMenu : PanelContainer
                 else if (_setupCommand == Disassemble) { _setup = 4; _setupCursor = 1; }
                 else
                 {
-                    _renaming = _setupTarget;
-                    _rename.Text = _renaming["name"].AsString();
-                    _rename.Visible = true;
-                    _rename.GrabFocus();
+                    NameWeapon(_setupTarget!);
                     _setupTarget = null;
                 }
                 break;
@@ -1366,15 +1423,99 @@ public sealed partial class FieldMenu : PanelContainer
         return list;
     }
 
+    private string NameString(int index, params string[] values) => SystemBox.Entry(_view.Content.Data("name_menu")["strings"].AsGodotArray(), index, values);
+
+    /// <summary>MENU8 0x80105314: twenty character cells, the caret and keyboard at zero, and eight entrance frames.</summary>
+    private void NameWeapon(GDictionary weapon, bool assembled = false)
+    {
+        _renaming = weapon;
+        Array.Fill(_nameLetters, ' ');
+        string name = assembled ? "" : weapon["name"].AsString();
+        name.CopyTo(0, _nameLetters, 0, Math.Min(name.Length, _nameLetters.Length));
+        _nameCaret = _nameColumn = _nameRow = 0;
+        _nameCommand = _nameAnswer = -1;
+        _nameWait = 8;
+        _items.ShowAshley(null, "");
+    }
+
+    /// <summary>MENU8's keyboard: replace a cell with Circle; L1/R1 move the caret, Triangle inserts a space,
+    /// Square deletes at the caret and Cross backspaces. Start or OK opens Yes/No/Cancel change.</summary>
+    private void StepName(Func<string, bool> pressed)
+    {
+        if (_nameWait > 0) { _nameWait--; Draw(); return; }
+        int vertical = (pressed("ps_down") ? 1 : 0) - (pressed("ps_up") ? 1 : 0);
+        if (_nameAnswer >= 0)
+        {
+            if (vertical != 0) { _nameAnswer = (_nameAnswer + vertical + 3) % 3; _view.MenuSound(FieldView.MenuChange); }
+            if (pressed("ps_cross")) { _nameAnswer = -1; _view.MenuSound(FieldView.MenuLeave); }
+            else if (pressed("ps_circle"))
+            {
+                _view.MenuSound(FieldView.MenuSelect);
+                if (_nameAnswer == 0) { _note = _view.Rename(_renaming!, _nameCandidate); _renaming = null; }
+                else if (_nameAnswer == 2) _renaming = null;
+                _nameAnswer = -1;
+            }
+            Draw(); return;
+        }
+        int caret = (pressed("ps_r1") ? 1 : 0) - (pressed("ps_l1") ? 1 : 0);
+        if (caret != 0) { _nameCaret = (_nameCaret + caret + 20) % 20; _view.MenuSound(FieldView.MenuChange); }
+        bool insert = pressed("ps_triangle"), delete = pressed("ps_square"), back = pressed("ps_cross"), confirm = pressed("ps_start");
+        if (_nameCommand >= 0)
+        {
+            if (vertical != 0) { _nameCommand = (_nameCommand + vertical + 4) % 4; _view.MenuSound(FieldView.MenuChange); }
+            if (pressed("ps_right")) { _nameRow = _nameCommand == 3 ? 1 : 0; _nameColumn = 0; _nameCommand = -1; _view.MenuSound(FieldView.MenuChange); }
+            else if (pressed("ps_circle"))
+            {
+                confirm |= _nameCommand == 0; back |= _nameCommand == 1;
+                delete |= _nameCommand == 2; insert |= _nameCommand == 3;
+            }
+        }
+        else
+        {
+            if (vertical != 0) { _nameRow = (_nameRow + vertical + 9) % 9; _view.MenuSound(FieldView.MenuChange); }
+            if (pressed("ps_left"))
+            {
+                if (_nameColumn == 0) _nameCommand = _nameRow == 0 ? 2 : 3; else _nameColumn--;
+                _view.MenuSound(FieldView.MenuChange);
+            }
+            else if (pressed("ps_right")) { _nameColumn = (_nameColumn + 1) % 14; _view.MenuSound(FieldView.MenuChange); }
+            if (pressed("ps_circle"))
+            {
+                var grid = NameString(13).Split('\n');
+                _nameLetters[_nameCaret] = grid[_nameRow][_nameColumn];
+                _nameCaret = Math.Min(19, _nameCaret + 1);
+                _view.MenuSound(FieldView.MenuChange);
+            }
+        }
+        if (back && _nameCaret > 0) { _nameCaret--; delete = true; }
+        if (delete)
+        {
+            for (int i = _nameCaret; i < 19; i++) _nameLetters[i] = _nameLetters[i + 1];
+            _nameLetters[19] = ' '; _view.MenuSound(FieldView.MenuChange);
+        }
+        if (insert)
+        {
+            for (int i = 19; i > _nameCaret; i--) _nameLetters[i] = _nameLetters[i - 1];
+            _nameLetters[_nameCaret] = ' '; _view.MenuSound(FieldView.MenuChange);
+        }
+        if (confirm)
+        {
+            _nameCandidate = new string(_nameLetters).TrimEnd();
+            if (_nameCandidate.Length == 0) _nameCandidate = _view.ItemName(_renaming!["blade"].AsGodotDictionary()["id"].AsInt32());
+            _nameAnswer = 0; _view.MenuSound(FieldView.MenuSelect);
+        }
+        Draw();
+    }
+
     /// <summary>Advances one frame with the buttons newly pressed; returns false once the menu has closed.</summary>
     public bool Step(Func<string, bool> pressed)
     {
         if (!Visible) return false;
         // Options opens the settings window; the menu waits while it is open.
         if (_settings.Visible) return true;
-        if (_rename.Visible)
+        if (_renaming != null)
         {
-            if (Input.IsActionJustPressed("ui_cancel")) { _rename.Visible = false; _renaming = null; Draw(); }
+            StepName(pressed);
             return true;
         }
         if (_page == Options) { _page = -1; Draw(); return true; }
@@ -1422,10 +1563,10 @@ public sealed partial class FieldMenu : PanelContainer
             if (pressed("ps_circle") && _row == Arts && _artsRefused) { _view.SystemBox.Text = ""; _artsRefused = false; }
             if (pressed("ps_circle") && _row == Magic) { _magicClass = -1; _view.Battle?.CoverHud(true, window: true); }
             if (pressed("ps_circle") && _row == Arts) { _artsCategory = Math.Max(1, _view.Battle?.Ashley?.Category ?? 1); _artsCategories = false; _view.Battle?.CoverHud(true, window: true); }
-            if (pressed("ps_circle")) { _page = _row; _cursor = 0; _note = ""; _topic = -1; _area = 0; _abilityKind = -1; if (_page == Abilities) _view.Battle?.CoverHud(true, window: true); if (_page == Data) { _cursor = 0; _items.Enter(); _items.ShowAshley(null, ""); } if (_page == Options) _settings.Open(_view); if (_page == Items) { _legacy = false; _category = ItemMenu.Options; _items.Enter(); _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1"); } if (_page == Map && _view.Content.Has("map_menu")) _map.Open(_view, 0, _view.Gameplay.Yaw); if (_page == Status && _view.Content.Has("status_menu")) { _statusChosen = 0; _defencePage = -1; _statusEquip = 0; _statusWho = null; _items.Enter(); _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1"); } }
+            if (pressed("ps_circle")) { _page = _row; _cursor = 0; _note = ""; _topic = -1; _area = 0; _abilityKind = -1; if (_page == Abilities) _view.Battle?.CoverHud(true, window: true); if (_page == Data) { _cursor = 0; _items.Enter(); _items.ShowAshley(null, ""); } if (_page == Options) _settings.Open(_view); if (_page == Items) { _category = ItemMenu.Options; _items.Enter(); _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1"); } if (_page == Map && _view.Content.Has("map_menu")) _map.Open(_view, 0, _view.Gameplay.Yaw); if (_page == Status && _view.Content.Has("status_menu")) { _statusChosen = 0; _defencePage = -1; _statusEquip = 0; _statusWho = null; _items.Enter(); _items.ShowAshley(_view.Player, $"{_view.Battle?.Ashley?.BattleSet ?? "battle"}_1"); } }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { Show(false); return false; }
         }
-        else if (_page == Items && !_legacy && _equip > 0)
+        else if (_page == Items && _equip > 0)
         {
             if (_equip == 1)
             {
@@ -1498,8 +1639,8 @@ public sealed partial class FieldMenu : PanelContainer
                 if (pressed("ps_cross")) { _cursor = _abilityKind; _abilityKind = -1; _view.MenuSound(FieldView.MenuLeave); }
             }
         }
-        else if (_page == Items && !_legacy && _setup >= 0) return StepSetup(pressed, step);
-        else if (_page == Items && !_legacy)
+        else if (_page == Items && _setup >= 0) return StepSetup(pressed, step);
+        else if (_page == Items)
         {
             // With a thing's actions up, up and down choose among them and Cross or Triangle puts them away.
             if (_itemAction >= 0 && !pressed("ps_circle"))
@@ -1583,61 +1724,6 @@ public sealed partial class FieldMenu : PanelContainer
         }
         else
         {
-            if (_page == Items && (pressed("ps_l1") || pressed("ps_r1"))) { _tab = (_tab + (pressed("ps_r1") ? 1 : TabCount - 1)) % TabCount; _cursor = 0; _note = ""; _blade = null; _gemWeapon = null; _combining = null; }
-            if (_tab >= TabCount) _tab = 0;
-            if (_page == Items && _tab == 5)
-            {
-                _legacy = false; _setup = 6; _setupCommand = Combine; _setupCursor = 0;
-                _combining = _combineSecond = _combineResult = null;
-                _items.ShowAshley(null, ""); Draw(); return true;
-            }
-            int count = _page != Items ? 0 : _tab switch { 0 => Consumables().Count, 1 => _view.Weapons().Count, 2 => Armour().Count, 3 => _view.Parts(_blade).Count, 4 => _gemWeapon == null ? GemHolders().Count : _view.Gems().Count, _ => RepairList().Count };
-            if (_page == Items && _tab > 0)
-            {
-                if (count > 0 && step != 0) _cursor = (_cursor + step + count) % count;
-                if (pressed("ps_circle") && count > 0)
-                {
-                    if (_tab == 1) { var weapon = _view.Weapons()[Math.Min(_cursor, count - 1)]; _view.Equip(weapon); _note = $"Ashley took up {weapon["name"]}."; }
-                    else if (_tab == 4)
-                    {
-                        // A weapon first, then a gem to set in it.
-                        if (_gemWeapon == null) { _gemWeapon = GemHolders()[Math.Min(_cursor, count - 1)]; _note = $"Choose a gem for the {_gemWeapon["name"]}."; }
-                        else { _note = _view.Attach(_gemWeapon, _view.Gems()[Math.Min(_cursor, count - 1)]); _gemWeapon = null; }
-                        _cursor = 0;
-                    }
-                    else if (_tab == 2) _note = _view.Wear(Armour()[Math.Min(_cursor, count - 1)]);
-                    else if (_tab == 6) { var (record, name) = RepairList()[Math.Min(_cursor, count - 1)]; _note = _view.Repair(record, name); }
-                    else
-                    {
-                        // A blade first, then a grip that fits it.
-                        var part = _view.Parts(_blade)[Math.Min(_cursor, count - 1)];
-                        if (_blade == null) { _blade = part; _note = $"Fit a grip to the {_view.ItemName(part["record"].AsGodotDictionary()["id"].AsInt32())}."; }
-                        else { _note = _view.Assemble(_blade, part); _blade = null; }
-                        _cursor = 0;
-                    }
-                }
-                else if (_tab == 1 && _view.Workshop && pressed("ps_select") && count > 0)
-                {
-                    _renaming = _view.Weapons()[Math.Min(_cursor, count - 1)];
-                    _rename.Text = _renaming["name"].AsString();
-                    _rename.Visible = true;
-                    _rename.GrabFocus();
-                    _note = "Rename this weapon (Enter keeps it).";
-                }
-                else if (_tab == 1 && _view.Workshop && pressed("ps_square") && count > 0)
-                {
-                    // The weapon in her hand comes apart only when asked twice, as retail asks first.
-                    var weapon = _view.Weapons()[Math.Min(_cursor, count - 1)];
-                    if (_view.Holds(weapon) && _confirming != _cursor) { _note = "This weapon is currently equipped. Square again to remove and disassemble it."; _confirming = _cursor; }
-                    else { _note = _view.Disassemble(weapon); _cursor = 0; _confirming = -1; }
-                }
-                else if (_tab == 4 && _gemWeapon == null && pressed("ps_square") && count > 0) _note = _view.Detach(GemHolders()[Math.Min(_cursor, count - 1)]);
-                else if (_tab == 4 && _gemWeapon != null && (pressed("ps_triangle") || pressed("ps_cross"))) { _gemWeapon = null; _note = ""; _cursor = 0; }
-                else if (_tab == 3 && _blade != null && (pressed("ps_triangle") || pressed("ps_cross"))) { _blade = null; _note = ""; _cursor = 0; }
-                else if (pressed("ps_triangle") || pressed("ps_cross")) { _legacy = false; _cursor = _tab == 1 ? 0 : 1; _note = ""; }
-                Draw();
-                return true;
-            }
             if (_page == Chest && _chest != null)
             {
                 var contents = _view.ChestContents(_chest);
@@ -1681,12 +1767,9 @@ public sealed partial class FieldMenu : PanelContainer
                 Draw();
                 return true;
             }
-            var items = Consumables();
-            if (_page == Items && items.Count > 0 && step != 0) _cursor = (_cursor + step + items.Count) % items.Count;
             if (_page == Magic && _view.Content.Has("magic_menu")) return StepMagic(pressed, step);
             if (_page == Arts) return StepArts(pressed, step);
-            if (_page == Items && pressed("ps_circle") && items.Count > 0) _note = Use(items[Math.Min(_cursor, items.Count - 1)]);
-            else if (_page == Magic && pressed("ps_circle") && _view.Spells.Count > 0)
+            if (_page == Magic && pressed("ps_circle") && _view.Spells.Count > 0)
             {
                 // Casting leaves the menu, and the spell plays out in the field.
                 _note = _view.Cast(_view.Spells[Math.Min(_cursor, _view.Spells.Count - 1)]);
@@ -2060,13 +2143,13 @@ public sealed partial class FieldMenu : PanelContainer
         bool magicList = Visible && _page == Magic && _view.Content.Has("magic_menu");
         artsList |= magicList;
         _list.Visible = Visible && (_page < 0 || _page == Abilities) || reclaimList || artsList;
-        bool itemMenu = Visible && _page == Items && !_legacy;
+        bool itemMenu = Visible && _page == Items;
         if (_items.Visible && !itemMenu && _page != Items && _page != Container && _page != Status) _items.ShowAshley(null, "");
         // The field darkens behind the gadget bag (retail footage: to about 45%).
         if (_page == Chest || _bagDimmed) { _bagDimmed = Visible && _page == Chest; _view.DimField(_bagDimmed ? 0.55f : 0); }
         bool asking = Visible && _page == Container && _boxStage == -1;
         bool statusPage = Visible && _page == Status && _view.Content.Has("status_menu");
-        _items.Visible = itemMenu || statusPage || Visible && (_page == Container && !asking || _page == Data || _cards.Open);
+        _items.Visible = itemMenu || statusPage || Visible && (_renaming != null || _page == Container && !asking || _page == Data || _cards.Open);
         if (asking)
         {
             // YES and NO from x 194 at y 148 and 164, as the container's rows are drawn, with no MENU title; the
@@ -2113,7 +2196,7 @@ public sealed partial class FieldMenu : PanelContainer
             _items.SetHeader(_loadingGame ? "" : _page == Container ? BoxString(0) : Data < commands.Count ? commands[Data].AsGodotDictionary()["text"].AsString() : "DATA");
         }
         else if (Visible && _page == Container) DrawContainer();
-        else if (_items.Visible && _page != Data && !statusPage)
+        else if (_items.Visible && _page != Data && !statusPage && _renaming == null)
         {
             var strings = _view.Content.Has("item_menu") ? _view.Content.Data("item_menu")["strings"].AsGodotArray() : new Godot.Collections.Array();
             var commands = _view.Content.Has("battle_text") ? _view.Content.Data("battle_text")["menu"].AsGodotArray() : new Godot.Collections.Array();
@@ -2131,7 +2214,11 @@ public sealed partial class FieldMenu : PanelContainer
                     stats = _setupKind == 0 ? SlotStats(0, new GDictionary { ["blade"] = record, ["grip"] = new GDictionary() })
                         : SlotStats(_setupKind == 1 ? 1 : record["category"].AsInt32() switch { 2 => 2, 3 => 4, 4 => 5, _ => 6 }, record);
                 }
-                _items.SetSetup(headers, setupRows, _setupCursor, icons, _setupCommand == Repair && _setup == 4 ? 146 : -1, _setup == 5 ? SetupString(46) : "", stats);
+                if (_setup is >= 10 and <= 14)
+                {
+                    stats = SlotStats(0, new GDictionary { ["blade"] = _blade == null ? new GDictionary() : _blade["record"], ["grip"] = _grip == null ? new GDictionary() : _grip["record"] });
+                }
+                _items.SetSetup(headers, setupRows, _setupCursor, icons, _setupCommand == Repair && _setup == 4 ? 146 : -1, _setup == 5 ? SetupString(46) : "", stats, assembly: _setup == 10);
             }
             else if (_equip == 1)
             {
@@ -2147,6 +2234,10 @@ public sealed partial class FieldMenu : PanelContainer
             }
             else _items.Set(header, _category, SystemBox.Entry(strings, _category), count, CategoryRows(), _cursor, true, _itemAction >= 0 ? ItemActions() : null, Math.Max(0, _itemAction));
         }
+        if (_renaming != null)
+            _items.SetNaming(new ItemMenu.Naming(new string(_nameLetters), _nameCaret, NameString(13).Split('\n'),
+                new[] { NameString(9), NameString(10), NameString(11), NameString(12) }, _nameColumn, _nameRow, _nameCommand,
+                NameString(5, _nameCandidate), new[] { NameString(6), NameString(7), NameString(8) }, _nameAnswer));
         _bag.Visible = Visible && _page == Chest && _chest != null;
         if (!Visible) return;
         if (_bag.Visible)
@@ -2157,7 +2248,7 @@ public sealed partial class FieldMenu : PanelContainer
         }
         // The commands are retail's list; the pages are still drawn as text in a panel.
         bool abilityList = _page == Abilities;
-        bool panel = _page >= 0 && !statusPage && !(_page == Map && _view.Content.Has("map_menu")) && _page != Chest && _page != Container && _page != Data && _page != Reclaim && !artsList && !(_page == Items && !_legacy) && !abilityList;
+        bool panel = _renaming == null && _page >= 0 && !statusPage && !(_page == Map && _view.Content.Has("map_menu")) && _page != Chest && _page != Container && _page != Data && _page != Reclaim && !artsList && !(_page == Items) && !abilityList;
         SelfModulate = panel ? Colors.White : Colors.Transparent;
         _text.Visible = panel;
         if (_page < 0)
@@ -2308,89 +2399,6 @@ public sealed partial class FieldMenu : PanelContainer
         var lines = new List<string>();
         if (_page < 0)
             for (int i = 0; i < Rows.Length; i++) lines.Add((i == _row ? "> " : "  ") + Rows[i] + (Usable(i) ? "" : "  (not yet)"));
-        else if (_page == Items && _tab == 1)
-        {
-            lines.Add("< Weapons >   (L1 / R1)");
-            var weapons = _view.Weapons();
-            for (int i = 0; i < weapons.Count; i++)
-            {
-                var blade = weapons[i]["blade"].AsGodotDictionary();
-                lines.Add((i == _cursor ? "> " : "  ") + $"{weapons[i]["name"]}  ({_view.ItemName(blade["id"].AsInt32())})");
-            }
-            if (weapons.Count == 0) lines.Add("  (nothing)");
-        }
-        else if (_page == Items && _tab == 6)
-        {
-            lines.Add("< Repair: DP back to its most, for a hundredth of it in PP >   (L1 / R1)");
-            var pieces = RepairList();
-            for (int i = 0; i < pieces.Count; i++)
-            {
-                var (record, name) = pieces[i];
-                int Int(string key) => record.GetValueOrDefault(key, 0).AsInt32();
-                lines.Add((i == _cursor ? "> " : "  ") + $"{name}  DP {Int("dp") / 100}/{Int("max_dp") / 100}  PP {Int("pp") / 100}/{Int("max_pp") / 100}");
-            }
-            if (pieces.Count == 0) lines.Add("  (nothing to repair)");
-        }
-        else if (_page == Items && _tab == 5)
-        {
-            lines.Add(_combining == null ? "< Combine: pick a blade, shield or armour >   (L1 / R1)" : "< Combine: pick the second piece >   (L1 / R1)");
-            var blades = CombineList();
-            for (int i = 0; i < blades.Count; i++)
-            {
-                var record = blades[i]["record"].AsGodotDictionary();
-                lines.Add((i == _cursor ? "> " : "  ") + _view.ItemName(record["id"].AsInt32()) + (_view.Works(record) ? "" : "  (material not worked here)"));
-            }
-            if (blades.Count == 0) lines.Add("  (nothing to combine)");
-        }
-        else if (_page == Items && _tab == 4)
-        {
-            lines.Add(_gemWeapon == null ? "< Gems: pick a weapon or shield (Square takes a gem out) >   (L1 / R1)" : $"< Gems: pick a gem for the {_gemWeapon["name"]} >   (L1 / R1)");
-            if (_gemWeapon == null)
-            {
-                var weapons = GemHolders();
-                for (int i = 0; i < weapons.Count; i++)
-                {
-                    int slots = FieldView.GemSlots(weapons[i]);
-                    var set = new List<string>();
-                    foreach (var gem in FieldView.GemsOf(weapons[i])) set.Add(_view.ItemName(gem.AsGodotDictionary()["id"].AsInt32()));
-                    lines.Add((i == _cursor ? "> " : "  ") + $"{weapons[i]["name"]}  [{set.Count}/{slots}] {string.Join(", ", set)}");
-                }
-                if (weapons.Count == 0) lines.Add("  (no weapons or shields)");
-            }
-            else
-            {
-                var gems = _view.Gems();
-                for (int i = 0; i < gems.Count; i++) lines.Add((i == _cursor ? "> " : "  ") + _view.ItemName(gems[i]["record"].AsGodotDictionary()["id"].AsInt32()));
-                if (gems.Count == 0) lines.Add("  (no gems)");
-            }
-        }
-        else if (_page == Items && _tab == 3)
-        {
-            lines.Add(_blade == null ? "< Workshop: pick a blade >   (L1 / R1)" : "< Workshop: pick a grip >   (L1 / R1)");
-            var parts = _view.Parts(_blade);
-            for (int i = 0; i < parts.Count; i++)
-                lines.Add((i == _cursor ? "> " : "  ") + _view.ItemName(parts[i]["record"].AsGodotDictionary()["id"].AsInt32()));
-            if (parts.Count == 0) lines.Add(_blade == null ? "  (no loose blades)" : "  (no grip fits)");
-        }
-        else if (_page == Items && _tab == 2)
-        {
-            lines.Add("< Armour >   (L1 / R1)");
-            var armour = Armour();
-            for (int i = 0; i < armour.Count; i++)
-            {
-                bool worn = false;
-                foreach (var piece in _view.EquippedArmour.Values) worn |= piece.RecursiveEqual(armour[i]);
-                lines.Add((i == _cursor ? "> " : "  ") + _view.ItemName(armour[i]["id"].AsInt32()) + (worn ? "  (worn)" : ""));
-            }
-            if (armour.Count == 0) lines.Add("  (nothing)");
-        }
-        else if (_page == Items)
-        {
-            lines.Add("< Items >   (L1 / R1)");
-            var items = Consumables();
-            if (items.Count == 0) lines.Add("  (nothing)");
-            for (int i = 0; i < items.Count; i++) lines.Add((i == _cursor ? "> " : "  ") + $"{_view.ItemName(items[i])}  x{_view.Items[items[i]]}");
-        }
         else if (_page == Magic)
         {
             lines.Add("Magic");

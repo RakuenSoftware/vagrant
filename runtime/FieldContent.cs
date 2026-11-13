@@ -185,6 +185,8 @@ public sealed class FieldContent
             "item_help" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/ITEMHELP.BIN")) },
             // SETUP's pages (MENU/MENU12.BIN, laid out as ITEMHELP.BIN is): their words, help and refusals.
             "setup_menu" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/MENU12.BIN")) },
+            // MENU8's weapon naming commands, confirmation and 14 by 9 keyboard (0x80105db4).
+            "name_menu" => new JsonObject { ["strings"] = InventoryConversion.MenuStrings(Read("MENU/MENU8.PRG"), 0x35B4) },
             "gadget_bag" => InventoryConversion.GadgetBag(Read("MENU/MENUB.PRG")),
             // OPTIONS' words (MENU/MENU8.PRG, loaded at 0x80102800; its string table at 0x80105558, file offset 0x2D58): each setting's name
             // and help, then each setting's choices with their help (WEAPON STATUS 4 and 5 with ON and OFF at 30 to 33,
@@ -366,7 +368,7 @@ public sealed class FieldContent
         string room = $"field_z{zone:d3}_m{map:d2}";
         if (Cached(room + ".json") is not { } file || !System.IO.File.Exists(file) || _cache == null) return false;
         var document = JsonNode.Parse(System.IO.File.ReadAllBytes(file));
-        foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => (int)actor!["character"]!)))
+        foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(System.Linq.Enumerable.Where(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => !(bool)(actor?["virtual"] ?? false)), actor => (int)actor!["character"]!)))
             if (Directory.GetFiles(_cache, $"character_{character:X2}_*.glb").Length == 0) return false;
         return true;
     }
@@ -399,6 +401,7 @@ public sealed class FieldContent
             _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
             foreach (var actor in kept["room_actors"]!.AsArray())
             {
+                if ((bool)(actor!["virtual"] ?? false)) continue;
                 int character = (int)actor!["character"]!;
                 _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
                 _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));
@@ -414,6 +417,7 @@ public sealed class FieldContent
         _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
         foreach (var actor in document["room_actors"]!.AsArray())
         {
+            if ((bool)(actor!["virtual"] ?? false)) continue;
             int character = (int)actor!["character"]!;
             _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
             _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));

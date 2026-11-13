@@ -10,7 +10,7 @@ verify each against the current owner before treating that historical list as a 
 |---|---|---|
 | 385 historical individual room runs, with failing rooms rerun after fixes | Room loading and entry events under each test's starting state | These preceded the normal-play mode flag fix and omitted mode-specific actors; they need repeating in normal mode, as well as a continuous campaign |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Wine Cellar and Goodwin; route verification continues | The first Minotaur and remaining normal-mode campaign, workshop assembly/naming parity and save-point menu coverage |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan and saves in zone 13 | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -39,8 +39,20 @@ verify each against the current owner before treating that historical list as a 
   weapon or unequips worn armour, returning gems and preserving grips. Headless and rendered checks cover cancellation
   and confirmation, with transaction checks for inventory-slot and nested weapons, shields and armour. Exact retail
   animation and every preview layout still need comparison.
-- **Workshop assembly and naming remain incomplete.** Assembly still uses a text panel and naming a LineEdit;
-  their native component workbench, confirmation and controller keyboard remain to be finished.
+- **Workshop assembly and naming, improved in this audit.** The component workbench replaces assembly's text
+  panel: blade-first or grip-first selection, material and compatibility refusals, removable components and gems,
+  Start/OK confirmation, and YES/NO/Cancel setup. Components stay in the bag until YES. The MENU8 controller
+  keyboard replaces the LineEdit, using the disc's 14-by-9 glyph grid and twenty name cells, with caret movement,
+  insertion, deletion, backspace and confirmation. Cancel change after assembly preserves the new weapon's blade
+  name. Headless and isolated rendered checks cover ownership, cancellation and two gems; naming and disk-resume
+  checks cover all twenty cells. Exact retail animation and every stat-preview layout still need comparison.
+- **Model-less interaction actors, fixed in this audit.** Template 0x7f records now retain their event slots
+  without loading a nonexistent model, matching BATTLE.PRG 0x80077330. Cross tests actor-participant condition 6;
+  tile events also test while standing still. The timed lever gate in room 9,11 now runs through pad input,
+  including the block climb, lever choice and three-second exit.
+- **Deleted battle actors, fixed in this audit.** The Minotaur's defeat event deletes its actor while the field
+  still advances battle presentation. Deletion now releases combatant, weapon, target and pending-action
+  references before freeing scene nodes, preventing the repeated disposed-node exception.
 - **Normal-play mode flags, fixed in this audit.** Fresh event worlds now initialize flags 1 and 0x11c to one,
   matching TITLE.PRG 0x8007137c/0x80071254. Leaving flag 1 at zero excluded normal-play-only room actors, including
   the first Minotaur. Earlier campaign checkpoints and room sweeps cannot establish normal-mode encounter coverage.

@@ -72,7 +72,19 @@ public sealed partial class ItemMenu : RetailScreen
     private int _category = Options, _chosen, _first, _frames, _ticks;
     private bool _browsing = true;
 
-    private enum Mode { Items, Slots, List, ContainerTop, ContainerList, Header, Data, Setup, Status }
+    private enum Mode { Items, Slots, List, ContainerTop, ContainerList, Header, Data, Setup, Status, Naming }
+    /// <summary>MENU8's twenty name cells, 14 by 9 disc keyboard, commands and confirmation.</summary>
+    public sealed record Naming(string Value, int Caret, string[] Grid, string[] Commands, int Column, int Row, int Command,
+        string Question, string[] Answers, int Answer);
+    private Naming? _naming;
+
+    public void SetNaming(Naming naming)
+    {
+        Enter(Mode.Naming);
+        _naming = naming;
+        _rows = Array.Empty<Row>(); _actions = null; _stats = null;
+        QueueRedraw();
+    }
 
     /// <summary>
     /// The container's screens (MENU/MENUD.PRG): its words and both stores' counts by category against their limits,
@@ -102,7 +114,8 @@ public sealed partial class ItemMenu : RetailScreen
     private Row? Helped => _mode is Mode.Items or Mode.ContainerList && _actions is { } shown && _action < shown.Count ? shown[_action] : _chosen >= 0 && _chosen < _rows.Count ? _rows[_chosen] : null;
 
     /// <summary>The help shown, and whether it stands under CAUTION.</summary>
-    public (string Text, bool Caution) Help => _mode == Mode.Status ? (_status?.Help ?? "", false) : _mode == Mode.Setup && _setupCaution.Length > 0 ? (_setupCaution, true) : (Helped?.Help ?? "", Helped is { Caution: true });
+    public (string Text, bool Caution) Help => _mode == Mode.Naming ? (_naming is { Answer: >= 0 } name ? (name.Question, true) : ("", false))
+        : _mode == Mode.Status ? (_status?.Help ?? "", false) : _mode == Mode.Setup && _setupCaution.Length > 0 ? (_setupCaution, true) : (Helped?.Help ?? "", Helped is { Caution: true });
     private int _action;
     private Texture2D? _digits;
 
@@ -287,11 +300,11 @@ public sealed partial class ItemMenu : RetailScreen
     /// or things with their icons from x 169 (<paramref name="icons"/>), the pointer at the chosen one (footage:
     /// SETUP's six commands; SETUP and ATTACH GEMS over WEAPONS and SHIELDS; "ATTACH: Weapon" over the weapons).
     /// </summary>
-    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons, int rowTop = -1, string caution = "", Stats? stats = null)
+    public void SetSetup(IReadOnlyList<string> headers, IReadOnlyList<Row> rows, int chosen, bool icons, int rowTop = -1, string caution = "", Stats? stats = null, bool assembly = false)
     {
         if (_mode != Mode.Setup) Enter(Mode.Setup);
         (_headers, _rows, _chosen, _browsing, _iconRows) = (headers, rows, chosen, false, icons);
-        (_setupRowTop, _setupCaution) = (rowTop, caution);
+        (_setupRowTop, _setupCaution, _assembly) = (rowTop, caution, assembly);
         _stats = stats;
         if (_chosen < _first) _first = Math.Max(0, _chosen);
         if (_chosen >= _first + 8) _first = _chosen - 7;
@@ -300,7 +313,7 @@ public sealed partial class ItemMenu : RetailScreen
     }
 
     private IReadOnlyList<string> _headers = Array.Empty<string>();
-    private bool _iconRows;
+    private bool _iconRows, _assembly;
     private int _setupRowTop = -1;
     private string _setupCaution = "";
 
@@ -691,7 +704,7 @@ public sealed partial class ItemMenu : RetailScreen
         // container's first menu has neither.
         if (_mode == Mode.List) FieldView.Sprite(this, _chosenIcons, new Rect2(120 + 16 * _category, 128, 16, 16), new Vector2(0, 14), unit);
         else if (_mode == Mode.Slots && !_strip) { }
-        else if (_mode is Mode.ContainerTop or Mode.Header or Mode.Data or Mode.Setup or Mode.Status) { }
+        else if (_mode is Mode.ContainerTop or Mode.Header or Mode.Data or Mode.Setup or Mode.Status or Mode.Naming) { }
         else
         {
             // The category strip and its arrows.
@@ -845,16 +858,48 @@ public sealed partial class ItemMenu : RetailScreen
             DrawSetTransform(Vector2.Zero);
             return;
         }
+        else if (_mode == Mode.Naming && _naming is { } naming)
+        {
+            // MENU8 0x80103fd8/0x801046f0: commands at (40,36), twenty six-pixel name cells from
+            // (162,48), keyboard glyphs from (130,78), twelve across and sixteen down.
+            Side(1);
+            for (int i = 0; i < naming.Commands.Length; i++)
+            {
+                if (naming.Command == i) Bar(24, 36 + i * 16, 72, MenuList.ChosenLight, MenuList.ChosenDark);
+                Text(naming.Commands[i], 40, 36 + i * 16);
+            }
+            Bar(156, 48, 164, MenuList.HeaderLight, MenuList.HeaderDark);
+            for (int i = 0; i < naming.Value.Length && i < 20; i++) Text(naming.Value[i].ToString(), 162 + i * 6, 48);
+            DrawRect(new Rect2(new Vector2(161 + naming.Caret * 6, 48) * unit, new Vector2(8, 12) * unit), new Color(0.5f, 0.8f, 1, 0.5f), false);
+            if (naming.Command < 0 && naming.Answer < 0)
+                DrawRect(new Rect2(new Vector2(128 + naming.Column * 12, 76 + naming.Row * 16) * unit, new Vector2(10, 18) * unit), new Color(0.1f, 0.4f, 0.7f, 0.6f));
+            for (int row = 0; row < naming.Grid.Length; row++)
+                for (int col = 0; col < naming.Grid[row].Length; col++) Text(naming.Grid[row][col].ToString(), 130 + col * 12, 78 + row * 16);
+            if (naming.Answer < 0)
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, naming.Command >= 0 ? new Vector2(24, 26 + naming.Command * 16)
+                    : new Vector2(112 + naming.Column * 12, 66 + naming.Row * 16), unit);
+            else
+            {
+                DrawRect(new Rect2(new Vector2(190, 120) * unit, new Vector2(130, 56) * unit), Colors.Black);
+                for (int i = 0; i < naming.Answers.Length; i++)
+                {
+                    Bar(194, 128 + i * 16, 126, i == naming.Answer ? MenuList.ChosenLight : MenuList.HeaderLight, i == naming.Answer ? MenuList.ChosenDark : MenuList.HeaderDark);
+                    Text(naming.Answers[i], 200, 128 + i * 16);
+                }
+                FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(180, 118 + naming.Answer * 16), unit);
+                DrawRect(new Rect2(new Vector2(0, 176) * unit, new Vector2(320, 48) * unit), Colors.Black);
+            }
+        }
         else if (_mode == Mode.Setup)
         {
             if (_stats is { } stats) { Side(0); DrawStats(stats, unit, (text, x, y, right) => Text(text, x, y, right), Bar); }
             for (int h = 0; h < _headers.Count; h++)
             {
-                Bar(180 + slide, 18 + 16 * h, 140, MenuList.HeaderLight, MenuList.HeaderDark);
-                Text(_headers[h], 186 + slide, 18 + 16 * h);
+                Bar((_assembly ? 155 : 180) + slide, 18 + 16 * h, _assembly ? 165 : 140, MenuList.HeaderLight, MenuList.HeaderDark);
+                Text(_headers[h], (_assembly ? 161 : 186) + slide, 18 + 16 * h);
             }
-            float top = _setupRowTop >= 0 ? _setupRowTop : 18 + 16 * _headers.Count, x = _iconRows ? 169 : 194;
-            for (int i = _first; i < _rows.Count && i < _first + 8; i++) Row(_rows[i], x + slide, top + 16 * (i - _first), _iconRows ? 151 : 126, i == _chosen);
+            float top = _setupRowTop >= 0 ? _setupRowTop : 18 + 16 * _headers.Count, x = _assembly ? 162 : _iconRows ? 169 : 194;
+            for (int i = _first; i < _rows.Count && i < _first + 8; i++) Row(_rows[i], x + slide, top + 16 * (i - _first), _assembly ? 158 : _iconRows ? 151 : 126, i == _chosen);
             if (_chosen >= _first && _chosen < _rows.Count) FieldView.Sprite(this, _cursor, MenuList.Pointer, new Vector2(x - 14, top + 16 * (_chosen - _first) - 10), unit);
         }
         else if (_mode == Mode.Data)
