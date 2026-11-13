@@ -531,31 +531,20 @@ public sealed class EventActor
     public EventActor? LookTarget;
     public int LookSpeed = 0x1000;
     public HeadTurn? Head;
-    /// <summary>
-    /// The enemy AI's head modes (0x8009fc60 with mode -4 and -3), heeded when the head looks at no point or actor: a
-    /// twist held at a value from the body's facing, or toward a facing of its own (the twist the facing less the
-    /// body's). With neither the head turns back to the body's facing.
-    /// </summary>
-    public float? LookTwist, LookFacing;
+    /// <summary>A turn of the head the battle holds it to (an enemy's upper-body twist, body +0x14), null when it does not.</summary>
+    public float? HeldYaw;
 
     public void StepLook()
     {
         if (Head == null) return;
+        if (HeldYaw is { } held) { Head.Yaw = held; return; }
         string clip = Player?.CurrentAnimation ?? "";
         bool free = clip == $"base_{FieldPlayer.Idle}" || clip == $"base_{FieldPlayer.Walk}";
-        // The AI's twist holds while the body plays a standing or walking motion (0x800b002c: numbers 0, 1, 6, 13, 14,
-        // 17 and 18 of whatever set it fights with); otherwise the head turns back.
-        int number = clip.LastIndexOf('_') is >= 0 and var cut && int.TryParse(clip[(cut + 1)..], out int n) ? n % 100 : -1;
-        bool stance = number is 0 or FieldPlayer.Idle or FieldPlayer.Stop or FieldPlayer.Walk or 14 or 17 or 18;
         var point = LookTarget?.Position ?? LookPoint;
         float want = 0;
         if (free && point is { } target && (target - Position) is { } offset && new Vector2(offset.X, offset.Z).Length() > 1)
         {
             want = Mathf.Clamp(Mathf.Wrap(FacingToward(target) - Facing, -2048, 2048), -800, 800);
-        }
-        else if (stance && point == null && (LookTwist ?? (LookFacing is { } facing ? facing - Facing : null)) is { } twist)
-        {
-            want = Mathf.Clamp(Mathf.Wrap(twist, -2048, 2048), -800, 800);
         }
         float step = LookSpeed <= 0 ? 0x1000 : LookSpeed;
         Head.Yaw = Mathf.MoveToward(Head.Yaw, want, step);

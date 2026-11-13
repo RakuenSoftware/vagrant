@@ -625,6 +625,8 @@ public sealed partial class FieldBattle
         foreach (var other in Combatants.Values)
         {
             if (other.Actor == mover || other.Dead || !other.Actor.Visible) continue;
+            // An enemy's body is never stopped by bodies 0 and 1 (BATTLE.PRG 0x800a8fd4 tests bodies 2 to 16 only).
+            if (mover != Ashley?.Actor && other.Index is 0 or 1) continue;
             var at = other.Actor.Position;
             float after = new Vector2(next.X - at.X, next.Z - at.Z).Length(), before = new Vector2(mover.Position.X - at.X, mover.Position.Z - at.Z).Length();
             if (after < Spacing && after < before) return true;
@@ -2552,56 +2554,6 @@ public sealed partial class FieldBattle
         target.Timer = Math.Max(target.Timer, 30);
     }
 
-
-    /// <summary>
-    /// Where an enemy heads for to reach a point (BATTLE.PRG 0x800e19fc): in the point's zone, or not routing, straight
-    /// at it; else for the nearer to it of the two connector tiles the room links its zone to the point's by, along z
-    /// first then x (0x800def30); and on the connector, through it into the next zone: its steps (bits 13 and 14, less
-    /// one) in its direction (bits 11 and 12: octants 2, 6, 4 and 0; 0x800f175c). A connector with bit 15 is not used;
-    /// one with bit 10 is a crate step (0x800dfaf8): it serves only while the crate its pair names stands beside it (the
-    /// room's "crate_steps"), when the enemy climbs onto that crate (mode 14; taken as the crate's tile), and otherwise
-    /// the enemy waits on it.
-    /// </summary>
-    private Vector3 Waypoint(Combatant enemy, Vector3 point)
-    {
-        var position = enemy.Actor.Position;
-        int x = (int)Mathf.Floor(position.X / 128), z = (int)Mathf.Floor(position.Z / 128);
-        int tx = (int)Mathf.Floor(point.X / 128), tz = (int)Mathf.Floor(point.Z / 128);
-        int from = _view.TileZone(x, z), to = _view.TileZone(tx, tz);
-        if (!enemy.Routes || from == to) return point;
-        uint link = _view.ZoneLink(to, from);
-        if ((link & 0x1be0) == 0) return point;
-        int best = -1, bestDistance = int.MaxValue;
-        foreach (int half in (link & 0x1be00000) != 0 ? new[] { (int)(link & 0xFFFF), (int)(link >> 16) } : new[] { (int)(link & 0xFFFF) })
-        {
-            if ((half & 0x8000) != 0) continue;
-            int cx = half >> 5 & 31, cz = half & 31, distance = (cx - tx) * (cx - tx) + (cz - tz) * (cz - tz);
-            if (distance < bestDistance) (best, bestDistance) = (half, distance);
-        }
-        if (best < 0) return point;
-        int connectorX = best >> 5 & 31, connectorZ = best & 31;
-        enemy.Mover!.Climbs = false;
-        if (x == connectorX && z == connectorZ && (best & 0x400) != 0)
-        {
-            var steps = _view.Document.GetValueOrDefault("crate_steps", new Godot.Collections.Array()).AsGodotArray();
-            for (int i = 0; i < steps.Count; i++)
-            {
-                var step = steps[i].AsGodotArray();
-                if (step[0].AsInt32() != x || step[1].AsInt32() != z || _view.CrateTile(i / 2) is not { } crate || crate.X != step[2].AsInt32() || crate.Z != step[3].AsInt32()) continue;
-                enemy.Mover.Climbs = true;
-                return new Vector3(crate.X * 128 + 64, position.Y, crate.Z * 128 + 64);
-            }
-            return new Vector3(connectorX * 128 + 64, position.Y, connectorZ * 128 + 64);
-        }
-        if (x == connectorX && z == connectorZ)
-        {
-            int octant = new[] { 2, 6, 4, 0 }[best >> 11 & 3], steps = (best >> 13 & 3) + 1;
-            float angle = octant * 512 * Mathf.Tau / 4096;
-            int dx = Mathf.RoundToInt(-Mathf.Sin(angle)), dz = Mathf.RoundToInt(-Mathf.Cos(angle));
-            return new Vector3((x + dx * steps) * 128 + 64, position.Y, (z + dz * steps) * 128 + 64);
-        }
-        return z != connectorZ ? new Vector3(position.X, position.Y, connectorZ * 128 + 64) : new Vector3(connectorX * 128 + 64, position.Y, position.Z);
-    }
 
     /// <summary>How an enemy moves: walking (and running), hopping from tile to tile, or flying.</summary>
     public enum Gait { Walk, Hop, Fly }
