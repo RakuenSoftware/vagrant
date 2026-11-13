@@ -25,7 +25,7 @@ void fragment() {
 }" } } };
             GetParent().AddChild(background);
             GetParent().MoveChild(background, GetIndex());
-            var expected = new[] { (5, 10, 15), (0, 6, 13), (8, 10, 15), (21, 18, 19), (23, 27, 29), (7, 5, 5), (12, 13, 16), (8, 4, 2) };
+            var expected = new[] { (5, 10, 15), (0, 6, 13), (8, 10, 15), (21, 18, 19), (23, 27, 29), (8, 6, 6), (12, 13, 16), (8, 4, 2) };
             foreach (bool hdr in new[] { false, true })
             {
                 GetViewport().UseHdr2D = hdr;
@@ -39,7 +39,8 @@ void fragment() {
                     Tile(120, 0, 40, 224, 64, 32, 16, true); Tile(120, 0, 40, 224, 64, 32, 16, true);
                     Tile(160, 0, 40, 224, 248, 248, 248, true);
                     DrawMode(2 << 5, false); Tile(160, 0, 40, 224, 64, 32, 16, true);
-                    DrawMode(0, false); Tile(200, 0, 40, 224, 64, 32, 16, true); Tile(200, 0, 40, 224, 64, 32, 16, true);
+                    // Odd five-bit foreground values distinguish rounding the sum from rounding each half separately.
+                    DrawMode(0, false); Tile(200, 0, 40, 224, 72, 40, 24, true); Tile(200, 0, 40, 224, 72, 40, 24, true);
                     DrawMode(3 << 5, false); Tile(240, 0, 40, 224, 248, 120, 56, true);
                     Tile(280, 0, 40, 224, 64, 32, 16, false);
                 });

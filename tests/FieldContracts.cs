@@ -248,6 +248,15 @@ public partial class FieldContracts : Node
     public override void _PhysicsProcess(double delta)
     {
         if (_yaw is { } yaw && _view != null) _view.Gameplay.Yaw = yaw;
+        if (_ending == null && _view is { GameEnded: true })
+            foreach (var child in _view.Screen.GetChildren())
+                if (child is Wol.Games.Vagrant.Scenes.Ending.Ending ending)
+                {
+                    _ending = ending;
+                    _frame = 0;
+                    GD.Print("FIELD: the final event handed the field to the ending");
+                    break;
+                }
         if (_ending != null)
         {
             _frame++;
@@ -1278,7 +1287,7 @@ public partial class FieldContracts : Node
         foreach (var fighter in battle.Combatants.Values)
         {
             if (fighter == battle.Ashley || fighter.Shield.Id == 0) continue;
-            var definition = _view.Content.Data("characters").GetValueOrDefault(fighter.Actor.Character.ToString("X2"), new Godot.Collections.Dictionary()).AsGodotDictionary();
+            var definition = _view.Content.Character(fighter.Actor.Character);
             if (definition.GetValueOrDefault("shield_bone", -1).AsInt32() < 0) continue;
             if (fighter.ShieldModel == null) return $"character {fighter.Actor.Character:X2} holds no shield";
             held++;
@@ -1322,6 +1331,12 @@ public partial class FieldContracts : Node
     /// </summary>
     private string CheckCrate()
     {
+        var ids = new HashSet<int>();
+        foreach (var value in _view.Document["objects"].AsGodotArray())
+            if (!ids.Add(value.AsGodotDictionary()["id"].AsInt32())) return "the room has duplicate object ids";
+        int groups = _view.Document["room_groups"].AsGodotArray().Count;
+        foreach (var value in _view.Document["crates"].AsGodotArray())
+            if (value.AsGodotDictionary()["id"].AsInt32() < groups) return "a crate occupies a geometry group's id";
         if (_view.Player is not { } ashley) return "";
         var rolls = _view.Document.GetValueOrDefault("crate_rolls", new Godot.Collections.Array()).AsGodotArray();
         var start = (ashley.Position, ashley.Facing);

@@ -161,7 +161,7 @@ public sealed class MapConversion
         if (cursor != geometry + geometryLength) throw new InvalidDataException("The room geometry has an unexpected length.");
 
         // Crates add models, objects and a texture of their own before the textures are written.
-        var crates = Crates(models, objects, textures);
+        var crates = Crates(models, objects, textures, groups);
         var trapPanel = TrapPanel(textures);
         var textureFiles = new JsonObject();
         foreach (var (key, (page, clut, mask)) in textures)
@@ -457,7 +457,7 @@ public sealed class MapConversion
     /// tile. Their texture is the zone page at (384, 0), each kind in its own 64 by 32 cell (kind 6 shares kind 5's),
     /// through the zone palette at (768 + 16 × kind, 227).
     /// </summary>
-    private JsonArray Crates(JsonArray models, JsonArray objects, SortedDictionary<string, (int Page, int Clut, int Mask)> surfacesTextures)
+    private JsonArray Crates(JsonArray models, JsonArray objects, SortedDictionary<string, (int Page, int Clut, int Mask)> surfacesTextures, int groupCount)
     {
         var crates = new JsonArray();
         if (_battle == null) return crates;
@@ -508,8 +508,9 @@ public sealed class MapConversion
                 }
                 cursor += quad ? 0x20 : 0x18;
             }
-            // Object ids are numbers in the field document; the crates follow the room's groups.
-            int id = objects.Count;
+            // Geometry keeps its original group ids, including empty groups that produced no object. Crates start
+            // after that entire range so neither geometry nor group commands can address a crate by accident.
+            int id = groupCount + crates.Count;
             int x = _map[record + 10], z = _map[record + 11], stack = _map[record + 12] >> 4;
             objects.Add(new JsonObject { ["id"] = id, ["model"] = models.Count, ["position"] = new JsonArray { 0, 0, 0 } });
             models.Add(new JsonObject { ["blocks"] = new JsonArray { new JsonObject { ["groups"] = new JsonArray { surface } } } });
