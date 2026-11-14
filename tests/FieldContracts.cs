@@ -672,8 +672,14 @@ public partial class FieldContracts : Node
             Capture($"campaign_{_campaignRooms:d4}_{_view.Zone:d3}_{_view.Map:d2}");
         }
         if (!_view.Controlled && _frame % 600 == 0)
-            GD.Print($"CAMPAIGN: scene {_view.Zone},{_view.Map}, node {_view.EventNode}, {_view.WaitingOn}");
+            GD.Print($"CAMPAIGN: scene {_view.Zone},{_view.Map}, node {_view.EventNode}, {_view.WaitingOn}, camera tick {_view.Field.PresentationTick}, tracks {string.Join(';', _view.Field.CameraTracks.Select((t, i) => t.Active ? $"{i}/{t.Kind}/{t.Progress(_view.Field.PresentationTick):F3}" : "").Where(s => s.Length > 0))}");
         if (_view.Battle?.GameOver == true) { Finish($"campaign: Ashley fell in {_view.Zone},{_view.Map} after {_campaignRooms} room entries"); return; }
+        if (_view.Battle is { Ashley: { Hp: 0 } } fallen)
+        {
+            Steer(Vector2.Zero);
+            if (fallen.Paused && _press == 0) Tap("ps_cross");
+            return;
+        }
         // A defeated enemy can open the gadget bag during recovery. Collect its actual drops before menu navigation.
         if (_view.MenuOpen && _view.MenuPage == 11)
         {
@@ -948,6 +954,7 @@ public partial class FieldContracts : Node
             }
             return;
         }
+        int recoveryPercent = (_view.Zone, _view.Map) == (40, 22) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
@@ -978,26 +985,30 @@ public partial class FieldContracts : Node
                     Steer(restRunner.Actor.Position.DistanceTo(_campaignRestPoint) < 24 ? Vector2.Zero : new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
                     _fightProgressAt++;
                     if (restBattle.Paused || !restBattle.Busy && restBattle.Drawn) Tap("ps_cross");
-                    if (!(restRunner.Hp < restRunner.MaxHp * 3 / 4)) return;
+                    if (!(restRunner.Hp * 100 < restRunner.MaxHp * recoveryPercent)) return;
                 }
             }
         }
-        // Use earned recovery and the owned Pyro Guard against the mine elemental, through the normal menus.
+        // Match the owned fusion to the encounter, through the normal magic and item menus.
+        bool earthDragon = (_view.Zone, _view.Map) == (40, 22);
+        bool elementalFight = earthDragon || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
+        int fusionSpell = earthDragon ? 66 : 69, fusionItem = earthDragon ? 449 : 452, fusionStatus = earthDragon ? 19 : 22;
+        int guardSpell = earthDragon ? 72 : 71, guardItemId = earthDragon ? 455 : 454, guardStatus = earthDragon ? 25 : 24;
         bool mineDebuff = ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
-            && mineFight.Combatants.Values.Any(c => c.Targetable && c.MaxHp >= 300 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
-        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp * 3 / 4 || patient.Risk > 60 || mineDebuff
+            && mineFight.Combatants.Values.Any(c => c.Targetable && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
+        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
                 || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
-                || ((_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20 && recovery.HostileCount() > 0 && ((_view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0) ? !patient.Has(22)
-                        : !patient.Has(24) && (_view.Spells.Contains(71) || _view.Items.GetValueOrDefault(454) > 0)))))
+                || (elementalFight && recovery.HostileCount() > 0 && ((_view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0) ? !patient.Has(fusionStatus)
+                        : !patient.Has(guardStatus) && (_view.Spells.Contains(guardSpell) || _view.Items.GetValueOrDefault(guardItemId) > 0)))))
         {
-            bool life = patient.Hp < patient.MaxHp * 3 / 4;
-            bool frost = _view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0;
-            bool guard = !life && (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20 && recovery.HostileCount() > 0 && (frost ? !patient.Has(22) : !patient.Has(24));
+            bool life = patient.Hp * 100 < patient.MaxHp * recoveryPercent;
+            bool frost = _view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0;
+            bool guard = !life && elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus));
             bool weakening = !life && mineDebuff;
-            _campaignHealSpell = weakening ? 54 : guard ? frost ? 69 : 71 : 96;
+            _campaignHealSpell = weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
             _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
             if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
@@ -1017,7 +1028,7 @@ public partial class FieldContracts : Node
             }
             else
             {
-                int guardItem = frost ? 452 : 454;
+                int guardItem = frost ? fusionItem : guardItemId;
                 int cure = patient.Has(FieldBattle.Paralysis) ? 339 : patient.Has(FieldBattle.Poison) ? 340 : patient.Has(FieldBattle.Numbness) ? 341 : 0;
                 int[] choices = cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
                     : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
@@ -3894,8 +3905,8 @@ public partial class FieldContracts : Node
         {
             if (timing < 0) _fightLinked = false;
             var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0).ToArray();
-            if (_campaign && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
-                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) == (50, 17) ? 3 : 6))
+            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
+                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
             {
                 Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
                 _fightLinked = true; _fightChainLinks++;
@@ -3957,7 +3968,7 @@ public partial class FieldContracts : Node
         if (nearest == null) { Steer(Vector2.Zero); return; }
         if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;
-        if (_frame >= _fightCloseUntil && FieldBattle.InSphere(ashley, nearest))
+        if (_frame >= _fightCloseUntil && (!_campaign || (_view.Zone, _view.Map) != (40, 22) || new Vector2(offset.X, offset.Z).Length() <= 128) && FieldBattle.InSphere(ashley, nearest))
         {
             Steer(Vector2.Zero);
             if (elapsed % 8 == 0) Tap("ps_circle");
