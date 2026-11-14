@@ -181,14 +181,26 @@ class DesktopRelease:
 
     def audit(self, output):
         # Inspect loose files as well as the PCK, whose contents the exported player checks below.
+        retail = json.loads((self.root / "installation/retail_digests.json").read_text())
+        retail_hashes = set(retail.values())
+        retail_formats = {Path(name).suffix.lower() for name in retail} | {".str", ".xa", ".cue", ".iso", ".chd", ".img"}
         forbidden = {".cs", ".cpp", ".hpp", ".h", ".pdb", ".mdb", ".csproj", ".sln", ".cue", ".iso", ".chd", ".xml"}
         for file in output.rglob("*"):
             if file.is_symlink():
                 raise RuntimeError("Player packages must not depend on checkout symlinks: " + str(file))
             if file.is_file() and file.suffix.lower() in forbidden:
                 raise RuntimeError("Source, symbols or disc image in player: " + str(file))
-            if file.is_file() and any(p in ("disc", "test-results", ".git", ".dependencies") for p in file.relative_to(output).parts):
+            if file.is_file() and file.suffix.lower() in retail_formats:
+                raise RuntimeError("Retail disc file format in player: " + str(file))
+            if file.is_file() and any(p in ("disc", "cache", "captures", "screenshots", "test-results", ".git", ".dependencies") for p in file.relative_to(output).parts):
                 raise RuntimeError("Private/development data in player: " + str(file))
+            if file.is_file():
+                with file.open("rb") as source:
+                    signature = source.read(12)
+                    source.seek(0)
+                    digest = hashlib.file_digest(source, "sha256").hexdigest()
+                if (file.stat().st_size >= 32 and digest in retail_hashes) or signature.startswith(b"PS-X EXE") or signature == b"\0" + b"\xff" * 10 + b"\0":
+                    raise RuntimeError("Retail disc content/signature in player: " + str(file))
         for name, source in (("GodotSharp.dll", ".dependencies/godot-api/api/Release/GodotSharp.dll"),
                              ("WolEngine.dll", "managed/Release/WolEngine.dll")):
             expected = hashlib.sha256((self.sdk / source).read_bytes()).hexdigest()
@@ -295,7 +307,9 @@ class DesktopRelease:
             for file in sorted(output.rglob("*")):
                 if file.is_file():
                     packed.write(file, Path("Vagrant") / file.relative_to(output))
-        archive.with_suffix(".zip.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n")
+        archive.with_suffix(".zip.sha256").write_text(
+            hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n",
+            encoding="utf-8", newline="\n")
         print("PLAYER_ARCHIVE:", archive, flush=True)
 
 
