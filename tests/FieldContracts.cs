@@ -35,10 +35,16 @@ public partial class FieldContracts : Node
     private int _fightLastHp = -1, _fightStalls;
     private int _campaignHealStep, _campaignHealAt, _campaignHealStart, _campaignHealItem, _campaignHealCount, _campaignHealHp, _campaignHealMp, _campaignHealClass, _campaignHealSpellRow, _campaignHealSelection, _campaignDeathAt;
     private bool _campaignHealMagic;
+    private int _campaignHealSpell = 96;
+    private int _campaignAbilityStep, _campaignAbilitySelection, _fightChainLinks;
+    private Vector3 _campaignRestPoint;
+    private (int Zone, int Map)? _campaignLoot;
+    private int _campaignLootAt, _campaignLootStart, _campaignLootItem;
+
     private bool _repairAllCheck;
     private bool _combineCheck;
     private bool _nameCheck, _assemblyCheck;
-    private int _assemblyFrame, _campaignStory, _campaignFlag, _campaignFlagValue;
+    private int _assemblyFrame, _campaignStory, _campaignFlag, _campaignFlagValue, _campaignItem;
     private string _assemblyBefore = "";
     private int _nameFrame;
     private string _nameOriginal = "";
@@ -149,6 +155,9 @@ public partial class FieldContracts : Node
             if (argument == "--campaign") _campaign = true;
             if (argument.StartsWith("--campaign-save=", StringComparison.Ordinal)) _campaignSave = argument["--campaign-save=".Length..];
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
+            if (argument.StartsWith("--campaign-item=", StringComparison.Ordinal)) _campaignItem = int.Parse(argument["--campaign-item=".Length..]);
+            if (argument.StartsWith("--campaign-loot-item=", StringComparison.Ordinal)) _campaignLootItem = int.Parse(argument["--campaign-loot-item=".Length..]);
+            if (argument.StartsWith("--campaign-loot=", StringComparison.Ordinal) && argument["--campaign-loot=".Length..].Split(',') is [var lootZone, var lootMap]) _campaignLoot = (int.Parse(lootZone), int.Parse(lootMap));
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
             if (argument.StartsWith("--campaign-route=", StringComparison.Ordinal))
@@ -640,6 +649,7 @@ public partial class FieldContracts : Node
             _campaignDoor = -1;
             _campaignPuzzle = 0;
             _campaignHallAt = 0;
+            _campaignLootAt = _campaignLootStart = 0;
             _campaignPuzzleAt = _frame;
             var room = (_view.Zone, _view.Map);
             if (_campaignRouteAt + 1 < _campaignRoute.Count && _campaignRoute[_campaignRouteAt + 1] == room) _campaignRouteAt++;
@@ -655,7 +665,7 @@ public partial class FieldContracts : Node
         {
             Steer(Vector2.Zero);
             if (_campaignHealStep > 0) { _campaignHealStart++; _campaignHealAt++; }
-            if (_press == 0 && _frame % 8 == 0) Tap(++_campaignBagTries <= 20 ? "ps_circle" : "ps_cross");
+            if (_press == 0 && _frame % 8 == 0) Tap(++_campaignBagTries <= 2 ? "ps_square" : "ps_cross");
             return;
         }
         _campaignBagTries = 0;
@@ -682,7 +692,7 @@ public partial class FieldContracts : Node
                 else if (c.HopState == 0 && _campaignHops.Remove(c.Actor.Id)) GD.Print($"CAMPAIGN: {c.Name} completed its vanish/warp/reappearance");
             }
             if (_frame % 600 == 0)
-                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
+                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, status {observed.Status:x8}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp} at {c.Actor.Position}, MP {c.Mp}/{c.MaxMp}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
         }
         if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
         // HP reaches zero before the status tick dispatches the defeat event. Do not save or open menus in that gap.
@@ -818,27 +828,126 @@ public partial class FieldContracts : Node
             }
             return;
         }
-        // Learn and cast the Heal actually found in the bag. MP and every item are spent by their normal menus.
-        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp * 3 / 4 || patient.Risk > 60))
+        // This mine gate gives fifteen seconds to reach its approach tile and stop; pushing into the
+        // closed door never satisfies its standing-still condition. Leave its timer and flags to the script.
+        if (_view.Controlled && _view.Battle is { Ashley: { } gateRunner } && (_view.Zone, _view.Map) == (50, 12) && _campaignRouteAt + 1 < _campaignRoute.Count
+            && _campaignRoute[_campaignRouteAt + 1] == (50, 13))
+        {
+            if (_view.Flags[66] != 2) { Finish($"campaign: the mine gate timer expired at {gateRunner.Actor.Position}"); return; }
+            var point = new Vector3(1856, 0, 192);
+            if (new Vector2(point.X - gateRunner.Actor.Position.X, point.Z - gateRunner.Actor.Position.Z).Length() < 12)
+            { Steer(Vector2.Zero); return; }
+            float turn = (gateRunner.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            if (_frame % 60 == 1) Tap("ps_square");
+            return;
+        }
+        // Put the reclaimed Raging Ache on Circle through BATTLE ABILITIES, keeping the other earned slots.
+        if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
+            && (_campaignAbilityStep > 0 || _view.Abilities.Contains(26) && _view.ChainButtons[0] != 26))
+        {
+            Steer(Vector2.Zero);
+            if (_press > 0 || _frame % 8 != 0) return;
+            switch (_campaignAbilityStep)
+            {
+                case 0:
+                    if (abilityBattle.Paused) Tap("ps_cross");
+                    else if (!abilityBattle.Busy && !abilityBattle.EnemyActing) { Tap("ps_triangle"); _campaignAbilityStep = 1; }
+                    break;
+                case 1:
+                    if (!_view.MenuOpen) _campaignAbilityStep = 0;
+                    else if (_view.MenuPage == 2) { Tap("ps_circle"); _campaignAbilityStep = 2; _campaignAbilitySelection = 0; }
+                    else if (_view.MenuRow != 2) Tap(_view.MenuRow < 2 ? "ps_down" : "ps_up");
+                    else Tap("ps_circle");
+                    break;
+                case 2:
+                    int row = _view.Abilities.FindAll(id => id is >= 22 and < 40).IndexOf(26);
+                    if (_campaignAbilitySelection < row) { Tap("ps_down"); _campaignAbilitySelection++; }
+                    else { Tap("ps_circle"); _campaignAbilityStep = 3; }
+                    break;
+                case 3:
+                    if (_view.MenuOpen) Tap("ps_cross");
+                    else { _campaignAbilityStep = 0; GD.Print($"CAMPAIGN: assigned earned chain abilities {string.Join(',', _view.ChainButtons)} through BATTLE ABILITIES"); }
+                    break;
+            }
+            return;
+        }
+        if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
+        {
+            // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
+            // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
+            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 65 : 50) && restBattle.HostileCount() > 0
+                && new[] { 331, 332, 333 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
+            {
+                _campaignResting = true;
+                _campaignRestPoint = restRunner.Actor.Position;
+                if ((_view.Zone, _view.Map) == (50, 17))
+                    _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
+                        .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
+                GD.Print($"CAMPAIGN: resting with no RISK roots, RISK {restRunner.Risk}"); }
+            if (_campaignResting)
+            {
+                if (restRunner.Risk <= 15) { _campaignResting = false; GD.Print($"CAMPAIGN: native recovery lowered RISK to {restRunner.Risk}"); }
+                else
+                {
+                    // Keep ahead of the pursuing elemental instead of waiting at a corner for its next cast.
+                    if ((_view.Zone, _view.Map) == (50, 17) && restBattle.Combatants.Values.Any(c => c.Targetable && c.Actor.Position.DistanceTo(_campaignRestPoint) < 900))
+                        _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
+                            .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
+                    var path = _view.Path(restRunner.Actor.Position, _campaignRestPoint, 256);
+                    while (path.Count > 1 && new Vector2(path[0].X - restRunner.Actor.Position.X, path[0].Z - restRunner.Actor.Position.Z).Length() < 24) path.RemoveAt(0);
+                    var next = path.Count > 0 ? path[0] : _campaignRestPoint;
+                    float heading = (restRunner.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                    Steer(restRunner.Actor.Position.DistanceTo(_campaignRestPoint) < 24 ? Vector2.Zero : new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+                    _fightProgressAt++;
+                    if (restBattle.Paused || !restBattle.Busy && restBattle.Drawn) Tap("ps_cross");
+                    if (!(restRunner.Hp < restRunner.MaxHp * 3 / 4)) return;
+                }
+            }
+        }
+        // Use earned recovery and the owned Pyro Guard against the mine elemental, through the normal menus.
+        bool mineDebuff = (_view.Zone, _view.Map) == (50, 17) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+            && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
+            && mineFight.Combatants.Values.Any(c => c.Targetable && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
+        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp * 3 / 4 || patient.Risk > 60 || mineDebuff
+                || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
+                || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
+                || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
+                || ((_view.Zone, _view.Map) == (50, 17) && recovery.HostileCount() > 0 && ((_view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0) ? !patient.Has(22)
+                        : !patient.Has(24) && (_view.Spells.Contains(71) || _view.Items.GetValueOrDefault(454) > 0)))))
         {
             bool life = patient.Hp < patient.MaxHp * 3 / 4;
-            int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()["96"].AsGodotDictionary()["cost"].AsInt32();
-            _campaignHealMagic = life && _view.Spells.Contains(96) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence);
+            bool frost = _view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0;
+            bool guard = !life && (_view.Zone, _view.Map) == (50, 17) && recovery.HostileCount() > 0 && (frost ? !patient.Has(22) : !patient.Has(24));
+            bool weakening = !life && mineDebuff;
+            _campaignHealSpell = weakening ? 54 : guard ? frost ? 69 : 71 : 96;
+            int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
+            _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
+            if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
+                || (patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0)
+                || (patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0)) _campaignHealMagic = false;
             if (_campaignHealMagic)
             {
                 var classes = _view.Content.Data("magic_menu")["classes"].AsGodotArray();
                 for (int i = 0; i < classes.Count; i++)
                 {
                     var known = classes[i].AsGodotArray().Select(v => v.AsInt32()).Where(_view.Spells.Contains).ToList();
-                    if (!known.Contains(96)) continue;
-                    _campaignHealClass = i; _campaignHealSpellRow = known.IndexOf(96); break;
+                    if (!known.Contains(_campaignHealSpell)) continue;
+                    _campaignHealClass = i; _campaignHealSpellRow = known.IndexOf(_campaignHealSpell); break;
                 }
                 (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealHp, _campaignHealMp) = (1, _frame, _frame, patient.Hp, patient.Mp);
-                GD.Print($"CAMPAIGN: seeking learned Heal at {patient.Hp}/{patient.MaxHp} HP, {patient.Mp} MP");
+                GD.Print($"CAMPAIGN: seeking learned spell {_campaignHealSpell} at {patient.Hp}/{patient.MaxHp} HP, {patient.Mp} MP");
             }
             else
             {
-                int[] choices = !life ? new[] { 331, 332, 333 }
+                int guardItem = frost ? 452 : 454;
+                int cure = patient.Has(FieldBattle.Paralysis) ? 339 : patient.Has(FieldBattle.Poison) ? 340 : patient.Has(FieldBattle.Numbness) ? 341 : 0;
+                int[] choices = cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
+                    : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
+                    : guard && _view.Items.GetValueOrDefault(guardItem) > 0 ? new[] { guardItem }
+                    : guard && patient.Mp < cost ? new[] { 327, 328, 329, 330 }
+                    : !life ? new[] { 331, 332, 333 }
                     : _view.Spells.Contains(96) && patient.Mp < cost ? new[] { 327, 328, 329, 330, 323, 324, 325, 326 }
                     : new[] { 425, 323, 324, 325, 326 };
                 foreach (int item in choices)
@@ -890,7 +999,7 @@ public partial class FieldContracts : Node
                     break;
                 case 5:
                     if (healing.Paused) Tap("ps_circle");
-                    if (_campaignHealMagic ? recovering.Mp < _campaignHealMp || recovering.Hp > _campaignHealHp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
+                    if (_campaignHealMagic ? recovering.Mp < _campaignHealMp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
                     { _campaignHealStep = 6; _campaignHealAt = _frame; }
                     else if (!healing.Paused && !healing.Busy && _frame - _campaignHealAt > 120)
                     {
@@ -901,9 +1010,10 @@ public partial class FieldContracts : Node
                     }
                     break;
                 case 6:
+                    if (_view.MenuOpen) { Tap("ps_cross"); break; }
                     if (!healing.Busy && !healing.Paused && !_view.MenuOpen)
                     {
-                        GD.Print(_campaignHealMagic ? $"CAMPAIGN: cast learned Heal, HP {recovering.Hp}/{recovering.MaxHp}, MP {recovering.Mp}"
+                        GD.Print(_campaignHealMagic ? $"CAMPAIGN: cast learned spell {_campaignHealSpell}, HP {recovering.Hp}/{recovering.MaxHp}, MP {recovering.Mp}"
                             : $"CAMPAIGN: used {_view.ItemName(_campaignHealItem)}, remaining {_view.Items.GetValueOrDefault(_campaignHealItem)}, HP {recovering.Hp}/{recovering.MaxHp}");
                         _campaignHealStep = 0;
                     }
@@ -926,21 +1036,59 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
-        // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
-        // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-        if (!_campaignResting && ashley.Risk >= 50 && battle.HostileCount() > 0
-            && new[] { 331, 332, 333 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
-        { _campaignResting = true; GD.Print($"CAMPAIGN: resting with no RISK roots, RISK {ashley.Risk}"); }
-        if (_campaignResting)
+        if (_campaignLoot == (_view.Zone, _view.Map) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
+            .Select(v => v.AsGodotDictionary()).FirstOrDefault(c => (c["lock"].AsInt32() == 0 || c["lock"].AsInt32() == 2 && (_view.Spells.Contains(92) || _view.Items.GetValueOrDefault(446) > 0)) && _view.ChestContents(c).Count > 0) is { } treasure)
         {
-            if (ashley.Risk <= 15) { _campaignResting = false; GD.Print($"CAMPAIGN: native recovery lowered RISK to {ashley.Risk}"); }
-            else
+            if (_campaignLootStart == 0) _campaignLootStart = _frame;
+            if (_frame - _campaignLootStart > 3600) { Finish($"campaign: chest approach stalled at {ashley.Actor.Position}"); return; }
+            if (battle.Paused || !battle.Busy && battle.Drawn) { Tap("ps_cross"); return; }
+            if (battle.Busy) { Steer(Vector2.Zero); return; }
+            var chestTile = treasure["tile"].AsGodotArray();
+            int facing = treasure["facing"].AsInt32();
+            var (dx, dz) = (facing / 1024) switch { 0 => (0, 1), 1 => (1, 0), 2 => (0, -1), _ => (-1, 0) };
+            var point = new Vector3((chestTile[0].AsInt32() + dx) * 128 + 64, 0, (chestTile[1].AsInt32() + dz) * 128 + 64);
+            point.Y = _view.FloorAt(point) ?? ashley.Actor.Position.Y;
+            if ((_view.Zone, _view.Map) == (50, 14) && _campaignPuzzle == 0)
             {
-                Steer(Vector2.Zero);
-                _fightProgressAt++;
-                if (battle.Paused || !battle.Busy && battle.Drawn) Tap("ps_cross");
+                point = new Vector3(832, 0, 960);
+                if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
+                { _campaignPuzzle = 1; Steer(Vector2.Zero); return; }
+            }
+            if (((_view.Zone, _view.Map) != (50, 14) || _campaignPuzzle > 0) && (_campaignLootAt > 0 || new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16))
+            {
+                if (_campaignLootAt == 0) _campaignLootAt = _frame;
+                float turn = (facing - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                if (_frame - _campaignLootAt < 4) Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                else if (treasure["lock"].AsInt32() == 2)
+                {
+                    Steer(Vector2.Zero);
+                    _campaignHealSpell = 92; _campaignHealMagic = _view.Spells.Contains(92);
+                    _campaignHealItem = 446; _campaignHealCount = _view.Items.GetValueOrDefault(446);
+                    (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealHp, _campaignHealMp) = (1, _frame, _frame, ashley.Hp, ashley.Mp);
+                    if (_campaignHealMagic)
+                    {
+                        var classes = _view.Content.Data("magic_menu")["classes"].AsGodotArray();
+                        for (int i = 0; i < classes.Count; i++)
+                        {
+                            var known = classes[i].AsGodotArray().Select(v => v.AsInt32()).Where(_view.Spells.Contains).ToList();
+                            if (!known.Contains(92)) continue;
+                            _campaignHealClass = i; _campaignHealSpellRow = known.IndexOf(92); break;
+                        }
+                    }
+                    GD.Print("CAMPAIGN: casting earned Unlock on the chest's magic seal");
+                }
+                else { Steer(Vector2.Zero); if (_frame % 30 == 0) Tap("ps_cross"); }
                 return;
             }
+            var path = _view.Path(ashley.Actor.Position, point, 256);
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 20) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float chestAngle = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(chestAngle), -Mathf.Cos(chestAngle)));
+            var chestProbe = ashley.Actor.Position.MoveToward(next, 96);
+            if (_view.FloorAt(chestProbe) is { } chestAhead && ashley.Actor.Position.Y - chestAhead is > FieldPlayer.StepHeight and <= 256) Input.ActionPress("ps_r2");
+            else Input.ActionRelease("ps_r2");
+            return;
         }
         // The western branch of room 9,13 is reached from the southwest 256-high step: a running jump grabs
         // the 640-high central platform, then Ashley can drop west to the wolf and the story route.
@@ -1032,6 +1180,8 @@ public partial class FieldContracts : Node
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
         if (_campaignCheckpoint is { Zone: 42 } && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked))
             _campaignBypassEnemies = true;
+        if (_campaignRoute.Count > 0 && (_campaignItem > 0 || _campaignCheckpoint != (_view.Zone, _view.Map))
+            && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
@@ -1113,7 +1263,7 @@ public partial class FieldContracts : Node
         { Steer(Vector2.Zero); return; }
         if (battle.Drawn && !breakingStack)
         { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue && (!_campaignRepair || _campaignRepaired) && (!_campaignSaveUi || _campaignUiSaved))
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && (battle.HostileCount() == 0 || _campaignItem > 0) && (_campaignItem == 0 || _view.Items.GetValueOrDefault(_campaignItem) > 0) && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue && (!_campaignRepair || _campaignRepaired) && (!_campaignSaveUi || _campaignUiSaved))
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
@@ -1258,6 +1408,23 @@ public partial class FieldContracts : Node
             _campaignDoorAt = _frame;
             if (_campaignPuzzle == 0) _campaignPuzzleAt = _frame;
             GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
+        }
+        // Stay on the mine's upper terraces before dropping to the north exit. A direct route from
+        // the low western floor approaches its 512-unit wall instead of the two descending terraces.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (50, 9, 0) && _campaignPuzzle < 3)
+        {
+            _campaignDoorAt = _frame;
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1216, -1536, 832),
+                1 => new Vector3(1216, -1024, 576), _ => new Vector3(1216, -512, 320),
+            };
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
+            { _campaignPuzzle++; Steer(Vector2.Zero); return; }
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            return;
         }
         // The Blackmarket's northeast platform is reached by a diagonal running jump from its southwest corner,
         // rather than trying to climb the taller barrels along its south face.
@@ -3428,10 +3595,20 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        // After the Minotaur, use the chain ability actually earned and assigned to Circle, once per attack.
-        if (battle.AshleyStrikeFrame is not { } timing) _fightLinked = false;
-        else if (_campaign && !_fightLinked && timing is >= 0 and <= 2 && battle.ChainSlots[0] != 0 && ashley.Risk < 60)
-        { Tap("ps_circle"); _fightLinked = true; }
+        // The native "in time" window starts after the hit; zero is still the "fast" grade.
+        // Alternate the earned buttons over a short chain, releasing each before the next cue.
+        if (battle.AshleyStrikeFrame is not { } timing) { _fightLinked = false; _fightChainLinks = 0; }
+        else
+        {
+            if (timing < 0) _fightLinked = false;
+            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0).ToArray();
+            if (_campaign && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
+                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : 6))
+            {
+                Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
+                _fightLinked = true; _fightChainLinks++;
+            }
+        }
         bool opened = battle.Paused && !_fightWasPaused;
         _fightWasPaused = battle.Paused;
         if (opened)
@@ -3665,7 +3842,12 @@ public partial class FieldContracts : Node
         return "";
     }
 
-    private void Capture(string name) => Capture(this, _capture, name);
+    private void Capture(string name)
+    {
+        if (_capture.Length != 0 && _view?.Field is { } field && !name.StartsWith("campaign_frame_", StringComparison.Ordinal))
+            GD.Print($"FIELD_CAPTURE: {name}, fade {_view.Fade}, blank {field.ScreenBlanked}, eye {field.CameraEye}, target {field.CameraTarget}");
+        Capture(this, _capture, name);
+    }
 
     /// <summary>Saves the window as shown (sRGB, with HDR 2D's linear buffer encoded) to a folder, unless headless or none is given.</summary>
     public static void Capture(Node node, string folder, string name)

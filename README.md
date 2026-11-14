@@ -57,6 +57,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # This diagnostic save uses the real serializer; it does not test the save-point menu.
 # --campaign-route=ZONE,MAP/ZONE,MAP/... supplies ordered doors, including timed corridors.
 # --campaign-repair uses SETUP's Repair at a workshop; --campaign-save-ui uses DATA's SAVE at a magic circle.
+# --campaign-loot=ZONE,MAP approaches its chest, using an owned Unlock if needed; --campaign-loot-item=ID stops after that item.
+# --campaign-item=ID makes the checkpoint require that owned item and allows surviving enemies there.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --campaign
 # Every visual effect's records, programs, frame tables and vibration envelopes.
 godot-dotnet --headless --path . res://tests/effect_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-effects
