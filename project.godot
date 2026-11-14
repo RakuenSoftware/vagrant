@@ -138,5 +138,6 @@ common/max_physics_steps_per_frame=8
 [rendering]
 
 renderer/rendering_method="forward_plus"
+textures/vram_compression/import_etc2_astc=true
 textures/canvas_textures/default_texture_filter=0
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
