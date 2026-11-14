@@ -496,7 +496,10 @@ public sealed partial class FieldMenu : PanelContainer
     private string CardString(int index) =>
         SystemBox.Entry(_view.Content.Has("memory_card") ? _view.Content.Data("memory_card")["strings"].AsGodotArray() : new Godot.Collections.Array(), index);
     private bool _storing;
-    private readonly List<Variant> _pending = new();
+    // A transfer snapshots its entries so a selection names one inventory position, not a transient
+    // managed Dictionary wrapper (nor every distinct piece whose values happen to match).
+    private readonly List<Variant> _boxEntries = new();
+    private readonly List<int> _pending = new();
 
     private GDictionary BoxData => _view.Content.Has("container_menu") ? _view.Content.Data("container_menu") : new GDictionary();
     private string BoxString(int index) => SystemBox.Entry(BoxData.GetValueOrDefault("strings", new Godot.Collections.Array()).AsGodotArray(), index);
@@ -505,12 +508,11 @@ public sealed partial class FieldMenu : PanelContainer
     private static int BoxCategory(Variant thing) => thing.VariantType == Variant.Type.Int ? 6 : FieldView.BagCategory(thing.AsGodotDictionary()["kind"].AsString());
 
     /// <summary>What could move in the transfer: Ashley's storable things, or what the container holds, not already picked.</summary>
-    private List<Variant> BoxCandidates(int category)
+    private List<int> BoxCandidates(int category)
     {
-        var list = new List<Variant>();
-        foreach (var thing in ContainerList(_storing ? 0 : 1))
-            if (BoxCategory(thing) == category && !_pending.Exists(p => p.VariantType == thing.VariantType && (thing.VariantType == Variant.Type.Int ? p.AsInt32() == thing.AsInt32() : p.AsGodotDictionary() == thing.AsGodotDictionary())))
-                list.Add(thing);
+        var list = new List<int>();
+        for (int index = 0; index < _boxEntries.Count; index++)
+            if (BoxCategory(_boxEntries[index]) == category && !_pending.Contains(index)) list.Add(index);
         return list;
     }
 
@@ -620,6 +622,8 @@ public sealed partial class FieldMenu : PanelContainer
                 _boxCategory = BoxPicked;
                 _boxAction = -1;
                 _pending.Clear();
+                _boxEntries.Clear();
+                _boxEntries.AddRange(ContainerList(_storing ? 0 : 1));
                 _cursor = 0;
             }
             else if (pressed("ps_triangle") || pressed("ps_cross")) LeaveContainer();
@@ -630,8 +634,9 @@ public sealed partial class FieldMenu : PanelContainer
             if (step != 0) _boxConfirm = 1 - _boxConfirm;
             if (pressed("ps_circle") && _boxConfirm == 0)
             {
-                foreach (var thing in _pending)
+                foreach (int index in _pending)
                 {
+                    var thing = _boxEntries[index];
                     if (thing.VariantType == Variant.Type.Int) _view.MoveItems(thing.AsInt32(), _storing);
                     else if (_storing) _view.Store(thing.AsGodotDictionary());
                     else _view.Retrieve(thing.AsGodotDictionary());
@@ -643,7 +648,7 @@ public sealed partial class FieldMenu : PanelContainer
             else if (pressed("ps_circle") || pressed("ps_cross") || pressed("ps_triangle")) _boxStage = 1;
             return true;
         }
-        var candidates = _boxCategory == BoxPicked ? new List<Variant>(_pending) : BoxCandidates(_boxCategory);
+        var candidates = _boxCategory == BoxPicked ? new List<int>(_pending) : BoxCandidates(_boxCategory);
         if (_boxAction >= 0)
         {
             // A thing's actions: up and down choose, Circle does it, Cross or Triangle puts them away.
@@ -651,17 +656,23 @@ public sealed partial class FieldMenu : PanelContainer
             if (pressed("ps_triangle") || pressed("ps_cross")) { _boxAction = -1; _boxRefusal = ""; _view.MenuSound(FieldView.MenuLeave); }
             else if (pressed("ps_circle") && candidates.Count > 0)
             {
-                var thing = candidates[Math.Min(_cursor, candidates.Count - 1)];
+                int selected = candidates[Math.Min(_cursor, candidates.Count - 1)];
+                var thing = _boxEntries[selected];
                 if (_boxAction == 1)
                 {
                     _boxRefusal = BoxDiscard(thing);
                     _view.MenuSound(_boxRefusal.Length > 0 ? FieldView.MenuInvalid : 28);
                     if (_boxRefusal.Length > 0) return true;
+                    if (thing.VariantType != Variant.Type.Int || (_storing ? _view.Items : _view.StoredItems).GetValueOrDefault(thing.AsInt32()) == 0)
+                    {
+                        _boxEntries.RemoveAt(selected);
+                        for (int picked = 0; picked < _pending.Count; picked++) if (_pending[picked] > selected) _pending[picked]--;
+                    }
                 }
                 else
                 {
                     _view.MenuSound(FieldView.MenuSelect);
-                    if (_boxAction == 0) _pending.Add(thing);
+                    if (_boxAction == 0) _pending.Add(selected);
                 }
                 _boxAction = -1;
                 _cursor = Math.Max(0, Math.Min(_cursor, BoxCandidates(_boxCategory).Count - 1));
@@ -721,7 +732,7 @@ public sealed partial class FieldMenu : PanelContainer
         int[] limits = _storing ? GadgetBag.Limits : BoxView().BoxLimits;
         if (_boxStage == 2)
         {
-            var picked = _pending.ConvertAll(BoxRow);
+            var picked = _pending.ConvertAll(index => BoxRow(_boxEntries[index]));
             _items.SetContainerList(BoxString(_storing ? 17 : 16), 7, BoxString(_storing ? 26 : 25), $"{_pending.Count}/{limits[6],3}", picked, 0,
                 BoxView((BoxString(_storing ? 11 : 10), BoxString(8).TrimStart('G'), BoxString(9).TrimStart('G'), _boxConfirm)));
             return;
@@ -730,12 +741,12 @@ public sealed partial class FieldMenu : PanelContainer
         {
             // What has been picked, with what the list is for when it is empty.
             _items.SetContainerList(BoxString(_storing ? 17 : 16), BoxPicked, BoxString(_storing ? 26 : 25), $"{_pending.Count}/{limits[6],3}",
-                _pending.ConvertAll(BoxRow), _cursor, BoxView(empty: BoxString(_storing ? 30 : 29)));
+                _pending.ConvertAll(index => BoxRow(_boxEntries[index])), _cursor, BoxView(empty: BoxString(_storing ? 30 : 29)));
             return;
         }
         var candidates = BoxCandidates(_boxCategory);
         _items.SetContainerList(BoxString(_storing ? 17 : 16), _boxCategory, BoxString(18 + _boxCategory), $"{counts[_boxCategory]}/{limits[_boxCategory],3}",
-            candidates.ConvertAll(BoxRow), _cursor, BoxView(empty: BoxString(_storing ? 28 : 27)), _boxAction >= 0 ? BoxActions() : null, Math.Max(0, _boxAction));
+            candidates.ConvertAll(index => BoxRow(_boxEntries[index])), _cursor, BoxView(empty: BoxString(_storing ? 28 : 27)), _boxAction >= 0 ? BoxActions() : null, Math.Max(0, _boxAction));
     }
 
     /// <summary>The container page's list: equipment entries, then item ids, from Ashley (tab 0) or the container.</summary>

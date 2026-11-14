@@ -44,6 +44,8 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # Gadget bag GET/ALL: full categories, existing item stacks, partial collection and freed slots.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
+# Container selections: identical pieces, multiple transfers, discard, cancellation and item stacks.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/container_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/pit_contracts.tscn -- --install-root=/path/to/installation
 # Isolated earthquake scene: enemy-only actor flags must leave Ashley's animation running.
