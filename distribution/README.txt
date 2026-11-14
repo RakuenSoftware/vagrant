@@ -1,12 +1,12 @@
 SPDX-License-Identifier: AGPL-3.0-only
 
-Vagrant — compiled desktop release
+Project Vagrant — compiled desktop release
 
 An independent, unofficial project, not affiliated with or endorsed by Square Enix.
 Vagrant Story and its original content and branding belong to their respective
 rights holders. This project's code licence grants no rights to the original game.
 
-This archive includes Vagrant, its compiled wol-engine runtime, the matching
+This archive includes Project Vagrant, its compiled wol-engine runtime, the matching
 Godot/.NET runtime and required notices. No engine checkout, Godot editor,
 .NET SDK or build tools are needed to play.
 
@@ -18,12 +18,12 @@ FFmpeg and ffprobe must be on PATH for the disc's video/audio conversion.
 They are not bundled in this archive. Their absence is reported during install.
 Keep the complete extracted folder together; do not move only the executable.
 
-Linux: run Vagrant.x86_64 (chmod +x Vagrant.x86_64 if needed).
-Windows: run Vagrant.exe.
-macOS: unzip the application and run Vagrant.app. Public downloads should be
+Linux: run ProjectVagrant.x86_64 (chmod +x ProjectVagrant.x86_64 if needed).
+Windows: run ProjectVagrant.exe.
+macOS: unzip the application and run “Project Vagrant.app”. Public downloads should be
 Developer ID signed and notarized; ad-hoc development packages are not notarized.
 
-Vagrant source: https://github.com/RakuenSoftware/vagrant
-Vagrant's licence is included as LICENSE. Third-party notices are in licenses/.
+Project Vagrant source: https://github.com/RakuenSoftware/vagrant
+Project Vagrant's licence is included as LICENSE. Third-party notices are in licenses/.
 The binary download contains no wol-engine source. Managed binaries can be
 inspected or decompiled; this package does not claim to prevent reverse engineering.

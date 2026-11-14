@@ -2,7 +2,7 @@
 
 # Desktop distribution
 
-Vagrant includes the compiled wol-engine dependency in Git at
+Project Vagrant includes the compiled wol-engine dependency in Git at
 `addons/wol_engine`. This is an ordinary vendored directory, not a submodule.
 A fresh clone contains the managed DLLs, native libraries, matching Godot API
 DLLs and runtime resources for all three desktop targets. CI does not download
@@ -94,8 +94,14 @@ checksum, native hashes and game dirty state, plus a SHA-256 sidecar. These are
 provenance checks, not a bit-for-bit reproducibility claim.
 
 No retail assets, disc images, BIOS, installed files or decoded caches are
-bundled. A verified owned US disc is required. Vagrant remains AGPL-3.0-only;
+bundled. A verified owned US disc is required. Project Vagrant remains AGPL-3.0-only;
 its game source is publicly downloadable. FFmpeg and ffprobe remain external
 first-install dependencies on PATH. macOS packages are ad-hoc signed and need
 Developer ID signing/notarization for public friction-free downloads. Credentials
 stay outside Git. Linux CI builds on Ubuntu 22.04 for host-library compatibility.
+
+The display name is Project Vagrant. Archives use `ProjectVagrant-<version>-<target>.zip`;
+Linux and Windows launchers are `ProjectVagrant.x86_64` and `ProjectVagrant.exe`,
+and the macOS application is `Project Vagrant.app`. The original user-data directory
+and macOS bundle identifier are retained so existing installations, saves and
+preferences remain available after upgrading. Internal C# assembly names remain stable.

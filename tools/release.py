@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -17,9 +18,9 @@ import zipfile
 class DesktopRelease:
     VERSION = "4.7.2"
     TARGETS = {
-        "linux-x64": ("Linux x86_64", "linux", "x86_64", "Vagrant.x86_64"),
-        "windows-x64": ("Windows x86_64", "windows", "x86_64", "Vagrant.exe"),
-        "macos-universal": ("macOS Universal", "macos", "universal", "Vagrant.app"),
+        "linux-x64": ("Linux x86_64", "linux", "x86_64", "ProjectVagrant.x86_64"),
+        "windows-x64": ("Windows x86_64", "windows", "x86_64", "ProjectVagrant.exe"),
+        "macos-universal": ("macOS Universal", "macos", "universal", "Project Vagrant.app"),
     }
 
     def __init__(self, args):
@@ -298,15 +299,16 @@ class DesktopRelease:
         if host == self.args.target:
             executable = output / self.executable
             if platform.system() == "Darwin":
-                executable = executable / "Contents/MacOS/Vagrant"
+                with (executable / "Contents/Info.plist").open("rb") as info:
+                    executable = executable / "Contents/MacOS" / plistlib.load(info)["CFBundleExecutable"]
             executable.chmod(executable.stat().st_mode | 0o111)
             with tempfile.TemporaryDirectory(prefix="vagrant-no-disc-") as empty:
                 self.run(executable, "--headless", "--", "--verify-package", "--install-root=" + empty, cwd=output)
-        archive = output.parent / f"Vagrant-{version}-{self.args.target}.zip"
+        archive = output.parent / f"ProjectVagrant-{version}-{self.args.target}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as packed:
             for file in sorted(output.rglob("*")):
                 if file.is_file():
-                    packed.write(file, Path("Vagrant") / file.relative_to(output))
+                    packed.write(file, Path("ProjectVagrant") / file.relative_to(output))
         archive.with_suffix(".zip.sha256").write_text(
             hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n",
             encoding="utf-8", newline="\n")

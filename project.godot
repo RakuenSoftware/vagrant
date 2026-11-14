@@ -4,8 +4,13 @@ config_version=5
 
 [application]
 
-config/name="Vagrant"
-config/description="Vagrant Story on the shared wol-engine. Requires the player's own US disc."
+config/name="Project Vagrant"
+; Keep existing installations, saves and preferences in the original user-data directory.
+config/use_custom_user_dir=true
+config/custom_user_dir_name="godot/app_userdata/Vagrant"
+config/custom_user_dir_name.windows="Godot/app_userdata/Vagrant"
+config/custom_user_dir_name.macos="Godot/app_userdata/Vagrant"
+config/description="Project Vagrant: an unofficial runtime for Vagrant Story on the shared wol-engine. Requires the player's own US disc."
 run/main_scene="res://scenes/startup/startup.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
