@@ -46,12 +46,17 @@ public partial class Startup : Control
                 directories.Push("res://");
                 while (directories.TryPop(out var directory))
                 {
-                    foreach (string child in DirAccess.GetDirectoriesAt(directory)) directories.Push(directory.PathJoin(child));
-                    foreach (string file in DirAccess.GetFilesAt(directory))
+                    using var resources = DirAccess.Open(directory) ?? throw new InvalidOperationException("Cannot audit resource directory: " + directory);
+                    resources.IncludeHidden = true;
+                    foreach (string child in resources.GetDirectories())
+                        if (child is not "." and not "..") directories.Push(directory.PathJoin(child));
+                    foreach (string file in resources.GetFiles())
                     {
                         string path = directory.PathJoin(file), extension = System.IO.Path.GetExtension(file).ToLowerInvariant();
                         if (path.StartsWith("res://tests/", StringComparison.Ordinal) || path.Contains("/.dependencies/", StringComparison.Ordinal)
-                            || path.Contains("/disc/", StringComparison.Ordinal) || extension is ".cpp" or ".hpp" or ".h" or ".pdb" or ".cue" or ".iso")
+                            || path.Contains("/disc/", StringComparison.Ordinal) || path.Contains("/cache/", StringComparison.Ordinal)
+                            || path.Contains("/captures/", StringComparison.Ordinal) || path.Contains("/screenshots/", StringComparison.Ordinal)
+                            || extension is ".cpp" or ".hpp" or ".h" or ".pdb" or ".cue" or ".iso")
                             throw new InvalidOperationException("Development/disc content in player: " + path);
                         // Godot requires C# resource paths but exports only newline stubs when scripts_content=false.
                         if (extension == ".cs" && !string.IsNullOrWhiteSpace(Godot.FileAccess.GetFileAsString(path)))

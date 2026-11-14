@@ -192,7 +192,7 @@ class DesktopRelease:
                 raise RuntimeError("Source, symbols or disc image in player: " + str(file))
             if file.is_file() and file.suffix.lower() in retail_formats:
                 raise RuntimeError("Retail disc file format in player: " + str(file))
-            if file.is_file() and any(p in ("disc", "test-results", ".git", ".dependencies") for p in file.relative_to(output).parts):
+            if file.is_file() and any(p in ("disc", "cache", "captures", "screenshots", "test-results", ".git", ".dependencies") for p in file.relative_to(output).parts):
                 raise RuntimeError("Private/development data in player: " + str(file))
             if file.is_file():
                 with file.open("rb") as source:
