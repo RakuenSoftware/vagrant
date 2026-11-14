@@ -1707,6 +1707,23 @@ public partial class FieldContracts : Node
             if (_campaignPuzzle == 0) _campaignPuzzleAt = _frame;
             GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
         }
+        // Fool's Gold, Fool's Loss has a southern shelf that turns east before descending. The diagonal
+        // toward the exit cuts through the solid wall south of its high western terrace.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (51, 17, 2) && _campaignPuzzle < 2)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: southern mine shelf step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle == 0 ? new Vector3(704, -896, 1472) : new Vector3(1280, -384, 1472);
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            return;
+        }
         // Revelation Shaft's centre is a pit. Push its western block down, break the top
         // carry block, and build a two-block perch before jumping via the fixed Cloudstone.
         if ((_view.Zone, _view.Map, _campaignDoor) == (51, 28, 0) && _campaignPuzzle < 25)
@@ -4374,7 +4391,7 @@ public partial class FieldContracts : Node
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
-            if (_campaign && (_view.Zone, _view.Map) == (51, 2) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
+            if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
             if (_fightNextPart)
             {
                 if (_press > 0) return;
