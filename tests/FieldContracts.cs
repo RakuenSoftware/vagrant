@@ -1519,6 +1519,48 @@ public partial class FieldContracts : Node
             Input.ActionRelease("ps_r2");
             return;
         }
+        // Cross Forest River by its two stepping stones. The wide water gap is a pit, not a walking route.
+        if (_view.Zone == 40 && _view.Map == 23 && _campaignDoor is 4 or 5 && _campaignPuzzle < 6)
+        {
+            _campaignDoorAt = _frame;
+            if (_campaignPuzzle > 0 && ashley.Actor.Position.X < 1700)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Forest River crossings missed"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_frame - _campaignPuzzleAt > 1800)
+            { Finish($"campaign: river stepping-stone step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_campaignPuzzle is 2 or 4)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt >= 45)
+                { _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1984, -512, 1216), 1 => new Vector3(2368, -384, 1216),
+                3 => new Vector3(2624, -368, 1472), _ => new Vector3(2880, -512, 1472),
+            };
+            if (_campaignPuzzle > 0 && !_campaignBoarding)
+            {
+                if (_press > 0) { Steer(Vector2.Zero); return; }
+                Tap("ps_square"); _campaignBoarding = true;
+            }
+            var steps = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 20
+                && _view.FloorAt(ashley.Actor.Position) is { } ground && Math.Abs(ground - ashley.Actor.Position.Y) < 2)
+            {
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+                Steer(Vector2.Zero);
+            }
+            return;
+        }
         // The town's two street levels are separated by a pit. Its enabled platform runs from
         // the north terrace to the southern staircase; the walking planner cannot cross that gap.
         if (_view.Zone == 32 && _view.Map == 3 && _campaignDoor is 0 or 3 && _campaignPuzzle < (_campaignDoor == 3 ? 7 : 5))
