@@ -38,7 +38,7 @@ public partial class FieldContracts : Node
     private int _campaignHealSpell = 96;
     private int _campaignAbilityStep, _campaignAbilitySelection, _fightChainLinks;
     private Vector3 _campaignRestPoint;
-    private int _campaignPrepareStep, _campaignPrepareSelection;
+    private int _campaignPrepareStep, _campaignPrepareSelection, _campaignSettleFrames;
     private (int Zone, int Map)? _campaignLoot;
     private int _campaignLootAt, _campaignLootStart, _campaignLootItem;
 
@@ -638,7 +638,7 @@ public partial class FieldContracts : Node
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         if (_view.Battle is { AshleyDefenseFrame: >= 1 and <= 2 } defending && _press == 0)
         {
-            int defense = (_view.Zone, _view.Map) == (50, 22) ? 43 : 46;
+            int defense = _campaignBypassEnemies || (_view.Zone, _view.Map) == (50, 22) ? 43 : 46;
             int slot = Array.IndexOf(defending.DefenseSlots, defense);
             if (slot >= 0)
             {
@@ -1339,9 +1339,15 @@ public partial class FieldContracts : Node
         { Steer(Vector2.Zero); return; }
         if (battle.Drawn && !breakingStack)
         { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && (battle.HostileCount() == 0 || _campaignItem > 0) && (_campaignItem == 0 || _view.Items.GetValueOrDefault(_campaignItem) > 0) && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue && (!_campaignRepair || _campaignRepaired) && (!_campaignSaveUi || _campaignUiSaved))
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && (battle.HostileCount() == 0 || _campaignItem > 0) && (_campaignItem == 0 || _view.Items.GetValueOrDefault(_campaignItem) > 0) && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue && (!_campaignRepair || _campaignRepaired) && (!_campaignSaveUi || _campaignUiSaved))
         {
             Steer(Vector2.Zero);
+            if (!_view.Settled)
+            {
+                if (++_campaignSettleFrames > 1200)
+                    Finish($"campaign: checkpoint did not settle in {_view.Zone},{_view.Map}, node {_view.EventNode}, waits {_view.WaitingOn}, camera {_view.CameraIdle:x}");
+                return;
+            }
             if (_campaignSave.Length != 0)
             {
                 if (!_campaignSaveUi && _view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
@@ -1500,6 +1506,85 @@ public partial class FieldContracts : Node
             float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             Input.ActionRelease("ps_r2");
+            return;
+        }
+        // The town's two street levels are separated by a pit. Its enabled platform runs from
+        // the north terrace to the southern staircase; the walking planner cannot cross that gap.
+        if (_view.Zone == 32 && _view.Map == 3 && _campaignDoor is 0 or 3 && _campaignPuzzle < (_campaignDoor == 3 ? 7 : 5))
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400)
+            { Finish($"campaign: town platform step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            bool northbound = _campaignDoor == 3;
+            if (_view.PlatformState(0) is not { } platform)
+            { Finish("campaign: the town street has no active platform"); return; }
+            if (_campaignPuzzle == 1)
+            {
+                if (_view.PlatformUnder(ashley.Actor.Position) == 0 && new Vector2(ashley.Actor.Position.X - platform.Now.X, ashley.Actor.Position.Z - platform.Now.Z).Length() < 24)
+                { _campaignPuzzle = 2; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (!_campaignBoarding)
+                {
+                    if ((northbound ? platform.Now.Z < 1464 : platform.Now.Z > 970) || platform.Waited is < 0 or > 20) { Steer(Vector2.Zero); return; }
+                    _campaignBoarding = true; Tap("ps_square");
+                }
+                float turn = (ashley.Actor.FacingToward(platform.Now) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                Input.ActionRelease("ps_r2");
+                return;
+            }
+            if (_campaignPuzzle == 2)
+            {
+                Steer(Vector2.Zero);
+                if ((northbound ? platform.Now.Z <= 970 : platform.Now.Z >= 1464) && platform.Waited is >= 0 and <= 20)
+                { _campaignPuzzle = 3; _campaignPuzzleAt = _frame; Tap("ps_square"); }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => northbound ? new Vector3(2624, -640, 1664) : new Vector3(2368, -384, 832),
+                3 => northbound ? new Vector3(2368, -384, 832) : new Vector3(2624, -640, 1664),
+                4 => northbound ? new Vector3(2496, -384, 704) : new Vector3(1472, -384, 1728),
+                5 => new Vector3(2752, -512, 704), _ => new Vector3(3136, -640, 448),
+            };
+            var steps = _campaignPuzzle == 3 ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            var front = ashley.Actor.Position.MoveToward(next, 96);
+            if (northbound && _campaignPuzzle >= 5)
+            {
+                Input.ActionRelease("ps_r2");
+                if ((_frame - _campaignPuzzleAt) % 80 == 1) Tap("ps_square");
+            }
+            else if (_view.FloorAt(front) is { } level && ashley.Actor.Position.Y - level is > FieldPlayer.StepHeight and <= 256) Input.ActionPress("ps_r2");
+            else Input.ActionRelease("ps_r2");
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+            return;
+        }
+        // Reach Dinas Walk's upper aperture from the rubble, then jump and grab its 384-unit ledge.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (32, 7, 2) && _campaignPuzzle < 4)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800)
+            { Finish($"campaign: Dinas aperture step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(832, -256, 192), 1 => new Vector3(1344, -288, 448),
+                2 => new Vector3(960, -384, 960), _ => new Vector3(832, -768, 960),
+            };
+            var steps = _campaignPuzzle < 3 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle == 3 && (_frame - _campaignPuzzleAt) % 80 == 1) Tap("ps_square");
+            var front = ashley.Actor.Position.MoveToward(next, 96);
+            if (_campaignPuzzle < 3 && _view.FloorAt(front) is { } floor && ashley.Actor.Position.Y - floor is > FieldPlayer.StepHeight and <= 256) Input.ActionPress("ps_r2");
+            else Input.ActionRelease("ps_r2");
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }
         // Jump via the moving platform over the mine's pit. Break three crates off its four-high stack,
@@ -1975,6 +2060,32 @@ public partial class FieldContracts : Node
         var tile = doors[_campaignDoor].AsGodotDictionary()["tile"].AsGodotArray();
         var goal = new Vector3(tile[0].AsInt32() * 128 + 64, ashley.Actor.Position.Y, tile[1].AsInt32() * 128 + 64);
         var route = _view.Path(ashley.Actor.Position, goal, _campaign ? 256 : FieldPlayer.StepHeight);
+        Vector3? gateAim = null;
+        if (route.Count == 0)
+        {
+            // A closed door can lie inside the room, before its transition tile. Walk to a reachable
+            // side and interact with it before asking the walking planner for the route beyond it.
+            float gateCost = float.MaxValue;
+            foreach (var value in _view.Document["locks"].AsGodotArray())
+            {
+                var gate = value.AsGodotDictionary();
+                if (!gate.GetValueOrDefault("enabled", false).AsBool() || gate.GetValueOrDefault("opened", false).AsBool()) continue;
+                var at = gate["tile"].AsGodotArray();
+                var centre = new Vector3(at[0].AsInt32() * 128 + 64, ashley.Actor.Position.Y, at[1].AsInt32() * 128 + 64);
+                foreach (var offset in new[] { Vector3.Left, Vector3.Right, Vector3.Forward, Vector3.Back })
+                {
+                    var approach = centre + offset * 128;
+                    var steps = _view.Path(ashley.Actor.Position, approach, 256);
+                    if (steps.Count == 0) continue;
+                    float cost = ashley.Actor.Position.DistanceTo(approach) + approach.DistanceTo(goal);
+                    if (cost >= gateCost) continue;
+                    gateCost = cost;
+                    gateAim = centre;
+                    route = new Vector2(approach.X - ashley.Actor.Position.X, approach.Z - ashley.Actor.Position.Z).Length() < 32
+                        ? new List<Vector3> { centre } : steps;
+                }
+            }
+        }
         while (route.Count > 1 && new Vector2(route[0].X - ashley.Actor.Position.X, route[0].Z - ashley.Actor.Position.Z).Length() < 24) route.RemoveAt(0);
         var waypoint = route.Count > 0 ? route[0] : goal;
         float angle = (ashley.Actor.FacingToward(waypoint) - _view.Gameplay.Yaw) * Mathf.Tau / 4096f;
@@ -1983,7 +2094,7 @@ public partial class FieldContracts : Node
         if (_view.FloorAt(probe) is { } ahead && ashley.Actor.Position.Y - ahead is > FieldPlayer.StepHeight and <= 256) Input.ActionPress("ps_r2");
         else Input.ActionRelease("ps_r2");
         // At a blocked edge, try the player's interaction and jump controls; never move the actor or set a flag.
-        bool atDoor = new Vector2(goal.X - ashley.Actor.Position.X, goal.Z - ashley.Actor.Position.Z).Length() < 200;
+        bool atDoor = gateAim.HasValue || new Vector2(goal.X - ashley.Actor.Position.X, goal.Z - ashley.Actor.Position.Z).Length() < 200;
         if (_frame % (atDoor ? 20 : 120) == 0) Tap("ps_cross");
         if (!atDoor && _frame % 120 == 60) Tap("ps_square");
     }

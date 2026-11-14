@@ -3841,25 +3841,36 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     /// <summary>
     /// A walking route across the room's collision map from one map position to another, as the centres of the
-    /// 32-unit sub-cells it passes, ending at the destination; empty when there is none. A step may climb at most
-    /// maximumRise units (96 by default), and no sub-cell within one of a wall is used, so a body of Ashley's
-    /// radius clears it. The search is A* over the eight neighbours, and the route keeps only its turning points. Not
-    /// retail's: no retail actor walks by it; the field contracts steer their stand-in player by it.
+    /// 16-unit route cells it passes, ending at the destination; empty when there is none. A step may climb at most
+    /// maximumRise units (96 by default). Each cell clears Ashley's radius against the room's full and diagonal
+    /// walls; the finer route grid fits her body into a 128-unit corridor. The search is A* over the eight neighbours,
+    /// and the route keeps only its turning points. Not retail's: no retail actor walks by it; the field contracts steer their stand-in player by it.
     /// </summary>
     public List<Vector3> Path(Vector3 from, Vector3 to, float maximumRise = FieldPlayer.StepHeight)
     {
         var route = new List<Vector3>();
         if (_heights.Length == 0) return route;
-        int columns = _columns, rows = _rows, cell = 32;
+        int nativeColumns = _columns, columns = _columns * 2, rows = _rows * 2, cell = 16;
         var heights = _heights;
-        float Height(int x, int z) => heights[z * columns + x];
+        float Height(int x, int z) => heights[(z / 2) * nativeColumns + x / 2];
         bool Inside(int x, int z) => x >= 0 && z >= 0 && x < columns && z < rows;
-        // A sub-cell is clear when nothing within one cell of it rises more than a step above it.
+        var offsets = new Vector3[8];
+        for (int i = 0; i < offsets.Length; i++) offsets[i] = new Vector3(Mathf.Cos(i * Mathf.Pi / 4), 0, Mathf.Sin(i * Mathf.Pi / 4)) * FieldPlayer.Radius;
+        var clearance = new sbyte[columns * rows];
         bool Clear(int x, int z)
         {
-            for (int dz = -1; dz <= 1; dz++)
-                for (int dx = -1; dx <= 1; dx++)
-                    if (!Inside(x + dx, z + dz) || Height(x, z) - Height(x + dx, z + dz) > maximumRise) return false;
+            int index = z * columns + x;
+            if (clearance[index] != 0) return clearance[index] > 0;
+            clearance[index] = -1;
+            var centre = new Vector3((x + 0.5f) * cell, Height(x, z), (z + 0.5f) * cell);
+            if (Solid(centre)) return false;
+            foreach (var offset in offsets)
+            {
+                var sample = centre + offset;
+                int sx = (int)Mathf.Floor(sample.X / cell), sz = (int)Mathf.Floor(sample.Z / cell);
+                if (!Inside(sx, sz) || Solid(sample) || centre.Y - Height(sx, sz) > maximumRise) return false;
+            }
+            clearance[index] = 1;
             return true;
         }
         (int, int) Cell(Vector3 p) => (Math.Clamp((int)Mathf.Floor(p.X / cell), 0, columns - 1), Math.Clamp((int)Mathf.Floor(p.Z / cell), 0, rows - 1));
@@ -3870,10 +3881,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         var open = new PriorityQueue<(int, int), float>();
         open.Enqueue(start, 0);
         bool found = false;
-        int visited = 0;
-        while (open.Count > 0 && visited++ < columns * rows)
+        var visited = new HashSet<(int, int)>();
+        while (open.Count > 0)
         {
             var current = open.Dequeue();
+            if (!visited.Add(current)) continue;
             if (current == goal) { found = true; break; }
             var (cx, cz) = current;
             for (int dz = -1; dz <= 1; dz++)
@@ -3881,7 +3893,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 {
                     if (dx == 0 && dz == 0) continue;
                     int nx = cx + dx, nz = cz + dz;
-                    if (!Inside(nx, nz) || Height(cx, cz) - Height(nx, nz) > maximumRise || Blocked(nx / 4, nz / 4) && (nx / 4, nz / 4) != (goal.Item1 / 4, goal.Item2 / 4)) continue;
+                    if (!Inside(nx, nz) || Height(cx, cz) - Height(nx, nz) > maximumRise || Blocked(nx / 8, nz / 8) && (nx / 8, nz / 8) != (goal.Item1 / 8, goal.Item2 / 8)) continue;
                     if ((nx, nz) != goal && !Clear(nx, nz)) continue;
                     // A diagonal may not cut a corner.
                     if (dx != 0 && dz != 0 && (!Clear(cx + dx, cz) || !Clear(cx, cz + dz))) continue;
