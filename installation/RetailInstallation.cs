@@ -38,6 +38,9 @@ public sealed class RetailInstallation
     /// <summary>Installs from <paramref name="discPath"/> (BIN or CUE). Throws with a player-facing message on rejection.</summary>
     public void Install(string discPath, Action<string> progress)
     {
+        // Fail before copying the disc if an incomplete player package omitted its tools.
+        _ = Executable("ffmpeg");
+        _ = Executable("ffprobe");
         Directory.CreateDirectory(Root);
         string stage = Path.Combine(Root, "staging");
         if (Directory.Exists(stage)) Directory.Delete(stage, true);
@@ -204,6 +207,10 @@ public sealed class RetailInstallation
 
     private static string Executable(string name)
     {
+        string bundled = Path.Combine(Path.GetDirectoryName(Godot.OS.GetExecutablePath())!, "media", name + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        if (File.Exists(bundled)) return bundled;
+        if (!Godot.OS.HasFeature("editor"))
+            throw new FileNotFoundException($"The player package is missing its bundled {name}. Extract the complete Project Vagrant archive again.");
         foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
         {
             foreach (string candidate in new[] { name, name + ".exe" })
@@ -215,9 +222,36 @@ public sealed class RetailInstallation
         throw new FileNotFoundException($"Playing the opening movie requires {name} (FFmpeg) on PATH.");
     }
 
+    /// <summary>Exercises the packaged encoders, probe, and game-input decoder availability without retail assets.</summary>
+    public static void VerifyMediaTools()
+    {
+        string ffmpeg = Executable("ffmpeg"), ffprobe = Executable("ffprobe");
+        string decoders = Run(ffmpeg, "-hide_banner", "-decoders");
+        if (!decoders.Contains(" mdec ", StringComparison.Ordinal) || !decoders.Contains(" adpcm_xa ", StringComparison.Ordinal))
+            throw new InvalidDataException("The bundled media tool cannot decode PlayStation video and XA audio.");
+        string temporary = Path.Combine(Path.GetTempPath(), "project-vagrant-media-" + Guid.NewGuid().ToString("N") + ".ogv");
+        try
+        {
+            Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=size=32x32:rate=15:duration=0.2",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=37800:duration=0.2",
+                "-c:v", "libtheora", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-ac", "2", temporary);
+            var streams = JsonNode.Parse(Run(ffprobe, "-v", "error", "-show_entries", "stream=codec_name,channels,width,height", "-of", "json", temporary))!["streams"]!.AsArray();
+            bool video = false, audio = false;
+            foreach (var stream in streams)
+            {
+                if ((string?)stream!["codec_name"] == "theora" && (int?)stream["width"] == 32 && (int?)stream["height"] == 32) video = true;
+                if ((string?)stream["codec_name"] == "vorbis" && (int?)stream["channels"] == 2) audio = true;
+            }
+            if (!video || !audio) throw new InvalidDataException("The bundled tools did not produce playable Theora video and stereo Vorbis audio.");
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     private static string Run(string executable, params string[] arguments)
     {
-        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        if (!Godot.OS.HasFeature("editor")) start.Environment["PATH"] = "";
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new IOException($"Could not start {executable}.");
         var error = process.StandardError.ReadToEndAsync();

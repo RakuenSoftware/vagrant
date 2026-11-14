@@ -29,7 +29,7 @@ Players receive a compiled archive containing Project Vagrant, wol-engine and Go
 no engine source checkout or build tools are required. The release targets are
 Linux x86-64, Windows x86-64 and macOS Universal (Intel + Apple Silicon).
 See [distribution and native CI instructions](docs/DISTRIBUTION.md).
-FFmpeg/ffprobe remain required for first-time disc conversion.
+FFmpeg and ffprobe are bundled for first-time disc conversion; player downloads need no PATH configuration.
 
 ## Build
 

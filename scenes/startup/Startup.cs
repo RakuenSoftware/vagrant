@@ -76,6 +76,8 @@ public partial class Startup : Control
                             throw new InvalidOperationException("Retail disc content/signature in player: " + path);
                     }
                 }
+                RetailInstallation.VerifyMediaTools();
+                GD.Print("MEDIA_TOOLS_OK: bundled video/audio conversion and probe work with no PATH dependencies");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
                 GetTree().Quit();
             }

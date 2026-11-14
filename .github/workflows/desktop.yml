@@ -44,7 +44,13 @@ jobs:
           dotnet-version: '10.0.403'
       - name: Install Linux desktop runtime dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1 build-essential pkg-config
+      - name: Install Windows media compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: make pkgconf diffutils mingw-w64-x86_64-gcc
       - name: Build, audit and verify the player using binary engine dependencies
         shell: bash
         run: python tools/release.py "$TARGET" --version "$BUILD_VERSION"

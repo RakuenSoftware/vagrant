@@ -13,7 +13,9 @@ You must supply your own US Vagrant Story disc (SLUS-01040) as BIN/CUE. Installa
 verifies its files locally. No retail game assets, disc images, BIOS, original-game fonts, music, movies,
 dialogue, manual or installed-disc cache are supplied in these packages.
 
-FFmpeg and ffprobe are external first-install dependencies and must be on PATH.
+FFmpeg and ffprobe are bundled; no separate installation or PATH configuration is needed.
+The matching FFmpeg/Xiph source and build instructions are in the adjacent
+ProjectVagrant-media-sources.zip download.
 macOS previews are ad-hoc signed and are not notarized. This is preview software;
 visual fidelity and retail parity remain subject to the limitations in the README.
 
