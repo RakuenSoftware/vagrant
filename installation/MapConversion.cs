@@ -948,7 +948,7 @@ public sealed class MapConversion
     /// none). In the first word, bit 8 marks a lift, which moves only while someone rides it (others move on their
     /// own), bit 9 one switched off, whose group is not drawn, bits 10 and 11 the last waypoint, bit 26 the direction
     /// and bits 27 and 28 the waypoint it travels to first. From byte 8 come four waypoints of 16 bytes (x, y and z in
-    /// 4096ths of a map unit, y up, then the frames it waits there), from 0x48 four legs of 16 bytes (a velocity a frame
+    /// 4096ths of a map unit, y up, then the frames it waits there), from 0x48 up to six legs of 16 bytes (a velocity a frame
     /// and the frames it takes, in the order it travels: out to the last waypoint and back), and at 0xA8 where it
     /// starts (BATTLE.PRG's update near 0x8008c9a8). Positions here are map units, y down; the footprint is its group's
     /// extent about that point.
@@ -971,7 +971,7 @@ public sealed class MapConversion
                 waypoints.Add(point);
             }
             var legs = new JsonArray();
-            for (int l = 0; l < Math.Max(1, last * 2) && l < 4; l++)
+            for (int l = 0; l < Math.Max(1, last * 2); l++)
             {
                 var velocity = Point(p + 0x48 + l * 16, 1 / 4096f);
                 velocity.Add(BitConverter.ToInt32(_map, p + 0x48 + l * 16 + 12));
@@ -983,7 +983,8 @@ public sealed class MapConversion
             platforms.Add(new JsonObject
             {
                 ["group"] = group, ["off"] = (flags & 0x200) != 0, ["lift"] = (flags & 0x100) != 0, ["start"] = Point(p + 0xA8, 1 / 4096f),
-                ["target"] = (int)(flags >> 27) & 3, ["forward"] = (flags & 1u << 26) != 0, ["waypoints"] = waypoints, ["legs"] = legs, ["footprint"] = footprint,
+                ["target"] = (int)(flags >> 27) & 3, ["forward"] = (flags & 1u << 26) != 0, ["leg"] = (int)(flags >> 29) & 7,
+                ["waypoints"] = waypoints, ["legs"] = legs, ["footprint"] = footprint,
             });
         }
         return platforms;

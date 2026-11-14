@@ -3400,6 +3400,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 Group = record["group"].AsInt32(), Off = record["off"].AsBool(), Lift = record.GetValueOrDefault("lift", false).AsBool(),
                 Target = record.GetValueOrDefault("target", 0).AsInt32(), Forward = record.GetValueOrDefault("forward", true).AsBool(),
+                Leg = record.GetValueOrDefault("leg", 0).AsInt32(),
                 Position = record.ContainsKey("start") ? Retail(record["start"].AsGodotArray()) : Vector3.Zero,
             };
             foreach (var point in record.GetValueOrDefault("waypoints", new GArray()).AsGodotArray())
