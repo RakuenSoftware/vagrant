@@ -67,6 +67,9 @@ public partial class FieldContracts : Node
     /// <summary>With --remember, the room's hostile characters are felled and the room entered again: they must stay gone.</summary>
     private bool _remember;
     private int _rememberStage;
+    private bool _bossDrops;
+    private int _bossDropRooms;
+    private readonly Dictionary<int, int> _expectedBossDrops = new();
     /// <summary>With --skip, Start is pressed as soon as the room's event opens a skippable section; the event must go on to its end.</summary>
     private bool _skip;
     /// <summary>With --effect=N, visual effect N plays from Ashley at the nearest character once she has control; it must draw and end.</summary>
@@ -177,6 +180,7 @@ public partial class FieldContracts : Node
             if (argument == "--workshop-name") _nameCheck = true;
             if (argument == "--defeat") _defeat = true;
             if (argument == "--remember") _remember = true;
+            if (argument == "--boss-drops") { _remember = _bossDrops = true; }
             if (argument == "--skip") _skip = true;
             if (argument.StartsWith("--effect=", StringComparison.Ordinal) || argument.StartsWith("--resident=", StringComparison.Ordinal))
             {
@@ -2268,11 +2272,39 @@ public partial class FieldContracts : Node
                 // By their room records: a felled character's slot may go to another.
                 var felled = new List<int>();
                 foreach (var (id, fighter) in new Dictionary<string, FieldBattle.Combatant>(memoryBattle.Combatants))
-                    if (fighter != memoryBattle.Ashley && !fighter.Dead && _view.RoomActorIndices.TryGetValue(id, out int record)) { memoryBattle.Strike(fighter, fighter.Hp); felled.Add(record); }
+                    if (fighter != memoryBattle.Ashley && !fighter.Dead && _view.RoomActorIndices.TryGetValue(id, out int record))
+                    {
+                        if (_bossDrops)
+                            foreach (var value in fighter.DropItems ?? new Godot.Collections.Array())
+                            {
+                                var item = value.AsGodotDictionary();
+                                int itemId = item["id"].AsInt32(), count = item["count"].AsInt32();
+                                if (itemId != 0 && count > 0 && item["rate"].AsInt32() > 255)
+                                    _expectedBossDrops[itemId] = _expectedBossDrops.GetValueOrDefault(itemId, _view.Items.GetValueOrDefault(itemId)) + count;
+                            }
+                        memoryBattle.Strike(fighter, fighter.Hp); felled.Add(record);
+                    }
                 if (felled.Count == 0) { Finish("the room has no hostile characters to remember"); return; }
                 _felled = felled;
                 _felledFrame = _frame;
+                _bossDropRooms = _view.Rooms.Count;
                 _rememberStage = 1;
+                return;
+            }
+            if (_bossDrops)
+            {
+                if (_expectedBossDrops.Count == 0) { Finish("the boss fixture has no guaranteed item drops"); return; }
+                if (_view.Rooms.Count < _bossDropRooms + 2) return;
+                if (_view.MenuOpen)
+                {
+                    if (_view.MenuPage == 11 && _press == 0) { Capture("boss_reward_bag"); Tap("ps_square"); }
+                    return;
+                }
+                foreach (var (item, count) in _expectedBossDrops)
+                    if (_view.Items.GetValueOrDefault(item) < count)
+                    { Finish($"boss cutaway lost guaranteed item {item}: expected {count}, held {_view.Items.GetValueOrDefault(item)}"); return; }
+                GD.Print($"FIELD: boss drops survived {_view.Rooms.Count} room presentations and were collected through the gadget bag");
+                Finish("");
                 return;
             }
             // Four seconds on, a felled enemy has faded away, unless its room record keeps its body.
@@ -3146,6 +3178,11 @@ public partial class FieldContracts : Node
             if (_eventRoundTrip && (_room != (_view.Zone, _view.Map) || _view.Rooms.Count < 3))
             { Finish($"the continuing event handed over in {_view.Zone},{_view.Map} after {string.Join(" > ", _view.Rooms)}, instead of returning to {_room}"); return; }
             Capture("played_control");
+        }
+        if (_bossDrops)
+        {
+            if (_frame > 18000) Finish("the boss-drop cutaway did not complete in 18000 frames");
+            return;
         }
         if (_view.Controlled || _view.EndOfContent.Length != 0 || _view.Rooms.Count > 1 && !_played)
         {

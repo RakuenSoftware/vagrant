@@ -636,7 +636,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             _fading.Clear();
             _materialising.Clear();
             _clipEvents.Clear();
-            _dropped.Clear();
+            // Boss reward scenes can load other rooms before the gadget bag is offered. Pending drops
+            // belong to that completed battle and survive those presentations; loading a save discards them.
+            if (resume) _dropped.Clear();
             _sounds.Clear();
             _boxes.Clear();
             _waits.Clear();

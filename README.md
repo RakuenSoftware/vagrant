@@ -35,6 +35,8 @@ godot-dotnet --headless --path . res://tests/install_contracts.tscn -- --disc=/p
 godot-dotnet --headless --path . res://tests/event_contracts.tscn -- --disc=/path/disc.cue
 # The prologue played through, battle, doors and rooms; --room=ZONE,MAP plays one room's event alone.
 godot-dotnet --headless --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation
+# In-time chain abilities update the saved maximum-chain score.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=9,1 --fight
 # Movement timing and distance, followed separately by the final boss's swoop and event handoff.
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=13,1 --movement
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
@@ -55,6 +57,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-name
 # The pad driver cycles past Sydney using the native AI relation (isolated Grissom fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,24 --flag=1:1 --flag=130:43 --flag=187:21 --battle-sides
+# Guaranteed boss drops survive the reward cutaway and are collected through the gadget bag (isolated defeat fixture).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,22 --flag=1:1 --flag=130:42 --flag=187:20 --boss-drops
 # Forest-entry cutscene workers stop before control returns (isolated event fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,21 --flag=1:1 --flag=130:39 --flag=187:19
 # Continuous New Game exploration using pad controls and earned state; this driver is still being extended.
