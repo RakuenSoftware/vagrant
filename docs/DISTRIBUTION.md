@@ -67,8 +67,10 @@ warnings are errors; solution Release maps to ExportRelease.
 
 `.github/workflows/desktop.yml` builds and tests on native hosted Linux, Windows
 and macOS runners for PRs into main, manual runs and `v*` tags. Checkout is an
-ordinary non-recursive clone using its repository token. Only game archives and
-checksums are uploaded. It does not automatically publish a public game Release.
+ordinary non-recursive clone using its repository token. PR and manual runs upload game archives/checksums as CI artifacts. A `v*` tag
+publishes a versioned preview under GitHub Releases only after all three native
+jobs pass and the downloaded archive checksums are verified. Releases inherit
+the repository visibility; this workflow does not make a private repository public.
 Automatic reviews remain enabled.
 
 ## Player contents and verification
@@ -79,7 +81,12 @@ Godot editor or engine checkout. The editor, unused platform dependencies,
 tests, source, symbols and developer caches are excluded from the player.
 
 The audit verifies the exact vendored Release WolEngine.dll and matching
-GodotSharp API. Each native CI job runs the actual exported executable's
+GodotSharp API. It rejects retail formats derived from the installer catalog,
+known retail file hashes, PS-X executable headers and raw CD-sector signatures,
+including files renamed to innocuous extensions. The exported-player check
+applies corresponding checks inside the PCK; Godot's generated UID index is
+allowed as metadata. These checks do not establish legal clearance or detect
+every possible modified/decoded asset. Each native CI job runs the actual exported executable's
 `--verify-package` check with an empty installation, verifies the separate
 compiled engine/native audio, and rejects test types and implementation source
 in the PCK. Archives contain BUILD.json with game/engine revisions, upstream SDK

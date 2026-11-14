@@ -1,0 +1,22 @@
+SPDX-License-Identifier: AGPL-3.0-only
+
+Preview of Vagrant, an independent, unofficial Vagrant Story runtime.
+Not affiliated with or endorsed by Square Enix. Original game content and
+branding belong to their respective rights holders.
+
+Downloads: Linux x86_64, Windows x86_64, and universal macOS (Intel/Apple Silicon).
+Each ZIP includes the compiled game, vendored engine, self-contained Godot/.NET
+runtime and third-party notices. Extract the whole ZIP and keep its files together.
+The adjacent .zip.sha256 files provide download checksums.
+
+You must supply your own US Vagrant Story disc (SLUS-01040) as BIN/CUE. Installation
+verifies its files locally. No retail game assets, disc images, BIOS, original-game fonts, music, movies,
+dialogue, manual or installed-disc cache are supplied in these packages.
+
+FFmpeg and ffprobe are external first-install dependencies and must be on PATH.
+macOS previews are ad-hoc signed and are not notarized. This is preview software;
+visual fidelity and retail parity remain subject to the limitations in the README.
+
+Vagrant code remains AGPL-3.0-only. Third-party software retains its own licences.
+That licence does not grant rights to the original game's content. Requiring an
+owned disc is not a legal clearance or a guarantee against third-party complaints.

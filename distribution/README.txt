@@ -2,6 +2,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 Vagrant — compiled desktop release
 
+An independent, unofficial project, not affiliated with or endorsed by Square Enix.
+Vagrant Story and its original content and branding belong to their respective
+rights holders. This project's code licence grants no rights to the original game.
+
 This archive includes Vagrant, its compiled wol-engine runtime, the matching
 Godot/.NET runtime and required notices. No engine checkout, Godot editor,
 .NET SDK or build tools are needed to play.

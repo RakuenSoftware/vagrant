@@ -1,5 +1,9 @@
 # Vagrant
 
+An independent, unofficial project, not affiliated with or endorsed by Square Enix.
+Vagrant Story and its original content and branding belong to their respective
+rights holders. This project's code licence grants no rights to the original game.
+
 Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), vendored as compiled binaries and runtime resources at `addons/wol_engine`.
 
 **You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files and the ending's unlisted XA sectors byte for byte; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.

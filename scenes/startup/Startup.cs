@@ -37,6 +37,11 @@ public partial class Startup : Control
                     throw new InvalidOperationException("The engine must be a separately compiled binary dependency.");
                 foreach (var type in typeof(Startup).Assembly.GetTypes())
                     if (type.Namespace == "Wol.Games.Vagrant.Tests") throw new InvalidOperationException("Test code was compiled into the player.");
+                var retailHashes = new System.Collections.Generic.HashSet<string>(RetailDisc.Catalog.FileDigests.Values, StringComparer.OrdinalIgnoreCase);
+                var retailFormats = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string name in RetailDisc.Catalog.FileDigests.Keys) retailFormats.Add(System.IO.Path.GetExtension(name));
+                foreach (string name in RetailDisc.Catalog.StreamDigests.Keys) retailFormats.Add(System.IO.Path.GetExtension(name));
+                retailFormats.UnionWith(new[] { ".xa", ".cue", ".iso", ".chd", ".img" });
                 var directories = new System.Collections.Generic.Stack<string>();
                 directories.Push("res://");
                 while (directories.TryPop(out var directory))
@@ -51,6 +56,15 @@ public partial class Startup : Control
                         // Godot requires C# resource paths but exports only newline stubs when scripts_content=false.
                         if (extension == ".cs" && !string.IsNullOrWhiteSpace(Godot.FileAccess.GetFileAsString(path)))
                             throw new InvalidOperationException("C# source in player: " + path);
+                        // Godot's UID index is generated metadata, not an installed disc BIN.
+                        if (retailFormats.Contains(extension) && path != "res://.godot/uid_cache.bin")
+                            throw new InvalidOperationException("Retail disc file format in player: " + path);
+                        byte[] bytes = Godot.FileAccess.GetFileAsBytes(path);
+                        bool rawSector = bytes.Length >= 12 && bytes[0] == 0 && bytes[11] == 0;
+                        for (int i = 1; i <= 10 && rawSector; i++) rawSector = bytes[i] == 0xFF;
+                        if (rawSector || bytes.AsSpan().StartsWith("PS-X EXE"u8)
+                            || bytes.Length >= 32 && retailHashes.Contains(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))))
+                            throw new InvalidOperationException("Retail disc content/signature in player: " + path);
                     }
                 }
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
@@ -107,7 +121,7 @@ public partial class Startup : Control
         centre.AddChild(column);
         column.AddChild(new Label
         {
-            Text = "Vagrant Story",
+            Text = "Vagrant — unofficial Vagrant Story runtime",
             HorizontalAlignment = HorizontalAlignment.Center,
         });
         column.AddChild(new Label
