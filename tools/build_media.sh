@@ -78,3 +78,14 @@ for tool in ffmpeg ffprobe; do
         cp "$work/x86_64/prefix/bin/$tool" "$output/$tool"
     fi
 done
+if [[ "$target" == windows-x64 ]]; then
+    # Retain the MinGW runtime notices and GCC Runtime Library Exception, too.
+    test -f /mingw64/share/licenses/crt/COPYING
+    test -n "$(find /mingw64/share/licenses -name COPYING.RUNTIME -print -quit)"
+    while IFS= read -r -d '' notice; do
+        relative="${notice#/mingw64/share/licenses/}"
+        mkdir -p "$output/licenses/toolchain/$(dirname "$relative")"
+        cp "$notice" "$output/licenses/toolchain/$relative.txt"
+    done < <(find /mingw64/share/licenses -type f -print0)
+    pacman -Q > "$output/licenses/toolchain-package-versions.txt"
+fi

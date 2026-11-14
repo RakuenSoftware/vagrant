@@ -7,7 +7,10 @@ not link to FFmpeg libraries.
 
 The media tools also include libogg, libvorbis and libtheora from Xiph.Org, under
 their respective BSD-style licences. Full upstream notices and FFmpeg's licence
-texts accompany the tools in licenses/media/.
+texts accompany the tools in media/licenses/ beside the player executable.
+Windows also includes MinGW runtime notices and the GCC Runtime Library Exception
+in media/licenses/toolchain/. Compiler packages are identified in the adjacent
+toolchain-package-versions.txt file.
 
 The exact unmodified source releases, SHA-256 manifest and build instructions are
 provided in ProjectVagrant-media-sources.zip alongside each release's player ZIPs:
