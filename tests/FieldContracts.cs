@@ -1162,7 +1162,7 @@ public partial class FieldContracts : Node
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -4567,7 +4567,7 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        bool easternCaster = _campaign && (_view.Zone, _view.Map) is (49, 1) or (49, 2);
+        bool easternCaster = _campaign && (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5);
         // These casters punish recovery pauses. Alternate Heavy Shot and Gain Life on a part with low chain evasion.
         // The native "in time" window starts after the hit; zero is still the "fast" grade.
         // Alternate the earned buttons over a short chain, releasing each before the next cue.
