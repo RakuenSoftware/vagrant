@@ -779,9 +779,13 @@ public sealed class EventConversion
                     case 6:
                         // Frees the buffer f7 loaded its chained event into (0x800bb160); the chain itself stays set.
                         return null;
-                    case 3: case 4:
-                        // Unlocks (3) or asks after (4) an action; flag 0xb1 reports whether it was newly learned, or is known.
-                        Await(pc, "ability.learn", new JsonObject { ["action"] = Byte(pc + 2), ["learn"] = Byte(pc + 1) == 3 });
+                    case 3:
+                        // Unlocks an action; flag 0xb1 reports whether it was newly learned.
+                        Await(pc, "ability.learn", new JsonObject { ["action"] = Byte(pc + 2), ["learn"] = true });
+                        return null;
+                    case 4:
+                        // BATTLE.PRG 0x800bb130 counts side-4 fighters (0x8007cf80) into flag 0xb1.
+                        Command("battle.count", new JsonObject());
                         return null;
                 }
                 _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");

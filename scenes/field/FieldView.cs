@@ -1833,6 +1833,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 _completions.Add(id);
                 return Error.Ok;
             }
+            case "battle.count":
+                SetFlag(0xB1, Battle?.Combatants.Values.Count(c => c.Side == 4) ?? 0);
+                return Error.Ok;
             case "ability.learn":
             {
                 int action = args["action"].AsInt32();
