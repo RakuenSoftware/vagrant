@@ -5697,7 +5697,6 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         bool sigil = key >= 466;
         if (lockType == 0) { message = ""; return true; }
         if (lockType == 2) { message = RetailMessage(door ? 5 : 1); return false; }
-        if (key > 0 && FlagValue(0x1B6 + key) != 0) { message = ""; return true; }
         if (key > 0 && Items.GetValueOrDefault(key) > 0)
         {
             SetFlag(0x1B6 + key, sigil ? 2 : 1);
@@ -5705,6 +5704,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             message = RetailMessage(door ? sigil ? 9 : 7 : 4, ItemName(key));
             return true;
         }
+        if (key > 0 && FlagValue(0x1B6 + key) != 0) { message = ""; return true; }
         message = key > 0 ? RetailMessage(door ? sigil ? 8 : 6 : 2, ItemName(key)) : RetailMessage(door ? 10 : 3);
         return false;
     }
@@ -5847,7 +5847,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         int category = BagCategory(kind);
         bool stacking = kind == "item" && Items.GetValueOrDefault(entry["id"].AsInt32()) > 0;
         if (!stacking && BagCounts()[category] >= GadgetBag.Limits[category]) return false;
-        if (kind == "item") Items[entry["id"].AsInt32()] = Items.GetValueOrDefault(entry["id"].AsInt32()) + entry["count"].AsInt32();
+        if (kind == "item")
+        {
+            int id = entry["id"].AsInt32();
+            Items[id] = Items.GetValueOrDefault(id) + entry["count"].AsInt32();
+            // MENUB.PRG 0x8010a24c: collecting a key or sigil also publishes its possession to event scripts.
+            if (id >= 458) SetFlag(0x1B6 + id, 1);
+        }
         else Equipment.Add(new GDictionary { ["kind"] = kind, ["record"] = entry["record"] });
         contents.RemoveAt(index);
         if (contents.Count == 0 && chest["index"].AsInt32() >= 0) SetFlag(0x3C0 + chest["index"].AsInt32(), 1);
