@@ -8,10 +8,10 @@ verify each against the current owner before treating that historical list as a 
 
 | Check | What it establishes | What remains unverified |
 |---|---|---|
-| 385 normal-mode individual room checks, repeated after the state-reset fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
+| 385 normal-mode individual room checks, repeated after the state-reset and continuing-transition fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events. That earned state then solves the Catacombs south return puzzle, follows the gate cutaway and enters the Sanctum. It solves the entrance stack, defeats Golem and saves after the victory cutaway returns to its arena | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
-| Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change | A complete campaign resumed across application launches, every equipment combination and every save location |
+| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events. That earned state then solves the Catacombs south return puzzle, follows the gate cutaway and enters the Sanctum. It solves the entrance stack, defeats Golem and saves after the victory cutaway returns to its arena. It returns to Work of Art, repairs through SETUP with the earned PP cost, then crosses the annex on its moving platform, defeats Dragon and saves after its reward event, then follows the Town Center West scenes to an earned checkpoint | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
+| Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change. An earned Work of Art state also walks onto its circle, saves through DATA and the card screens, and resumes into another room in a fresh process | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
 | Title attract demonstrations | Both retail demo starts run to completion without input, alternate by title visit, accept L1 interruption and return to the title flow; headless and rendered checks pass | Full screenshot-by-screenshot comparison against a retail title loop |
@@ -107,14 +107,23 @@ verify each against the current owner before treating that historical list as a 
   round-trip check passes headless and rendered; the earned Golem fight now completes its reward scene,
   returns to the arena with flag 190 at 4 and writes its checkpoint. The Sanctum entrance stack also passes
   headless and rendered checks. These route tests move, interact, attack and recover through pad input.
+- **Earned equipment repair and Sanctum continuation, verified in this audit.** The worn blade returns to
+  12600/12600 DP through SETUP, spending the PP for its actual wear; the earned repair also passes rendered.
+  The return stair route and the entrance's already-solved layout pass their rendered checks. The normal
+  lineage then carries the annex stone, climbs its perch, boards and rides its moving platform, defeats Dragon
+  and saves with flags 190=5 and 187=8 after the reward event. No encounter HP, items, spells or story flags
+  are granted by this driver. Its focused room fixtures remain separate from that normal lineage.
+  The Work of Art state also saves through DATA on magic circle 6, passes its rendered card-screen check
+  and resumes in a fresh process. The main lineage continues through the town scenes to story flag 31.
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
   establish the prerequisites, persistent state or routing of a complete playthrough.
 
 ## Next verification work
 
-Continue the normal New Game lineage from its earned post-Golem checkpoint, keeping only its actual inventory and
+Continue the normal New Game lineage from its earned Town Center West checkpoint, keeping only its actual inventory and
 story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
-fixtures. Its checkpoint files use the real disk serializer but bypass the save-point menu; they do not establish
-save-point eligibility or full save UI coverage. Record the continuing route and checkpoints, exercise saves and
+fixtures. Most checkpoint files use the real disk serializer while bypassing the save-point menu; the separate
+earned Work of Art check uses the actual circle and DATA screens. That establishes this location's positive save
+path, while other save points and full save UI coverage remain open. Record the continuing route and checkpoints, exercise saves and
 reloads along it, and solve the intervening puzzles through their player controls. Compare the corresponding
 retail scenes and interfaces at those checkpoints. Keep direct room starts and injected combat fixtures as focused tests, with their narrower claims.

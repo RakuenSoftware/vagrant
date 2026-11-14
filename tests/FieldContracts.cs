@@ -20,7 +20,9 @@ public partial class FieldContracts : Node
     /// <summary>With --near-enemy, Ashley is set down beside the room's first hostile character as she gets control.</summary>
     private bool _nearEnemy;
     /// <summary>A continuous New Game run using pad input, without the focused checks' state grants.</summary>
-    private bool _campaign, _campaignBypassEnemies;
+    private bool _campaign, _campaignBypassEnemies, _campaignRepair, _campaignRepaired, _campaignBoarding;
+    private int _campaignRepairFrame, _campaignUiStep, _campaignUiAt, _campaignUiGeneration;
+    private bool _campaignSaveUi, _campaignUiSaved;
     private string _campaignSave = "", _campaignLoad = "";
     private (int Zone, int Map)? _campaignCheckpoint;
     private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt, _campaignBagTries;
@@ -146,6 +148,8 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
+            if (argument == "--campaign-repair") _campaignRepair = true;
+            if (argument == "--campaign-save-ui") _campaignSaveUi = true;
             if (argument == "--workshop-combine") _combineCheck = true;
             if (argument.StartsWith("--campaign-flag=", StringComparison.Ordinal) && argument["--campaign-flag=".Length..].Split(':') is [var conditionFlag, var conditionValue]) (_campaignFlag, _campaignFlagValue) = (int.Parse(conditionFlag), int.Parse(conditionValue));
             if (argument.StartsWith("--campaign-story=", StringComparison.Ordinal)) _campaignStory = int.Parse(argument["--campaign-story=".Length..]);
@@ -610,7 +614,7 @@ public partial class FieldContracts : Node
     {
         if (_view.Battle != null && _view.Battle.Combatants.Values.Any(c => !GodotObject.IsInstanceValid(c.Actor.Node)))
         { Finish("campaign: battle retained a deleted actor's scene nodes"); return; }
-        if (_frame == 1 && _campaignLoad.Length == 0 && (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1))
+        if (_frame == 1 && _room == null && _campaignLoad.Length == 0 && (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1))
         { Finish("campaign: New Game did not initialize retail's normal-play flags"); return; }
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         if (_capture.Length != 0 && _frame % 120 == 0) Capture($"campaign_frame_{_frame:d7}");
@@ -620,6 +624,7 @@ public partial class FieldContracts : Node
             _campaignHiddenPositions.Clear();
             _campaignHops.Clear();
             _campaignBypassEnemies = false;
+            _campaignBoarding = false;
             _fightTargetId = "";
             _fightProgressAt = _frame;
             _campaignDoor = -1;
@@ -680,6 +685,128 @@ public partial class FieldContracts : Node
             return;
         }
         _campaignDeathAt = 0;
+        // A continuous run repairs its actually worn equipment through SETUP, spending its actual PP.
+        // Unlike the focused repair fixture, this neither changes wear beforehand nor creates equipment.
+        if (_campaignRepair && !_campaignRepaired && _view.Workshop && _view.Controlled && _view.Battle?.Ashley is { } repairing)
+        {
+            Steer(Vector2.Zero);
+            switch (++_campaignRepairFrame)
+            {
+                case 1:
+                    (_repairDp, _repairPp) = (repairing.Blade.Dp, repairing.Blade.Pp);
+                    GD.Print($"CAMPAIGN: workshop repair starts at DP {_repairDp}/{repairing.Blade.MaxDp}, PP {_repairPp}");
+                    Tap("ps_triangle"); break;
+                case 20:
+                    if (!_view.MenuOpen)
+                    {
+                        if (++_repairWait > 600) { Finish("campaign: workshop menu did not open"); return; }
+                        if (_repairWait % 10 == 0) Tap("ps_triangle");
+                        _campaignRepairFrame--;
+                    }
+                    break;
+                case 30:
+                    if (_view.MenuRow != 3) { Tap("ps_down"); _campaignRepairFrame -= 8; }
+                    else Tap("ps_circle");
+                    break;
+                case 60: Tap("ps_down"); break;
+                case 80: Tap("ps_circle"); break;
+                case 110 or 125 or 140 or 155: Tap("ps_down"); break;
+                case 180: Tap("ps_circle"); break;
+                case 200:
+                    if (!_view.ItemHelpShown.Caution || !_view.ItemHelpShown.Text.StartsWith("Repair all equipment", StringComparison.Ordinal))
+                    { Finish($"campaign: workshop did not ask to repair all equipment: {_view.ItemHelpShown}"); return; }
+                    break;
+                case 210: Tap("ps_circle"); break;
+                case 240:
+                    if (repairing.Blade.Dp != repairing.Blade.MaxDp || repairing.Blade.Pp != Math.Max(0, _repairPp - (repairing.Blade.MaxDp - _repairDp) / 100))
+                    { Finish("campaign: workshop repair did not restore the worn blade for its PP cost"); return; }
+                    GD.Print($"CAMPAIGN: repaired earned equipment to DP {repairing.Blade.Dp}/{repairing.Blade.MaxDp}, PP {repairing.Blade.Pp}");
+                    Capture("campaign_repaired"); break;
+                case 270: Tap("ps_circle"); break;
+                case 290 or 310 or 330: Tap("ps_cross"); break;
+                case 350:
+                    if (_view.MenuOpen) { Finish("campaign: workshop repair did not return to play"); return; }
+                    _campaignRepaired = true; break;
+            }
+            return;
+        }
+        // Saving at an earned checkpoint can also go through its actual magic circle and DATA screens.
+        if (_campaignSaveUi && !_campaignUiSaved && _campaignCheckpoint == (_view.Zone, _view.Map)
+            && (!_campaignRepair || _campaignRepaired) && _view.Controlled && _view.Battle?.HostileCount() == 0)
+        {
+            if (_campaignUiAt == 0) _campaignUiAt = _frame;
+            if (_frame - _campaignUiAt > 2400) { Finish($"campaign: DATA save step {_campaignUiStep} stalled at {_view.CardStage}, page {_view.MenuPage}"); return; }
+            if (_campaignUiStep == 0)
+            {
+                var circle = _view.Document["traps"].AsGodotArray().Select(v => v.AsGodotDictionary()).FirstOrDefault(t => t["type"].AsInt32() == 16);
+                if (circle == null) { Finish("campaign: the checkpoint has no magic circle for DATA's SAVE"); return; }
+                var circleTile = circle["tile"].AsGodotArray();
+                var point = new Vector3(circleTile[0].AsInt32() * 128 + 64, 0, circleTile[1].AsInt32() * 128 + 64);
+                if (_view.Player is not { } saver) return;
+                if (new Vector2(point.X - saver.Position.X, point.Z - saver.Position.Z).Length() < 12 && _view.SavePoint == circle["location"].AsInt32())
+                {
+                    Steer(Vector2.Zero);
+                    _campaignUiGeneration = FieldView.ReadCardFile(1, 1)?.GetValueOrDefault("generation", 0).AsInt32() ?? 0;
+                    Tap("ps_triangle"); _campaignUiStep = 1;
+                }
+                else
+                {
+                    var path = _view.Path(saver.Position, point);
+                    while (path.Count > 1 && new Vector2(path[0].X - saver.Position.X, path[0].Z - saver.Position.Z).Length() < 16) path.RemoveAt(0);
+                    var next = path.Count > 0 ? path[0] : point;
+                    float turn = (saver.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                    Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                }
+                return;
+            }
+            Steer(Vector2.Zero);
+            if (_press > 0 || _frame % 8 != 0) return;
+            switch (_campaignUiStep)
+            {
+                case 1:
+                    if (_view.MenuOpen) _campaignUiStep = 2;
+                    else if (_view.Battle is { Busy: false, EnemyActing: false }) Tap("ps_triangle");
+                    break;
+                case 2:
+                    if (_view.MenuPage == 6) _campaignUiStep = 3;
+                    else if (_view.MenuPage >= 0) Tap("ps_cross");
+                    else if (_view.MenuRow != 6) Tap("ps_down");
+                    else Tap("ps_circle");
+                    break;
+                case 3: Tap("ps_circle"); _campaignUiStep = 4; break;
+                case 4:
+                    if (_view.CardStage == "Slots") { Tap("ps_circle"); _campaignUiStep = 5; }
+                    break;
+                case 5:
+                    if (_view.CardStage == "Files") { Tap("ps_circle"); _campaignUiStep = 6; }
+                    break;
+                case 6:
+                    if (_view.CardStage == "Overwrite") { Tap("ps_up"); _campaignUiStep = 7; }
+                    else if (_view.CardStage.StartsWith("Saving", StringComparison.Ordinal) || _view.CardStage.StartsWith("Saved", StringComparison.Ordinal)) _campaignUiStep = 8;
+                    break;
+                case 7:
+                    if (_view.CardStage == "Overwrite") { Tap("ps_circle"); _campaignUiStep = 8; }
+                    break;
+                case 8:
+                    if (_view.CardStage != "Saved") break;
+                    var saved = FieldView.ReadCardFile(1, 1);
+                    if (saved == null || saved["generation"].AsInt32() <= _campaignUiGeneration || saved["location"].AsInt32() != _view.SavePoint
+                        || saved["zone"].AsInt32() != _view.Zone || saved["map"].AsInt32() != _view.Map)
+                    { Finish("campaign: DATA's SAVE did not write the earned state at this magic circle"); return; }
+                    Capture("campaign_save_ui_saved");
+                    Tap("ps_circle"); _campaignUiStep = 9;
+                    break;
+                case 9:
+                    if (_view.CardStage == "Saved") Tap("ps_circle");
+                    else if (_view.CardStage.Length == 0)
+                    {
+                        if (_view.MenuOpen) Tap("ps_cross");
+                        else { _campaignUiSaved = true; GD.Print($"CAMPAIGN: saved earned state through DATA at magic circle {_view.SavePoint}, card 1 file 1"); }
+                    }
+                    break;
+            }
+            return;
+        }
         // Learn and cast the Heal actually found in the bag. MP and every item are spent by their normal menus.
         if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp * 3 / 4 || patient.Risk > 60))
         {
@@ -728,7 +855,7 @@ public partial class FieldContracts : Node
                 case 1:
                     if (_view.MenuOpen) _campaignHealStep = 2;
                     else if (healing.Paused) Tap("ps_cross");
-                    else if (!healing.Busy) Tap("ps_triangle");
+                    else if (!healing.Busy && !healing.EnemyActing) Tap("ps_triangle");
                     break;
                 case 2:
                     int page = _campaignHealMagic ? 0 : 3;
@@ -754,7 +881,13 @@ public partial class FieldContracts : Node
                     if (healing.Paused) Tap("ps_circle");
                     if (_campaignHealMagic ? recovering.Mp < _campaignHealMp || recovering.Hp > _campaignHealHp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
                     { _campaignHealStep = 6; _campaignHealAt = _frame; }
-                    else if (!healing.Paused && !healing.Busy && !_view.MenuOpen && _frame - _campaignHealAt > 120) _campaignHealStep = 1;
+                    else if (!healing.Paused && !healing.Busy && _frame - _campaignHealAt > 120)
+                    {
+                        // A press during a menu transition can leave its page open instead of casting.
+                        // Back out before re-evaluating MP, silence and owned items and opening a fresh page.
+                        if (_view.MenuOpen) Tap("ps_cross");
+                        else _campaignHealStep = 0;
+                    }
                     break;
                 case 6:
                     if (!healing.Busy && !healing.Paused && !_view.MenuOpen)
@@ -870,6 +1003,8 @@ public partial class FieldContracts : Node
         // without attacking its optional platform enemies; they retain their normal AI and damage.
         if (_campaignCheckpoint is { Zone: 15 } && _view.Zone == 13 && _view.Map == 16
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
+        if (_campaignCheckpoint is { Zone: 42 } && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked))
+            _campaignBypassEnemies = true;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
@@ -946,19 +1081,20 @@ public partial class FieldContracts : Node
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             return;
         }
-        if (battle.Busy && !(battle.Paused && (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) == (13, 15, 0, 1)))
+        bool breakingStack = (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) is (13, 15, 0, 1) or (15, 8, 0, 1);
+        if (battle.Busy && !(battle.Paused && breakingStack))
         { Steer(Vector2.Zero); return; }
-        if (battle.Drawn && !((_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) == (13, 15, 0, 1)))
+        if (battle.Drawn && !breakingStack)
         { Steer(Vector2.Zero); Tap("ps_cross"); return; }
-        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue)
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _view.Settled && battle.HostileCount() == 0 && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue && (!_campaignRepair || _campaignRepaired) && (!_campaignSaveUi || _campaignUiSaved))
         {
             Steer(Vector2.Zero);
             if (_campaignSave.Length != 0)
             {
-                if (_view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
+                if (!_campaignSaveUi && _view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
                 { Finish("campaign: earned checkpoint could not be saved"); return; }
                 File.WriteAllText(_campaignSave, Json.Stringify(saved));
-                GD.Print($"CAMPAIGN: wrote earned checkpoint {_campaignSave}; this diagnostic save does not check the save-point menu");
+                GD.Print($"CAMPAIGN: wrote earned checkpoint {_campaignSave}; " + (_campaignSaveUi ? "saved through DATA's SAVE" : "this diagnostic save does not check the save-point menu"));
             }
             GD.Print($"CAMPAIGN: {(_room == null ? _campaignLoad.Length == 0 ? "New Game" : "resumed campaign" : "isolated room")} checkpoint {_campaignCheckpoint} reached after {_campaignRooms} room entries; this is not a campaign-completion verdict");
             Finish("");
@@ -1054,6 +1190,34 @@ public partial class FieldContracts : Node
                 {
                     int next = _view.Map switch { 0 => 1, 1 => 12, 12 => 5, 5 => 11, _ => -1 };
                     if (_view.Map == 11 ? zone != 16 : next >= 0 && (zone != 15 || candidate["map"].AsInt32() != next)) cost += 10000;
+                }
+                if (_campaignCheckpoint is { Zone: 42 })
+                {
+                    if (_view.Zone == 15)
+                    {
+                        int next = _view.Map switch { 11 => 5, 5 => 12, 12 => 1, 1 => 0, _ => -1 };
+                        if (_view.Map == 0 ? zone != 13 : next >= 0 && (zone != 15 || candidate["map"].AsInt32() != next)) cost += 10000;
+                    }
+                    if ((_view.Zone, _view.Map) == (13, 12) && zone != 42) cost += 10000;
+                }
+                if (_campaignCheckpoint is { Zone: 17 })
+                {
+                    if ((_view.Zone, _view.Map) == (13, 12) && zone != 15) cost += 10000;
+                    if (_view.Zone == 15)
+                    {
+                        int next = _view.Map switch { 0 => 1, 1 => 6, _ => -1 };
+                        bool wrong = _view.Map == 6 ? ashley.Actor.Position.Z < 1280
+                            ? zone != 15 || candidate["map"].AsInt32() != 8 || candidate["tile"].AsGodotArray()[1].AsInt32() != 3
+                            : zone != 17
+                            : _view.Map == 8 ? zone != 15 || candidate["map"].AsInt32() != 6 || candidate["tile"].AsGodotArray()[1].AsInt32() != 15
+                            : next >= 0 && (zone != 15 || candidate["map"].AsInt32() != next);
+                        if (wrong) cost += 10000;
+                    }
+                }
+                if (_campaignCheckpoint is { Zone: 32 })
+                {
+                    if (_view.Zone == 17 && (zone != 15 || candidate["map"].AsInt32() != 10)) cost += 10000;
+                    if ((_view.Zone, _view.Map) == (15, 10) && zone != 32) cost += 10000;
                 }
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }
@@ -1214,11 +1378,33 @@ public partial class FieldContracts : Node
             { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }
+        // On the return trip, the east side's three raised floor steps lead back over the barrier.
+        // The flat floor at its foot is too low for a direct running jump.
+        if (_view.Zone == 15 && _view.Map == 0 && _campaignDoor is 0 or 1 && _campaignPuzzle < 5)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Sanctum return step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1472, -128, 448), 1 => new Vector3(1344, -256, 448),
+                2 => new Vector3(1344, -448, 576), 3 => new Vector3(1216, -704, 576),
+                _ => new Vector3(960, 0, 448),
+            };
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionPress("ps_r2");
+            return;
+        }
         // The Sanctum entrance's 704-high east barrier needs its two loose stones stacked on
         // the south pushable crate. Stand on the adjacent crate to place the second stone, then jump east.
         if ((_view.Zone, _view.Map, _campaignDoor) == (15, 0, 2) && _campaignPuzzle < 14)
         {
             _campaignDoorAt = _frame;
+            bool built = !_view.Crates.Any(c => c.X == 7 && c.Z == 0) && _view.Crates.Count(c => c.X == 7 && c.Z == 5) == 3;
+            bool preset = built && !_view.Crates.Any(c => c.X == 7 && c.Z == 4);
+            if (built && _campaignPuzzle < 9) { _campaignPuzzle = 9; _campaignPuzzleAt = _frame; }
             if (_frame - _campaignPuzzleAt > 2400)
             { Finish($"campaign: Sanctum entrance stack {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
             if (_campaignPuzzle is 2 or 5 or 8 or 11)
@@ -1235,7 +1421,8 @@ public partial class FieldContracts : Node
             {
                 0 or 6 => new Vector3(832, 0, 64),
                 1 or 7 => new Vector3(960, 0, 64),
-                3 or 9 => new Vector3(960, -128, 576),
+                3 => new Vector3(960, -128, 576),
+                9 => preset ? new Vector3(832, 0, 704) : new Vector3(960, -128, 576),
                 4 or 10 => new Vector3(960, -128, 704),
                 12 => new Vector3(960, -384, 704),
                 _ => new Vector3(1088, -704, 704),
@@ -1245,16 +1432,95 @@ public partial class FieldContracts : Node
             { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
             if (facing && _frame - _campaignPuzzleAt > 1 || _campaignPuzzle == 13 && _frame - _campaignPuzzleAt < 40)
             { Steer(Vector2.Zero); return; }
-            var steps = facing || _campaignPuzzle >= 12 ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            var steps = facing || _campaignPuzzle >= 12 || preset && _campaignPuzzle == 9 ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
             while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
             var next = steps.Count > 0 ? steps[0] : point;
             float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             if (_campaignPuzzle == 13)
             { Input.ActionRelease("ps_r2"); if ((_frame - _campaignPuzzleAt) % 60 == 41) Tap("ps_square"); }
+            else if (preset && _campaignPuzzle == 12)
+            { Input.ActionRelease("ps_r2"); if ((_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square"); }
             else Input.ActionPress("ps_r2");
             if (!facing && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
-            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+            { _campaignPuzzle = built && _campaignPuzzle == 9 ? 12 : _campaignPuzzle + 1; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+            return;
+        }
+        // Golem unlocks the working platform annex. Lift its stone after breaking the crate above it,
+        // make a jumping perch at the southeast ledge, then board and ride the actual platform to the south shore.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (15, 8, 0) && _campaignPuzzle < 14)
+        {
+            _campaignDoorAt = _frame;
+            if (_campaignPuzzle >= 10 && ashley.Actor.Position.Y > -640)
+            { _campaignPuzzle = 7; _campaignPuzzleAt = _frame; _campaignBoarding = false; GD.Print("CAMPAIGN: retrying the annex after a missed boarding"); }
+            bool built = _view.Crates.Any(c => c.Kind == 4 && c.X == 6 && c.Z == 3);
+            if (built && _campaignPuzzle < 7) { _campaignPuzzle = 7; _campaignPuzzleAt = _frame; }
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: platform annex step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_campaignPuzzle == 1)
+            {
+                Steer(Vector2.Zero);
+                if (!_view.Crates.Any(c => c.Id == "33")) { _campaignPuzzle = 2; _campaignPuzzleAt = _frame; return; }
+                if (battle.Paused)
+                {
+                    if (_press > 0) return;
+                    if (_campaignCubePicks == 0) { Tap("ps_right"); _campaignCubePicks++; }
+                    else Tap("ps_circle");
+                }
+                else if (!battle.Busy) { _campaignCubePicks = 0; if (_frame % 20 == 0) Tap("ps_circle"); }
+                return;
+            }
+            if (battle.Busy) { Steer(Vector2.Zero); return; }
+            if (battle.Drawn) { Tap("ps_cross"); return; }
+            if (_campaignPuzzle is 3 or 6)
+            {
+                Steer(Vector2.Zero);
+                bool done = _campaignPuzzle == 3 ? !_view.Crates.Any(c => c.Id == "32") : built;
+                if (done) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                else if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
+                return;
+            }
+            if (_campaignPuzzle == 10)
+            {
+                if (_view.PlatformState(0) is not { } platform) { Finish("campaign: the annex has no active platform"); return; }
+                if (_view.PlatformUnder(ashley.Actor.Position) == 0 && new Vector2(ashley.Actor.Position.X - platform.Now.X, ashley.Actor.Position.Z - platform.Now.Z).Length() < 24)
+                { _campaignPuzzle = 11; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (!_campaignBoarding)
+                {
+                    if (platform.Waited is < 0 or > 20 || platform.Now.Z > 965 || Math.Abs(platform.Now.Y + 896) > 16)
+                    { Steer(Vector2.Zero); return; }
+                    _campaignBoarding = true;
+                }
+            }
+            if (_campaignPuzzle == 11)
+            {
+                Steer(Vector2.Zero);
+                if (_view.PlatformState(0) is { } platform && platform.Now.Z >= 1590 && Math.Abs(platform.Now.Y + 768) < 32)
+                { _campaignPuzzle = 12; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(576, -384, 192), 2 => new Vector3(576, -384, 64),
+                4 => new Vector3(832, -384, 320), 5 => new Vector3(832, -384, 448),
+                7 => new Vector3(832, -512, 448), 8 => new Vector3(832, -896, 576),
+                9 => new Vector3(576, -896, 832), 10 => _view.PlatformState(0)!.Value.Now,
+                _ => new Vector3(576, -768, 1728),
+            };
+            bool facing = _campaignPuzzle is 2 or 5;
+            if (facing && _frame - _campaignPuzzleAt >= 24)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            if (facing && _frame - _campaignPuzzleAt > 1 || _campaignPuzzle == 8 && _frame - _campaignPuzzleAt < 40)
+            { Steer(Vector2.Zero); return; }
+            var steps = _campaignPuzzle is 0 or 4 or 9 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle == 8)
+            { Input.ActionRelease("ps_r2"); if ((_frame - _campaignPuzzleAt) % 60 == 41) Tap("ps_square"); }
+            else Input.ActionPress("ps_r2");
+            if (!facing && _campaignPuzzle != 10 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle = _campaignPuzzle >= 12 ? 14 : _campaignPuzzle + 1; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }
         // The Catacombs south ledge needs a stone on its 128-high step. Break the corner stack's base
