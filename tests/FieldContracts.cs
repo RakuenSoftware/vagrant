@@ -1090,7 +1090,7 @@ public partial class FieldContracts : Node
             }
         }
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
-        int damageChain = (_view.Zone, _view.Map) is (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
+        int damageChain = (_view.Zone, _view.Map) is (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
             && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
         {
@@ -1469,8 +1469,13 @@ public partial class FieldContracts : Node
             _campaignBypassEnemies = true;
         if (_campaignRoute.Count > 0 && (_campaignItem > 0 || _campaignCheckpoint != (_view.Zone, _view.Map))
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
+        // Clear the Blood Lizard before passing its narrow shelf; its body can obstruct the western block.
+        if ((_view.Zone, _view.Map, _campaignPuzzle) == (51, 4, 3)
+            && battle.Combatants.Values.Any(c => c.Targetable && c.Name == "Blood Lizard")) _campaignBypassEnemies = false;
         // An introduction can arm a marked foe after this room was initially safe to cross.
-        if (battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
+        if (_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
+            _campaignBypassEnemies = true;
+        else if (battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
             _campaignBypassEnemies = false;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
@@ -1710,11 +1715,126 @@ public partial class FieldContracts : Node
             if (_campaignPuzzle == 0) _campaignPuzzleAt = _frame;
             GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
         }
+        // Kesch Bridge crosses the river by two isolated stones. Approach down the
+        // northern bank, jump each gap, and land before walking onto the southern road.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (32, 16, 1) && _campaignPuzzle < 9)
+        {
+            _campaignDoorAt = _frame;
+            if (_campaignPuzzle >= 2 && ashley.Actor.Position.Z < 448 && ashley.Actor.Position.Y <= -576)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Kesch Bridge crossings missed"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Kesch Bridge step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_campaignPuzzle is 3 or 5 or 7)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt > 45) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1600, -384, 960), 1 => new Vector3(1472, -384, 1008),
+                2 => new Vector3(1472, -384, 1344), 4 => new Vector3(1728, -128, 1600),
+                6 => new Vector3(1728, -384, 1856), _ => new Vector3(1600, -384, 2304),
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            float distance = new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length();
+            if (distance < (_campaignPuzzle == 1 ? 8 : 16))
+            {
+                Steer(Vector2.Zero);
+                if (landed && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+                { GD.Print($"CAMPAIGN: Kesch Bridge step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
+                return;
+            }
+            bool jumping = _campaignPuzzle is 2 or 4 or 6;
+            if (jumping && !_campaignBoarding && _frame - _campaignPuzzleAt < 45) { Steer(Vector2.Zero); return; }
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            if (jumping && (!_campaignBoarding || (_frame - _campaignPuzzleAt) % 120 == 1) && landed && _press == 0)
+            { Tap("ps_square"); _campaignBoarding = true; }
+            return;
+        }
+        // The Crumbling Market's western entrance joins the marked stair ramp. Climb it
+        // before turning onto the upper northern gallery toward the eastern exit.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (48, 21, 3) && _campaignPuzzle < 4)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Crumbling Market stair {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(960, -640, 832), 1 => new Vector3(1088, -640, 448),
+                2 => new Vector3(1088, -640, 192), _ => new Vector3(2368, -640, 192),
+            };
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            return;
+        }
+        // Subtellurian Horrors descends to a moving Cloudstone. Board from the west bank,
+        // stand at its eastern edge, and jump to the two-block stack at its northern turn.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (51, 7, 1) && _campaignPuzzle < 8)
+        {
+            _campaignDoorAt = _frame;
+            if (_campaignPuzzle >= 3 && ashley.Actor.Position.Y < -768)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Subtellurian Horrors crossings missed"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Subtellurian Horrors step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_view.PlatformState(0) is not { } platform) { Finish("campaign: the mine exit has no Cloudstone"); return; }
+            if (_campaignPuzzle == 3 && _view.PlatformUnder(ashley.Actor.Position) == 0
+                && new Vector2(ashley.Actor.Position.X - platform.Now.X, ashley.Actor.Position.Z - platform.Now.Z).Length() < 24)
+            { _campaignPuzzle = 4; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 6)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt > 45) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -896, 576), 1 => new Vector3(320, -384, 1088),
+                2 => new Vector3(448, -384, 1472), 3 => platform.Now,
+                4 => platform.Now + new Vector3(60, 0, 0),
+                5 => new Vector3(1216, -640, 1344),
+                _ => new Vector3(1408, -384, 1472),
+            };
+            float distance = new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length();
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (_campaignPuzzle == 4 && Math.Abs(ashley.Actor.Position.X - point.X) < 4 && _view.PlatformUnder(ashley.Actor.Position) == 0)
+            {
+                Steer(Vector2.Zero);
+                if (platform.Now.Z <= 1360) { _campaignPuzzle = 5; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
+                return;
+            }
+            if (_campaignPuzzle is not (3 or 4) && distance < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Subtellurian Horrors step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (_campaignPuzzle == 3 && !_campaignBoarding && _frame - _campaignPuzzleAt < 45) { Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle is 0 or 2 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            if (_campaignPuzzle is 3 or 5 && !_campaignBoarding && landed && _press == 0)
+            { Tap("ps_square"); _campaignBoarding = true; }
+            return;
+        }
         // Bandits' Hollow rises in shelves too high to walk directly. Its western block
         // starts the climb; cross the middle gap to the eastern block for the last jump.
         if ((_view.Zone, _view.Map, _campaignDoor) == (51, 4, 2) && _campaignPuzzle < 11)
         {
             _campaignDoorAt = _frame;
+            bool onFloor = _view.FloorAt(ashley.Actor.Position) is { } standing && Math.Abs(standing - ashley.Actor.Position.Y) < 2;
+            if (_frame - _campaignPuzzleAt > 120 && onFloor && (_campaignPuzzle >= 2 && ashley.Actor.Position.Y > -384
+                || _campaignPuzzle >= 4 && _campaignBoarding && ashley.Actor.Position.Y > -768))
+            { _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
             if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Bandits' Hollow shelf {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
             var point = _campaignPuzzle switch
             {
@@ -1728,7 +1848,7 @@ public partial class FieldContracts : Node
             bool jumping = _campaignPuzzle is 1 or 4 or 6 or 9;
             if (jumping && !_campaignBoarding && _frame - _campaignPuzzleAt < 45) { Steer(Vector2.Zero); return; }
             bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
-            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == 5 ? 4 : 16) && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == 5 ? 8 : 16) && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
             {
                 GD.Print($"CAMPAIGN: Bandits' Hollow shelf {_campaignPuzzle} reached at {ashley.Actor.Position}");
                 _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false;
@@ -1740,7 +1860,7 @@ public partial class FieldContracts : Node
             float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
-            if (jumping && !_campaignBoarding && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; }
+            if (jumping && (!_campaignBoarding || (_frame - _campaignPuzzleAt) % 120 == 1) && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; }
             return;
         }
         // Fool's Gold, Fool's Loss has a southern shelf that turns east before descending. The diagonal
@@ -4415,7 +4535,7 @@ public partial class FieldContracts : Node
         { Finish($"campaign: no net HP reduction for 7200 frames in {_view.Zone},{_view.Map}, target {_fightTargetId}, {_view.SystemBox.Text}"); return; }
         if (battle.Paused)
         {
-            if (battle.SphereTarget is { } selected && (selected.Cube || FieldBattle.Relation(selected, ashley) != 3))
+            if (battle.SphereTarget is { } selected && (selected.Cube || FieldBattle.Relation(selected, ashley) != 3 || (_view.Zone, _view.Map, _campaignPuzzle) == (51, 4, 3) && selected.Name != "Blood Lizard"))
             {
                 if (_press == 0)
                 {
@@ -4464,7 +4584,7 @@ public partial class FieldContracts : Node
         if (!battle.Drawn) { Steer(Vector2.Zero); Tap("ps_circle"); return; }
         FieldBattle.Combatant? nearest = null;
         foreach (var c in battle.Combatants.Values)
-            if (c.Targetable && FieldBattle.Relation(c, ashley) == 3 && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
+            if (c.Targetable && FieldBattle.Relation(c, ashley) == 3 && ((_view.Zone, _view.Map, _campaignPuzzle) != (51, 4, 3) || c.Name == "Blood Lizard") && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
         if (nearest == null) { Steer(Vector2.Zero); return; }
         if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;
