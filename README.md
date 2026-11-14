@@ -38,7 +38,7 @@ godot-dotnet --headless --path . res://tests/field_contracts.tscn -- --install-r
 # Movement timing and distance, followed separately by the final boss's swoop and event handoff.
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=13,1 --movement
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
-# Disk save resumed in a fresh field, then another room: weapon wear/PP, stats, inventory and progression.
+# Disk resume and room/zone loads: gear, stats, inventory, progression and native variable lifetimes.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # SETUP's Repair: YES/NO, Cross cancellation, all carried equipment, PP cost, accessories and storage.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-repair
@@ -53,6 +53,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # --campaign-flag=FLAG:MIN similarly waits for a local gate or encounter flag without changing it.
 # --campaign-save=/tmp/checkpoint.json exports the earned state there; --campaign-load=PATH resumes it.
 # This diagnostic save uses the real serializer; it does not test the save-point menu.
+# --campaign-route=ZONE,MAP/ZONE,MAP/... supplies ordered doors, including timed corridors.
+# --campaign-repair uses SETUP's Repair at a workshop; --campaign-save-ui uses DATA's SAVE at a magic circle.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --campaign
 # Every visual effect's records, programs, frame tables and vibration envelopes.
 godot-dotnet --headless --path . res://tests/effect_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-effects

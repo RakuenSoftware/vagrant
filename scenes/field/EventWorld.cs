@@ -46,11 +46,17 @@ public sealed class EventWorld : FlowStateSchema<EventWorld, EventCommand>, IFlo
         ReadOnlyInteger("skip", world => world.Skip);
     }
 
-    /// <summary>Room loading clears the room variables; a disk resume preserves them (0x800be98c, 0x800beb9c).</summary>
+    /// <summary>The MPD loader clears room variables 0x20..0x3f; a disk resume preserves them (0x800be98c).</summary>
     public void BeginRoom(bool resume)
     {
         Flags[0xA9] = 0;
-        if (!resume) Array.Clear(Flags, 0x20, 0x60);
+        if (!resume) Array.Clear(Flags, 0x20, 0x20);
+    }
+
+    /// <summary>The ZND loader clears zone variables 0x40..0x7f, except on resume (0x80088ff4, 0x800beb9c).</summary>
+    public void BeginZone(bool resume)
+    {
+        if (!resume) Array.Clear(Flags, 0x40, 0x40);
     }
 
     /// <summary>Clears a new script's variables 0x10..0x1f and 0xa8 (0x800bf6dc/0x800bf7dc), switch, loops and skip.</summary>

@@ -602,7 +602,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// Presents a room (zone, map index), starting its entry event unless opcode 68 continues the current one.
     /// The previous room's presentation is released; music, screen fade and event clock carry over.
     /// </summary>
-    public void LoadRoom(int zone, int map, bool resume = false, bool continueEvent = false)
+    public void LoadRoom(int zone, int map, bool resume = false, bool continueEvent = false, bool reloadZone = false)
     {
         // A room's start puts the frame step back to 2 (BATTLE.PRG 0x800742c4).
         FrameStep = 2;
@@ -617,6 +617,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 _events = null;
                 return;
             }
+            if (reloadZone || zone != Zone) _world.BeginZone(resume);
             _world.BeginRoom(resume);
             if (Field != null)
             {
@@ -4140,7 +4141,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), facing);
             _arrivalHalf = (changeFlags & 1) != 0;
             bool continueEvent = (changeFlags & 4) != 0;
-            LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32(), continueEvent: continueEvent);
+            LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32(), continueEvent: continueEvent, reloadZone: zone != 0);
             if (continueEvent && receipt is { } completed) _completions.Add(completed);
             return;
         }
