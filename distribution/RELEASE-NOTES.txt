@@ -1,6 +1,7 @@
 SPDX-License-Identifier: AGPL-3.0-only
 
 Preview of Project Vagrant, an independent, unofficial Vagrant Story runtime.
+The launch splash and window/application icons use the shared WoL engine artwork.
 Not affiliated with or endorsed by Square Enix. Original game content and
 branding belong to their respective rights holders.
 

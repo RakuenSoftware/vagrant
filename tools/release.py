@@ -87,6 +87,13 @@ class DesktopRelease:
                         raise RuntimeError("Each matching desktop SDK must be provided exactly once")
                     if release.setdefault("commit", commit) != commit:
                         raise RuntimeError("Engine SDK commits do not match")
+                    source_release = manifest.get("release", "https://github.com/RakuenSoftware/wol-engine/releases/tag/runtime-" + commit)
+                    if not source_release.startswith("https://github.com/RakuenSoftware/wol-engine/releases/tag/"):
+                        raise RuntimeError("Unexpected engine release provenance")
+                    if release.setdefault("release", source_release) != source_release:
+                        raise RuntimeError("Engine SDK releases do not match")
+                    if release.setdefault("binary_commit", manifest.get("binary_commit", commit)) != manifest.get("binary_commit", commit):
+                        raise RuntimeError("Engine SDK binary revisions do not match")
                     expected = set(manifest["files"]) | {"RUNTIME.json"}
                     if {p.filename for p in packed.infolist() if not p.is_dir()} != expected:
                         raise RuntimeError("Engine release archive file list mismatch")
@@ -119,9 +126,8 @@ class DesktopRelease:
                     release["targets"][target] = {"asset": archive.name, "sha256": digest}
             if set(release["targets"]) != set(self.TARGETS):
                 raise RuntimeError("All three desktop runtime SDKs are required")
-            release["release"] = "https://github.com/RakuenSoftware/wol-engine/releases/tag/runtime-" + release["commit"]
             release["files"] = {p.relative_to(stage).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                                for p in stage.rglob("*") if p.is_file()}
+                                for p in sorted(stage.rglob("*")) if p.is_file()}
             (stage / "VENDOR.json").write_text(json.dumps(release, indent=2) + "\n")
             shutil.copytree(stage, self.engine)
         print("VENDORED_ENGINE:", release["release"])
@@ -360,6 +366,7 @@ class DesktopRelease:
             "version": version, "target": self.args.target,
             "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip(),
             "engine_commit": self.runtime["commit"],
+            "engine_binary_commit": self.runtime.get("binary_commit", self.runtime["commit"]),
             "godot": self.VERSION, "native_sha256": native,
             "game_worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain", "--ignore-submodules=all"], cwd=self.root)),
             "engine_package_sha256": self.runtime["targets"][self.args.target]["sha256"],

@@ -23,11 +23,17 @@ platform also retains its original RUNTIME.json from the SDK. Managed/native
 binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
-The source is the published `runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148`
-release. Its Linux, Windows and universal macOS SDKs passed native CI builds and
-source-free consumer smoke tests before publication. The runtime payloads here
-were extracted from those SDK archives; the build-time editor was omitted.
-No private engine source checkout, SDK source cache or build tools are vendored.
+The current SDK is the published
+`resources-e98acb9c5d6516f0e8f920e04e86995036e1265b` release. Its platform
+binaries are retained byte for byte from the native-CI-qualified
+`runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148` release. The private engine CI
+verified the original archive/file hashes, rejected implementation/native-build
+changes, and added the shared WoL branding resources. RUNTIME.json and VENDOR.json
+record the SDK resource revision separately from the original binary commit.
+The game uses those shared assets for the startup splash, window icon and native
+Windows/macOS export icons. The build-time editor remains omitted from the
+vendored game dependency. No private engine source checkout, SDK source cache or
+build tools are vendored.
 
 Only a maintainer updating the dependency needs access to private engine
 releases. Download all three SDK ZIPs and their adjacent `.zip.sha256` files from

@@ -2,7 +2,7 @@
   "schema": 1,
   "target": "windows-x64",
   "godot": "4.7.2",
-  "commit": "562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "commit": "e98acb9c5d6516f0e8f920e04e86995036e1265b",
   "editor": "editor/Godot_v4.7.2-stable_mono_win64.exe",
   "files": {
     "GodotApi.props": "4b64e3c7edd81561a220b075e263415cd0f0028380564f6a50708726022a7308",
@@ -325,6 +325,14 @@
     "runtime/world/SpriteTint.cs": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6",
     "runtime/world/SpriteTint.cs.uid": "b705b74d7fe6ecc77450cff10934540a1b4ecaae42e4cc5ada952ed16786c6df",
     "runtime/world/WalkSurface.cs": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6",
-    "runtime/world/WalkSurface.cs.uid": "d6b5f4a3ecae305570f135cbfce951c822c3bdc78a91f15fffebaea480e20ac9"
-  }
+    "runtime/world/WalkSurface.cs.uid": "d6b5f4a3ecae305570f135cbfce951c822c3bdc78a91f15fffebaea480e20ac9",
+    "runtime/branding/wol_splash.png": "6002156e31b863cee2b989ec049f38d44c7e80bd32ba17202327c7d65310d5a6",
+    "runtime/branding/README.md": "9f312286d9673432848fc23388fd569dafeda637dbcfdebb986867244ebe5c78",
+    "runtime/branding/wol.svg": "863e494b85788d0057026ff0ba0a9fba650a8f84aa531cde5dcfd7d230f20faf",
+    "runtime/branding/wol_icon.png": "4d79db17b93d5e7264c09b5c67a87c990122b2da29d20facf2100bde8745e381",
+    "runtime/branding/wol_splash.svg": "ad79e95024c53ce9c4d58e849d87f2e3269075bd007f50ace48acdb66a8400de"
+  },
+  "binary_commit": "562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "base_release": "runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "release": "https://github.com/RakuenSoftware/wol-engine/releases/tag/resources-e98acb9c5d6516f0e8f920e04e86995036e1265b"
 }
