@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Compile the packaged media tools from the verified, unmodified release sources.
-set -euo pipefail
-target="$1"
-cd "$2"
+set -eo pipefail
+target="${1:?desktop target required}"
+cd "${2:?build directory required}"
 work="$(pwd)"
-cd "$3"
+cd "${3:?output directory required}"
 output="$(pwd)"
 if [[ "$target" == windows-x64 ]]; then
     export PATH="/mingw64/bin:/usr/bin:$PATH"

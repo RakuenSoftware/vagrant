@@ -186,7 +186,7 @@ class DesktopRelease:
         if host != self.args.target:
             raise RuntimeError("Build media tools on their native CI runner.")
         output.mkdir(parents=True, exist_ok=True)
-        sources = json.loads((self.root / "distribution/media-sources.json").read_text())
+        sources = json.loads((self.root / "distribution/media-sources.json").read_text())["sources"]
         downloaded = []
         media_cache = self.cache / "media-sources"
         media_cache.mkdir(exist_ok=True)
@@ -218,8 +218,8 @@ class DesktopRelease:
             notices = output / "licenses"
             notices.mkdir(exist_ok=True)
             for name, _ in downloaded:
-                for original in (work / "sources" / name).glob("COPYING*"):
-                    if original.is_file():
+                for original in (work / "sources" / name).iterdir():
+                    if original.is_file() and (original.name.startswith("COPYING") or original.name in ("LICENSE", "LICENSE.md", "AUTHORS")):
                         shutil.copy2(original, notices / (name + "-" + original.name + ".txt"))
             shutil.copy2(self.root / "distribution/MEDIA-NOTICES.txt", notices / "MEDIA-NOTICES.txt")
         suffix = ".exe" if platform.system() == "Windows" else ""
