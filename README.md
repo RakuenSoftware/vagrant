@@ -19,6 +19,14 @@ is needed during play once installed.
 
 See [docs/TITLE.md](docs/TITLE.md) for the title and [docs/FIELD.md](docs/FIELD.md) for the field runtime.
 
+## Player downloads and desktop packages
+
+Players receive a compiled archive containing Vagrant, wol-engine and Godot/.NET;
+no engine source checkout or build tools are required. The release targets are
+Linux x86-64, Windows x86-64 and macOS Universal (Intel + Apple Silicon).
+See [distribution and native CI instructions](docs/DISTRIBUTION.md).
+FFmpeg/ffprobe remain required for first-time disc conversion.
+
 ## Build
 
 Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the game decodes the opening movie and ending XA music with them into its cache).

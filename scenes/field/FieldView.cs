@@ -4186,7 +4186,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (Controlled && Field!.CameraRoll != 0) Field.SetCameraScalar(Wol.Engine.World.CameraPart.Roll, 0, 0);
         ApplyCamera();
         ShowRoomGroups();
-        Field.AdvancePresentation();
+        Field!.AdvancePresentation();
         // Enhanced lighting blooms what is bright.
         if (FieldLighting.Enhanced || Field.FieldEnvironment?.Environment.GlowEnabled == true)
         {
@@ -5112,7 +5112,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // The page takes the menu's place; the field stays still under it.
             _shortcutFrames = -1;
             DimField(0);
-            Battle.Hud?.Shortcuts(null, Array.Empty<bool>(), 0);
+            Battle?.Hud?.Shortcuts(null, Array.Empty<bool>(), 0);
             MenuSound(MenuSelect);
             _menu.OpenShortcut(i);
             break;

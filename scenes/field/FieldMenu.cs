@@ -170,7 +170,7 @@ public sealed partial class FieldMenu : PanelContainer
         _items.MenuWordShown = false;
         _items.ShowAshley(null, "");
         _cards.OpenLoad(fadeOut: true);
-        Draw();
+        RefreshPage();
     }
 
     /// <summary>The memory card screens' stage, empty when they are not up (<see cref="MemoryCardMenu.Showing"/>).</summary>
@@ -195,7 +195,7 @@ public sealed partial class FieldMenu : PanelContainer
             if (Input.IsActionPressed(button)) _chestHeld.Add(button);
         _chest = chest;
         _cursor = 0;
-        Draw();
+        RefreshPage();
     }
 
     // A reclaim (MENU2.PRG's actionUnlock): the stage (0 the art's message, 1 choosing the kind, 2 choosing the
@@ -228,7 +228,7 @@ public sealed partial class FieldMenu : PanelContainer
         _cursor = 0;
         if (art >= 0) ShowReclaimArt();
         else BeginAbilityReclaim();
-        Draw();
+        RefreshPage();
     }
 
     private Godot.Collections.Array ReclaimLines => _view.Content.Data("battle_abilities")["unlock"].AsGodotArray();
@@ -346,7 +346,7 @@ public sealed partial class FieldMenu : PanelContainer
                 else { _view.MenuSound(FieldView.MenuSelect); _magicClass = _cursor; _cursor = 0; }
             }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _page = -1; _view.Battle?.CoverHud(true); }
-            Draw();
+            RefreshPage();
             return true;
         }
         if (_magicClass == 4)
@@ -359,7 +359,7 @@ public sealed partial class FieldMenu : PanelContainer
                 else { _view.MenuSound(FieldView.MenuSelect); Show(false); return false; }
             }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _magicClass = -1; _cursor = 4; }
-            Draw();
+            RefreshPage();
             return true;
         }
         var spells = ClassSpells(_magicClass);
@@ -376,7 +376,7 @@ public sealed partial class FieldMenu : PanelContainer
             }
         }
         else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _cursor = _magicClass; _magicClass = -1; }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -406,7 +406,7 @@ public sealed partial class FieldMenu : PanelContainer
             // Back on the page, the pointer stands on View Arts (Ep. 3 7:16).
             if (pressed("ps_circle")) { _view.MenuSound(FieldView.MenuSelect); _artsCategory = _cursor + 1; _artsCategories = false; _cursor = CategoryArts(_artsCategory).Count; }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _artsCategories = false; _cursor = CategoryArts(_artsCategory).Count; }
-            Draw();
+            RefreshPage();
             return true;
         }
         var arts = CategoryArts(_artsCategory);
@@ -425,7 +425,7 @@ public sealed partial class FieldMenu : PanelContainer
             }
         }
         else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _page = -1; _view.Battle?.CoverHud(true); }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -443,7 +443,7 @@ public sealed partial class FieldMenu : PanelContainer
         _boxCategory = 0;
         _pending.Clear();
         _cursor = 0;
-        Draw();
+        RefreshPage();
     }
 
     /// <summary>EQUIP's eight slots under a header: each slot's name (MENU3 strings 12 to 19, the part after a slash) and what it has on.</summary>
@@ -797,7 +797,7 @@ public sealed partial class FieldMenu : PanelContainer
         _view.Battle?.CoverHud(open);
         _page = -1;
         _note = "";
-        Draw();
+        RefreshPage();
     }
 
     /// <summary>Whether a page was opened from the shortcut menu: it then has no command list behind it, nor MENU over it.</summary>
@@ -870,7 +870,7 @@ public sealed partial class FieldMenu : PanelContainer
             // The field stays as dark under the page as under the shortcut menu (Episode 4 at 3:16).
             _view.DimField(FieldView.ShortcutDim);
         }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -1211,28 +1211,28 @@ public sealed partial class FieldMenu : PanelContainer
     {
         if (_setup == 10)
         {
-            if (pressed("ps_triangle")) { _setup = 0; _setupCursor = Assemble; _blade = _grip = null; _assemblyGems.Clear(); _view.MenuSound(FieldView.MenuLeave); Draw(); return true; }
+            if (pressed("ps_triangle")) { _setup = 0; _setupCursor = Assemble; _blade = _grip = null; _assemblyGems.Clear(); _view.MenuSound(FieldView.MenuLeave); RefreshPage(); return true; }
             if (pressed("ps_cross"))
             {
                 if (_setupCursor == 0) _blade = null;
                 else if (_setupCursor == 1) { _grip = null; _assemblyGems.Clear(); }
                 else if (_setupCursor - 2 < _assemblyGems.Count) _assemblyGems[_setupCursor - 2] = null;
                 else { _setup = 0; _setupCursor = Assemble; }
-                _view.MenuSound(FieldView.MenuLeave); Draw(); return true;
+                _view.MenuSound(FieldView.MenuLeave); RefreshPage(); return true;
             }
             if (pressed("ps_start"))
             {
                 if (_blade != null && _grip != null) { _setup = 14; _setupCursor = 1; _view.MenuSound(FieldView.MenuSelect); }
                 else _view.MenuSound(FieldView.MenuInvalid);
-                Draw(); return true;
+                RefreshPage(); return true;
             }
         }
         if ((_setup is >= 7 and <= 9 || _setup is >= 11 and <= 13) && pressed("ps_square"))
-        { _statPage = (_statPage + 1) % 3; _view.MenuSound(FieldView.MenuChange); Draw(); return true; }
+        { _statPage = (_statPage + 1) % 3; _view.MenuSound(FieldView.MenuChange); RefreshPage(); return true; }
         if (_setup == 5)
         {
             if (pressed("ps_circle") || pressed("ps_cross") || pressed("ps_triangle")) { _view.MenuSound(FieldView.MenuLeave); _setup = 0; _setupCursor = Repair; }
-            Draw();
+            RefreshPage();
             return true;
         }
         var (_, rows, _) = SetupPage();
@@ -1254,12 +1254,12 @@ public sealed partial class FieldMenu : PanelContainer
                 case 9: _setup = 8; _setupCursor = 0; _combineSecond = _combineResult = null; break;
                 default: _setup = 2; _setupCursor = Math.Max(0, SetupHolders().IndexOf(_setupTarget!)); _setupTarget = null; break;
             }
-            Draw();
+            RefreshPage();
             return true;
         }
-        if (!pressed("ps_circle") || rows.Count == 0) { Draw(); return true; }
+        if (!pressed("ps_circle") || rows.Count == 0) { RefreshPage(); return true; }
         int chosen = Math.Min(_setupCursor, rows.Count - 1);
-        if (rows[chosen].Greyed) { _view.MenuSound(FieldView.MenuInvalid); Draw(); return true; }
+        if (rows[chosen].Greyed) { _view.MenuSound(FieldView.MenuInvalid); RefreshPage(); return true; }
         _view.MenuSound(FieldView.MenuSelect);
         _setupNote = "";
         switch (_setup)
@@ -1372,7 +1372,7 @@ public sealed partial class FieldMenu : PanelContainer
                 _setupTarget = null;
                 break;
         }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -1476,7 +1476,7 @@ public sealed partial class FieldMenu : PanelContainer
     /// Square deletes at the caret and Cross backspaces. Start or OK opens Yes/No/Cancel change.</summary>
     private void StepName(Func<string, bool> pressed)
     {
-        if (_nameWait > 0) { _nameWait--; Draw(); return; }
+        if (_nameWait > 0) { _nameWait--; RefreshPage(); return; }
         int vertical = (pressed("ps_down") ? 1 : 0) - (pressed("ps_up") ? 1 : 0);
         if (_nameAnswer >= 0)
         {
@@ -1489,7 +1489,7 @@ public sealed partial class FieldMenu : PanelContainer
                 else if (_nameAnswer == 2) _renaming = null;
                 _nameAnswer = -1;
             }
-            Draw(); return;
+            RefreshPage(); return;
         }
         int caret = (pressed("ps_r1") ? 1 : 0) - (pressed("ps_l1") ? 1 : 0);
         if (caret != 0) { _nameCaret = (_nameCaret + caret + 20) % 20; _view.MenuSound(FieldView.MenuChange); }
@@ -1538,7 +1538,7 @@ public sealed partial class FieldMenu : PanelContainer
             if (_nameCandidate.Length == 0) _nameCandidate = _view.ItemName(_renaming!["blade"].AsGodotDictionary()["id"].AsInt32());
             _nameAnswer = 0; _view.MenuSound(FieldView.MenuSelect);
         }
-        Draw();
+        RefreshPage();
     }
 
     /// <summary>Advances one frame with the buttons newly pressed; returns false once the menu has closed.</summary>
@@ -1559,7 +1559,7 @@ public sealed partial class FieldMenu : PanelContainer
             StepName(pressed);
             return true;
         }
-        if (_page == Options) { _page = -1; Draw(); return true; }
+        if (_page == Options) { _page = -1; RefreshPage(); return true; }
         if (_cards.Open)
         {
             // Saving or leaving closes the container; a save point's returns to the menu.
@@ -1567,12 +1567,12 @@ public sealed partial class FieldMenu : PanelContainer
             {
                 if (_loadingGame) { _loadingGame = false; _view.AfterGameOver(result > 0 ? _cards.Loaded : null); Show(false); return false; }
                 // DATA's LOAD resumes the loaded game; backing out returns to the page.
-                if (_dataLoading) { _dataLoading = false; if (result > 0) { _view.AfterGameOver(_cards.Loaded); Show(false); return false; } Draw(); return true; }
-                if (_page == Data) { Draw(); return true; }
+                if (_dataLoading) { _dataLoading = false; if (result > 0) { _view.AfterGameOver(_cards.Loaded); Show(false); return false; } RefreshPage(); return true; }
+                if (_page == Data) { RefreshPage(); return true; }
                 if (_page == Container) { Show(false); return false; }
                 _page = -1;
             }
-            Draw();
+            RefreshPage();
             return true;
         }
         int step = (pressed("ps_down") ? 1 : 0) - (pressed("ps_up") ? 1 : 0);
@@ -1598,7 +1598,7 @@ public sealed partial class FieldMenu : PanelContainer
                 var text = _view.Content.Data("battle_text");
                 _view.Message(SystemBox.Fill(text["menu_refusal"].AsGodotDictionary(), new[] { text["menu_reasons"].AsGodotArray()[2].AsGodotDictionary()["text"].AsString() }), header: 1, lines: 4, frames: 90, centred: false);
                 _artsRefused = true;
-                Draw();
+                RefreshPage();
                 return true;
             }
             if (pressed("ps_circle") && _row == Arts && _artsRefused) { _view.SystemBox.Text = ""; _artsRefused = false; }
@@ -1689,7 +1689,7 @@ public sealed partial class FieldMenu : PanelContainer
                 int actions = ItemActions().Count;
                 if (step != 0) { _itemAction = (_itemAction + step + actions) % actions; _actionRefusal = ""; _view.MenuSound(FieldView.MenuChange); }
                 if (pressed("ps_triangle") || pressed("ps_cross")) { _itemAction = -1; _actionRefusal = ""; _view.MenuSound(FieldView.MenuLeave); }
-                Draw();
+                RefreshPage();
                 return true;
             }
             int across = (pressed("ps_right") || pressed("ps_r1") ? 1 : 0) - (pressed("ps_left") || pressed("ps_l1") ? 1 : 0);
@@ -1783,13 +1783,13 @@ public sealed partial class FieldMenu : PanelContainer
                 contents = _view.ChestContents(_chest);
                 if (contents.Count == 0) { _chest = null; Show(false); return false; }
                 _cursor = Math.Min(_cursor, contents.Count - 1);
-                Draw();
+                RefreshPage();
                 return true;
             }
             if (_page == Container)
             {
                 bool open = StepContainer(pressed, step);
-                Draw();
+                RefreshPage();
                 return open;
             }
             if (_page == Manual)
@@ -1808,7 +1808,7 @@ public sealed partial class FieldMenu : PanelContainer
                     _scroll = Math.Clamp(_scroll + step, 0, Math.Max(0, lines - ManualLines));
                     if (pressed("ps_triangle") || pressed("ps_cross")) _topic = -1;
                 }
-                Draw();
+                RefreshPage();
                 return true;
             }
             if (_page == Magic && _view.Content.Has("magic_menu")) return StepMagic(pressed, step);
@@ -1821,7 +1821,7 @@ public sealed partial class FieldMenu : PanelContainer
             }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { _page = -1; _note = ""; }
         }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -1982,7 +1982,7 @@ public sealed partial class FieldMenu : PanelContainer
             {
                 if (pressed("ps_square")) { _statPage = (_statPage + 1) % 3; _view.MenuSound(FieldView.MenuChange); }
                 if (pressed("ps_cross")) { _statusEquip = 1; _view.MenuSound(FieldView.MenuLeave); }
-                Draw();
+                RefreshPage();
                 return true;
             }
             int moved = (pressed("ps_down") ? 1 : 0) - (pressed("ps_up") ? 1 : 0);
@@ -1999,19 +1999,19 @@ public sealed partial class FieldMenu : PanelContainer
                 // Back on the limb whose armour row was chosen (MENU4: the row less two), within the limbs.
                 if (_view.Battle?.Ashley is { } owner) _statusChosen = Math.Clamp(ShownLimb(owner, SlotLimbs[_slot]), 0, Math.Max(0, StatusLimbs(owner).Count - 1));
             }
-            Draw();
+            RefreshPage();
             return true;
         }
-        if (pressed("ps_cross") && _defencePage < 0) { _view.MenuSound(FieldView.MenuLeave); _page = -1; _items.ShowAshley(null, ""); Draw(); return true; }
+        if (pressed("ps_cross") && _defencePage < 0) { _view.MenuSound(FieldView.MenuLeave); _page = -1; _items.ShowAshley(null, ""); RefreshPage(); return true; }
         if (Input.IsActionPressed("ps_l2"))
         {
             int yaw = (Input.IsActionPressed("ps_right") ? 64 : 0) - (Input.IsActionPressed("ps_left") ? 64 : 0);
             int pitch = (Input.IsActionPressed("ps_down") ? 64 : 0) - (Input.IsActionPressed("ps_up") ? 64 : 0);
             if (yaw != 0 || pitch != 0) _items.TurnModel(yaw, pitch);
-            Draw();
+            RefreshPage();
             return true;
         }
-        if (StatusWho is not { } ashley) { Draw(); return true; }
+        if (StatusWho is not { } ashley) { RefreshPage(); return true; }
         bool own = ashley == _view.Battle?.Ashley;
         int limbs = StatusLimbs(ashley).Count;
         // L1 and R1 go round the fighters, the model sliding to the next (MENU4: Ashley's values known, an enemy's
@@ -2028,14 +2028,14 @@ public sealed partial class FieldMenu : PanelContainer
                 _items.ShowAshley(next.Actor, next == _view.Battle?.Ashley ? $"{next.BattleSet}_1" : $"{next.Set}_{FieldPlayer.Idle}");
                 _statusChosen = Math.Min(_statusChosen, Math.Max(0, StatusLimbs(next).Count - 1));
             }
-            Draw();
+            RefreshPage();
             return true;
         }
         if (_defencePage > 0)
         {
             // MENU4's state 9: L1 and R1 go round the limbs, up and down the rows (seven on AFFINITY, three on TYPE),
             // Square turns the page, Cross goes back and Triangle leaves.
-            if (pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _defencePage = -1; Draw(); return true; }
+            if (pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _defencePage = -1; RefreshPage(); return true; }
             int was = _statusChosen, wasRow = _defenceRow;
             if (pressed("ps_l1")) _statusChosen = (_statusChosen + limbs - 1) % Math.Max(1, limbs);
             if (pressed("ps_r1")) _statusChosen = (_statusChosen + 1) % Math.Max(1, limbs);
@@ -2045,7 +2045,7 @@ public sealed partial class FieldMenu : PanelContainer
             if (pressed("ps_down")) _defenceRow = (_defenceRow + 1) % rows;
             if (pressed("ps_square")) { _defencePage = 3 - _defencePage; _defenceRow = Math.Min(_defenceRow, (_defencePage == 1 ? 7 : 3) - 1); _view.MenuSound(FieldView.MenuChange); }
             if (_statusChosen != was || _defenceRow != wasRow) _view.MenuSound(FieldView.MenuChange);
-            Draw();
+            RefreshPage();
             return true;
         }
         var icons = StatusIcons(ashley);
@@ -2084,7 +2084,7 @@ public sealed partial class FieldMenu : PanelContainer
             if (_statusChosen < limbs && own) { _view.MenuSound(FieldView.MenuSelect); _statusEquip = 1; _slot = 2 + IndexOfLimb(ashley, _statusChosen); }
             else _view.MenuSound(FieldView.MenuInvalid);
         }
-        Draw();
+        RefreshPage();
         return true;
     }
 
@@ -2180,7 +2180,7 @@ public sealed partial class FieldMenu : PanelContainer
         return -1;
     }
 
-    private void Draw()
+    private void RefreshPage()
     {
         bool reclaimList = Visible && _page == Reclaim && _reclaimStage is 1 or 2;
         bool artsList = Visible && _page == Arts && _view.Content.Has("break_arts");

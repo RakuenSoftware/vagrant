@@ -145,12 +145,12 @@ public sealed partial class SoundDriver : Node
         return result;
     }
 
-    private bool Ready => _sandbox != null && Failure.Length == 0;
+    private bool DriverReady => _sandbox != null && Failure.Length == 0;
 
     /// <summary>Starts a music sequence with its instrument bank (loaded into sound RAM first), at a volume of 0 to 127.</summary>
     public void PlayMusic(byte[] sequence, byte[] bank, int volume)
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try
         {
             if (_music) Call(StopMusic, Sequence);
@@ -167,7 +167,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Stops the music (driver command 0x11, as the field's release does).</summary>
     public void Stop()
     {
-        if (!Ready || !_music) return;
+        if (!DriverReady || !_music) return;
         try { Call(StopMusic, Sequence); }
         catch (InvalidDataException error) { Failure = error.Message; }
         _music = false;
@@ -176,7 +176,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Sets the music's volume (0 to 127) at once (driver command 0xc1).</summary>
     public void Volume(int volume)
     {
-        if (!Ready || !_music) return;
+        if (!DriverReady || !_music) return;
         try { Call(MusicVolume, 0, 0, Math.Clamp(volume, 0, 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -186,7 +186,7 @@ public sealed partial class SoundDriver : Node
     {
         get
         {
-            if (!Ready || !_music) return false;
+            if (!DriverReady || !_music) return false;
             uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
             return config != 0 && _sandbox.Call(ReadWordMethod, (long)config + 4).AsInt64() != 0;
         }
@@ -200,7 +200,7 @@ public sealed partial class SoundDriver : Node
     {
         get
         {
-            if (!Ready || !_music) return -1;
+            if (!DriverReady || !_music) return -1;
             uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
             if (config == 0) return -1;
             long word = _sandbox.Call(ReadWordMethod, (long)config + 124).AsInt64();
@@ -224,7 +224,7 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void PlaySound(string name, byte[] bank, int id, int group, int pan, int volume)
     {
-        if (!Ready || !HasSound(bank, id)) return;
+        if (!DriverReady || !HasSound(bank, id)) return;
         try
         {
             if (!_banks.TryGetValue(name, out long at))
@@ -244,7 +244,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Plays a resident sound (from the boot-time effect blob) on a group's voices.</summary>
     public void PlayResident(int id, int group, int pan, int volume)
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(PlaySfxById, id, Voices(group), pan, Math.Clamp(volume, 0, 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -252,7 +252,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Stops the sounds on a group's voices (StopSfx with no sound named, as the game's 0x80045D64 does for id 0).</summary>
     public void StopSounds(int group)
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(StopSfx, 0, Groups[Math.Clamp(group, 0, Groups.Length - 1)]); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -260,7 +260,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Releasing the selected event bank: StopSfx of -2, then of group 3's voices (the game's 0x800460C0).</summary>
     public void ReleaseEventBank()
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try
         {
             Call(StopSfx, -2, 0);
@@ -272,7 +272,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Sets the driver's reverb (driver command 0x92, event opcode a8).</summary>
     public void Reverb(int value)
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(SetReverb, value); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -280,7 +280,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Starts an effect's sound sequence (an AKAO block) at full volume.</summary>
     public void PlaySequence(byte[] sequence)
     {
-        if (!Ready || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
+        if (!DriverReady || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
         try
         {
             _sandbox!.Call(WriteMemoryMethod, EffectSequence, sequence);
@@ -293,7 +293,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Stops the effect's sound sequence.</summary>
     public void StopSequence()
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(StopSequenceCommand); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -301,7 +301,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Takes the driver's music snapshot (driver command 0x40, event opcode 98).</summary>
     public void Snapshot()
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(SnapshotMusic); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -309,7 +309,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>Stops every sound (driver command 0xf1, as the game's 0x80045DC0 does).</summary>
     public void StopAllSounds()
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(StopAllSfx); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -320,7 +320,7 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void StopSound(string bankName, byte[]? bank, int id)
     {
-        if (!Ready || Target(bankName, bank, id) is not long target) return;
+        if (!DriverReady || Target(bankName, bank, id) is not long target) return;
         try { Call(StopSfx, target, 0); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }
@@ -340,7 +340,7 @@ public sealed partial class SoundDriver : Node
     /// <summary>The driver's volume or pan slide (0x8001264C, 0x80012738) of a sound (by program or id) or of a group's voices.</summary>
     private void Slide(long target, long voices, bool pan, int value, int frames)
     {
-        if (!Ready) return;
+        if (!DriverReady) return;
         try { Call(pan ? PanSfx : FadeSfx, target, voices, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
         catch (InvalidDataException error) { Failure = error.Message; }
     }

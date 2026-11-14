@@ -17,3 +17,11 @@ obj/
 
 # Local test captures and run output
 /test-results/
+
+# Player release archives and private export staging
+/dist/
+/release-work/
+
+# Python release tooling cache
+__pycache__/
+*.pyc

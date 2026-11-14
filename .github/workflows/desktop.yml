@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Desktop player packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Archive version (letters, digits, dots and hyphens)
+        default: development
+        required: true
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  player:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+          - os: macos-15
+            target: macos-universal
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      BUILD_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+          token: ${{ secrets.WOL_ENGINE_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.403'
+      - name: Install SCons
+        run: python -m pip install scons==4.11.1
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ pkg-config patch libx11-dev libxrandr-dev libwayland-dev libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1
+      - name: Build, audit and smoke-test Linux/macOS player
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python tools/release.py "$TARGET" --version "$BUILD_VERSION"
+      - name: Build, audit and smoke-test Windows player
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual C++ build tools are missing' }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
+          }
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          python tools/release.py "$env:TARGET" --version "$env:BUILD_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload player archives only
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vagrant-${{ matrix.target }}
+          path: |
+            dist/Vagrant-*.zip
+            dist/Vagrant-*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
