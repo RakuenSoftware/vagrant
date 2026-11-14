@@ -63,6 +63,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,24 --flag=1:1 --flag=130:43 --flag=187:21 --battle-sides
 # Guaranteed boss drops survive the reward cutaway and are collected through the gadget bag (isolated defeat fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,22 --flag=1:1 --flag=130:42 --flag=187:20 --boss-drops
+# A field button held as a reward bag opens must not discard its guaranteed loot (isolated defeat fixture).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=49,1 --drop-input
 # Forest-entry cutscene workers stop before control returns (isolated event fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,21 --flag=1:1 --flag=130:39 --flag=187:19
 # Continuous New Game exploration using pad controls and earned state; this driver is still being extended.

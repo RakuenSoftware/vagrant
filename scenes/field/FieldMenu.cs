@@ -150,6 +150,7 @@ public sealed partial class FieldMenu : PanelContainer
     }
 
     private GDictionary? _chest;
+    private readonly HashSet<string> _chestHeld = new();
     private GadgetBag _bag = null!;
 
     // ITEMS owns its categories (0 WEAPONS to 6 MISC, 7 OPTIONS); SETUP owns every workshop page.
@@ -189,6 +190,9 @@ public sealed partial class FieldMenu : PanelContainer
         Show(true);
         _view.Battle?.CoverHud(true, window: true);
         _page = Chest;
+        _chestHeld.Clear();
+        foreach (string button in new[] { "ps_circle", "ps_cross", "ps_triangle", "ps_square" })
+            if (Input.IsActionPressed(button)) _chestHeld.Add(button);
         _chest = chest;
         _cursor = 0;
         Draw();
@@ -1522,6 +1526,13 @@ public sealed partial class FieldMenu : PanelContainer
     public bool Step(Func<string, bool> pressed)
     {
         if (!Visible) return false;
+        if (_page == Chest && _chestHeld.Count > 0)
+        {
+            // A button held before the bag appeared belongs to the field until it is released.
+            _chestHeld.RemoveWhere(button => !Input.IsActionPressed(button));
+            var input = pressed;
+            pressed = button => !_chestHeld.Contains(button) && input(button);
+        }
         // Options opens the settings window; the menu waits while it is open.
         if (_settings.Visible) return true;
         if (_renaming != null)

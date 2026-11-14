@@ -2844,6 +2844,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         _dropped.Clear();
         if (leftover.Count > 0) { leftover["armour"] = new GArray(); leftover["items"] = new GArray(); _dropped.Add(leftover); }
         DropsOffered++;
+        FreezeActors(true);
         // Not a room chest: no flag records it.
         _menu.OpenChest(new GDictionary { ["loot"] = all, ["index"] = -1 });
     }

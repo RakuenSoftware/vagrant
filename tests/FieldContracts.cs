@@ -72,7 +72,7 @@ public partial class FieldContracts : Node
     /// <summary>With --remember, the room's hostile characters are felled and the room entered again: they must stay gone.</summary>
     private bool _remember;
     private int _rememberStage;
-    private bool _bossDrops;
+    private bool _bossDrops, _dropInput;
     private int _bossDropRooms;
     private readonly Dictionary<int, int> _expectedBossDrops = new();
     /// <summary>With --skip, Start is pressed as soon as the room's event opens a skippable section; the event must go on to its end.</summary>
@@ -191,6 +191,7 @@ public partial class FieldContracts : Node
             if (argument == "--workshop-name") _nameCheck = true;
             if (argument == "--defeat") _defeat = true;
             if (argument == "--remember") _remember = true;
+            if (argument == "--drop-input") { _remember = _dropInput = true; }
             if (argument == "--boss-drops") { _remember = _bossDrops = true; }
             if (argument == "--skip") _skip = true;
             if (argument.StartsWith("--effect=", StringComparison.Ordinal) || argument.StartsWith("--resident=", StringComparison.Ordinal))
@@ -2809,7 +2810,7 @@ public partial class FieldContracts : Node
                 foreach (var (id, fighter) in new Dictionary<string, FieldBattle.Combatant>(memoryBattle.Combatants))
                     if (fighter != memoryBattle.Ashley && !fighter.Dead && _view.RoomActorIndices.TryGetValue(id, out int record))
                     {
-                        if (_bossDrops)
+                        if (_bossDrops || _dropInput)
                             foreach (var value in fighter.DropItems ?? new Godot.Collections.Array())
                             {
                                 var item = value.AsGodotDictionary();
@@ -2824,6 +2825,19 @@ public partial class FieldContracts : Node
                 _felledFrame = _frame;
                 _bossDropRooms = _view.Rooms.Count;
                 _rememberStage = 1;
+                return;
+            }
+            if (_dropInput)
+            {
+                if (_expectedBossDrops.Count == 0) { Finish("the drop-input fixture has no guaranteed items"); return; }
+                if (_view.DropsOffered == 0) { Tap("ps_cross"); return; }
+                if (_view.MenuOpen && _view.MenuPage == 11)
+                { if (_press == 0) Tap("ps_square"); return; }
+                foreach (var (item, count) in _expectedBossDrops)
+                    if (_view.Items.GetValueOrDefault(item) < count)
+                    { Finish($"a field press discarded the newly opened reward bag: item {item}, expected {count}"); return; }
+                GD.Print("FIELD: the reward bag ignored the preceding field press and collected its guaranteed items");
+                Finish("");
                 return;
             }
             if (_bossDrops)
