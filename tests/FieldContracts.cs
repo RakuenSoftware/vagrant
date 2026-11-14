@@ -1162,7 +1162,7 @@ public partial class FieldContracts : Node
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -1491,7 +1491,7 @@ public partial class FieldContracts : Node
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
         if (_campaignCheckpoint is { Zone: 42 } && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked))
             _campaignBypassEnemies = true;
-        if (_campaignRoute.Count > 0 && (_campaignItem > 0 || _campaignCheckpoint != (_view.Zone, _view.Map))
+        if (_campaignRoute.Count > 0 && _campaignCheckpoint != (_view.Zone, _view.Map)
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
         // Clear the Blood Lizard before passing its narrow shelf; its body can obstruct the western block.
         if ((_view.Zone, _view.Map, _campaignPuzzle) == (51, 4, 3)
@@ -4567,15 +4567,17 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
+        bool easternCaster = _campaign && (_view.Zone, _view.Map) is (49, 1) or (49, 2);
+        // These casters punish recovery pauses. Alternate Heavy Shot and Gain Life on a part with low chain evasion.
         // The native "in time" window starts after the hit; zero is still the "fast" grade.
         // Alternate the earned buttons over a short chain, releasing each before the next cue.
         if (battle.AshleyStrikeFrame is not { } timing) { _fightLinked = false; _fightChainLinks = 0; }
         else
         {
             if (timing < 0) _fightLinked = false;
-            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) || i != 2)).ToArray();
-            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
-                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
+            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) && !easternCaster || i != 2)).ToArray();
+            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && (ashley.Risk < 65 || easternCaster)
+                && slots.Length > 0 && _fightChainLinks < (easternCaster ? 32 : slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
             {
                 Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
                 _fightLinked = true; _fightChainLinks++;
@@ -4608,7 +4610,8 @@ public partial class FieldContracts : Node
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
-            if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
+            if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "NECK";
+            if (_campaign && (_view.Zone, _view.Map) == (49, 2) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 5) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "ABDOMEN";
             if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
             if (_fightNextPart)
