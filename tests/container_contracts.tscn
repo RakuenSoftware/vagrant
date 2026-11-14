@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3]
+; SPDX-License-Identifier: AGPL-3.0-only
+
+[ext_resource type="Script" path="res://tests/ContainerContracts.cs" id="1"]
+
+[node name="ContainerContracts" type="Node"]
+script = ExtResource("1")

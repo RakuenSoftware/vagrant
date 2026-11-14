@@ -161,7 +161,7 @@ public sealed class MapConversion
         if (cursor != geometry + geometryLength) throw new InvalidDataException("The room geometry has an unexpected length.");
 
         // Crates add models, objects and a texture of their own before the textures are written.
-        var crates = Crates(models, objects, textures);
+        var crates = Crates(models, objects, textures, groups);
         var trapPanel = TrapPanel(textures);
         var textureFiles = new JsonObject();
         foreach (var (key, (page, clut, mask)) in textures)
@@ -206,13 +206,13 @@ public sealed class MapConversion
             ["tile_attributes"] = TileAttributes(room),
             ["doors"] = Doors(room),
             ["chests"] = Chests(room),
-            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room),
+            ["traps"] = Traps(room), ["trap_panel"] = trapPanel, ["zone_links"] = ZoneLinks(room), ["platform_docks"] = PlatformDocks(room), ["enemy_map"] = EnemyMap(room),
             ["locks"] = Locks(room),
             ["platforms"] = Platforms(room), ["swings"] = Swings(room), ["group_scripts"] = GroupScripts(room),
             ["room_actors"] = RoomActors(),
             ["crates"] = crates,
             ["crate_turns"] = CrateTurns(), ["crate_rolls"] = CrateRolls(),
-            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
+            ["scene"] = Scene(room), ["trap_level"] = TrapLevel(room), ["telegraphs"] = Telegraphs(room), ["cooldown"] = Cooldown(room), ["crate_attacks"] = CrateAttacks(room), ["patrol_routes"] = PatrolRoutes(room), ["special_spots"] = SpecialSpots(room), ["minimap"] = Minimap(room), ["workshop"] = WorkshopKind(room), ["weather"] = Weather(room), ["sky_dome"] = SkyColours(room) is JsonArray bands && bands.Count == 5 ? new JsonObject { ["colours"] = bands, ["ring"] = 204 / 457f, ["radius"] = 409, ["lines"] = 224 } : null,
             ["conditions"] = Conditions(),
         };
     }
@@ -247,6 +247,61 @@ public sealed class MapConversion
     {
         int at = SubSection(room, 5, out int length);
         return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 29) + 1 : 1;
+    }
+
+    /// <summary>
+    /// The frames an enemy waits after a move before it may plan one sooner (BATTLE.PRG 0x800E71A4 keeps it at the
+    /// battle's +8, which 0x800dad74 gives the mover's cooldown): bits 21 to 28 of the word at 0x450 of room
+    /// sub-section 5; 150 in a room without the section.
+    /// </summary>
+    private int Cooldown(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        return length >= 0x454 ? (int)(BitConverter.ToUInt32(_map, at + 0x450) >> 21 & 0xFF) : 150;
+    }
+
+    /// <summary>
+    /// Whether the room's enemies may strike its breakable crates (the battle AI block's +10, which BATTLE.PRG 0x800e6f9c
+    /// sets from bit 20 of the word at 0x450 of room sub-section 5; 0x800e5710 then marks the actions able to hit
+    /// objects); false in a room without the section.
+    /// </summary>
+    private bool CrateAttacks(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        return length >= 0x454 && (BitConverter.ToUInt32(_map, at + 0x450) >> 20 & 1) != 0;
+    }
+
+    /// <summary>
+    /// The room's four patrol routes (room sub-section 5 at 0x400, BATTLE.PRG's [0x800f58d8]): 16 bytes each, eight
+    /// halfword points of a tile x (bits 0 to 4) and z (5 to 9), bit 15 set on a point in use; kept as the halfwords.
+    /// Empty for a room without the section.
+    /// </summary>
+    private JsonArray PatrolRoutes(int room)
+    {
+        var routes = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x440) return routes;
+        for (int r = 0; r < 4; r++)
+        {
+            var points = new JsonArray();
+            for (int i = 0; i < 8; i++) points.Add((int)BitConverter.ToUInt16(_map, at + 0x400 + r * 16 + i * 2));
+            routes.Add(points);
+        }
+        return routes;
+    }
+
+    /// <summary>
+    /// The room's eight special spots (room sub-section 5 at 0x440, BATTLE.PRG's [0x800f58c8]): halfwords of a tile x
+    /// (bits 0 to 4) and z (5 to 9), bit 15 set on one in use, where an enemy with a long-reaching harmful move goes
+    /// before making it (0x800dd7cc). Empty for a room without the section.
+    /// </summary>
+    private JsonArray SpecialSpots(int room)
+    {
+        var spots = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x450) return spots;
+        for (int i = 0; i < 8; i++) spots.Add((int)BitConverter.ToUInt16(_map, at + 0x440 + i * 2));
+        return spots;
     }
 
     /// <summary>The area the room belongs to: the scene id in room sub-section 10 (section B), at 0x50; -1 without one.</summary>
@@ -402,7 +457,7 @@ public sealed class MapConversion
     /// tile. Their texture is the zone page at (384, 0), each kind in its own 64 by 32 cell (kind 6 shares kind 5's),
     /// through the zone palette at (768 + 16 × kind, 227).
     /// </summary>
-    private JsonArray Crates(JsonArray models, JsonArray objects, SortedDictionary<string, (int Page, int Clut, int Mask)> surfacesTextures)
+    private JsonArray Crates(JsonArray models, JsonArray objects, SortedDictionary<string, (int Page, int Clut, int Mask)> surfacesTextures, int groupCount)
     {
         var crates = new JsonArray();
         if (_battle == null) return crates;
@@ -453,8 +508,9 @@ public sealed class MapConversion
                 }
                 cursor += quad ? 0x20 : 0x18;
             }
-            // Object ids are numbers in the field document; the crates follow the room's groups.
-            int id = objects.Count;
+            // Geometry keeps its original group ids, including empty groups that produced no object. Crates start
+            // after that entire range so neither geometry nor group commands can address a crate by accident.
+            int id = groupCount + crates.Count;
             int x = _map[record + 10], z = _map[record + 11], stack = _map[record + 12] >> 4;
             objects.Add(new JsonObject { ["id"] = id, ["model"] = models.Count, ["position"] = new JsonArray { 0, 0, 0 } });
             models.Add(new JsonObject { ["blocks"] = new JsonArray { new JsonObject { ["groups"] = new JsonArray { surface } } } });
@@ -567,6 +623,48 @@ public sealed class MapConversion
     }
 
     /// <summary>
+    /// Where enemies board the room's platforms (room sub-section 5 at 0x454, BATTLE.PRG's table at 0x800f5910, read by
+    /// 0x800dfaf8, 0x800df9a8 and 0x800dfa54): 8 pairs of tiles (x bits 0 to 4, z 5 to 9), two entries a platform (2p
+    /// and 2p + 1): the tile an enemy steps on from, and where platform p must stand for that. Empty for a room without
+    /// the section.
+    /// </summary>
+    private JsonArray PlatformDocks(int room)
+    {
+        var docks = new JsonArray();
+        int at = SubSection(room, 5, out int length);
+        if (length < 0x454 + 32) return docks;
+        for (int i = 0; i < 8; i++)
+        {
+            int access = BitConverter.ToUInt16(_map, at + 0x454 + i * 4), dock = BitConverter.ToUInt16(_map, at + 0x454 + i * 4 + 2);
+            docks.Add(new JsonArray { access & 31, access >> 5 & 31, dock & 31, dock >> 5 & 31 });
+        }
+        return docks;
+    }
+
+    /// <summary>
+    /// What the enemies' movement reads of the room beyond its tiles (BATTLE.PRG's battle start, 0x800e6f9c): the
+    /// bounds they keep within (the word at 0x494 of room sub-section 5: bytes most x, most z, least x, least z), the
+    /// steps out of each tile that are walled (the bytes from 0x498, one a tile by rows of the map's width: bit d the
+    /// step in direction d), and the flyers' ceiling (the halfword at 0x56 of sub-section 10, in 64-unit levels, 0
+    /// none). Bounds and walls are empty for a room without sub-section 5.
+    /// </summary>
+    private JsonObject EnemyMap(int room)
+    {
+        int at = SubSection(room, 5, out int length);
+        SubSection(room, 2, out int words);
+        int tiles = words / 4;
+        var bounds = new JsonArray();
+        var walls = new JsonArray();
+        if (length >= 0x498)
+        {
+            for (int i = 0; i < 4; i++) bounds.Add((int)_map[at + 0x494 + i]);
+            for (int i = 0; i < tiles && 0x498 + i < length; i++) walls.Add((int)_map[at + 0x498 + i]);
+        }
+        int info = SubSection(room, 10, out int infoLength);
+        return new JsonObject { ["bounds"] = bounds, ["walls"] = walls, ["ceiling"] = infoLength >= 0x58 ? (int)BitConverter.ToInt16(_map, info + 0x56) : 0 };
+    }
+
+    /// <summary>
     /// The revealed-trap panel (BATTLE.PRG's quad at 0x800e8548, drawn by 0x8008e19c): its texture, the zone image at
     /// (384, 0) (retail uploads zone images 320 left and 256 down, to the page at (64, 256)) through the palette at
     /// (832, 226), and six 32-texel tiles along row 128: the panel at rest, then the five frames 0x8008e0a8 copies over
@@ -604,8 +702,8 @@ public sealed class MapConversion
 
     /// <summary>
     /// The room's locked doors (room sub-section 9, 20 bytes each): tile x, z and level, a kind (0 one tile; 4 to 7
-    /// two, the second towards -z, +x, +z or -x), the lock (0 open, 1 key or sigil, 2 magic, 3 locked), the geometry
-    /// group that opens, and the key or sigil's item id.
+    /// two, the second towards -z, +x, +z or -x), the lock (0 unlocked, 1 key or sigil, 2 magic, 3 locked), the room
+    /// animation that opens it, the key or sigil's item id and whether it already stands open.
     /// </summary>
     private JsonArray Locks(int room)
     {
@@ -617,7 +715,8 @@ public sealed class MapConversion
             locks.Add(new JsonObject
             {
                 ["tile"] = new JsonArray { (int)BitConverter.ToInt16(_map, p), (int)BitConverter.ToInt16(_map, p + 2) }, ["level"] = (int)BitConverter.ToInt16(_map, p + 4),
-                ["kind"] = (int)BitConverter.ToInt16(_map, p + 6), ["lock"] = (int)_map[p + 8], ["group"] = (int)_map[p + 9], ["key"] = (int)BitConverter.ToInt16(_map, p + 0xC),
+                ["kind"] = (int)BitConverter.ToInt16(_map, p + 6), ["lock"] = (int)_map[p + 8], ["object"] = (int)_map[p + 9], ["key"] = (int)BitConverter.ToInt16(_map, p + 0xC),
+                ["opened"] = BitConverter.ToInt16(_map, p + 0xE) != 0, ["linked"] = (int)BitConverter.ToInt16(_map, p + 0x10), ["enabled"] = _map[p + 0xA] != 0,
             });
         }
         return locks;
@@ -849,10 +948,11 @@ public sealed class MapConversion
     /// none). In the first word, bit 8 marks a lift, which moves only while someone rides it (others move on their
     /// own), bit 9 one switched off, whose group is not drawn, bits 10 and 11 the last waypoint, bit 26 the direction
     /// and bits 27 and 28 the waypoint it travels to first. From byte 8 come four waypoints of 16 bytes (x, y and z in
-    /// 4096ths of a map unit, y up, then the frames it waits there), from 0x48 four legs of 16 bytes (a velocity a frame
+    /// 4096ths of a map unit, y up, then the frames it waits there), from 0x48 up to six legs of 16 bytes (a velocity a frame
     /// and the frames it takes, in the order it travels: out to the last waypoint and back), and at 0xA8 where it
     /// starts (BATTLE.PRG's update near 0x8008c9a8). Positions here are map units, y down; the footprint is its group's
-    /// extent about that point.
+    /// extent about that point. Byte 5's low two bits designate the door stop; the word at 0xB4 holds the platform's
+    /// tile attributes (0x8008b764). Reaching that stop sets its door bit until departure (0x8008cc3c..0x8008ccfc).
     /// </summary>
     private JsonArray Platforms(int room)
     {
@@ -872,7 +972,7 @@ public sealed class MapConversion
                 waypoints.Add(point);
             }
             var legs = new JsonArray();
-            for (int l = 0; l < Math.Max(1, last * 2) && l < 4; l++)
+            for (int l = 0; l < Math.Max(1, last * 2); l++)
             {
                 var velocity = Point(p + 0x48 + l * 16, 1 / 4096f);
                 velocity.Add(BitConverter.ToInt32(_map, p + 0x48 + l * 16 + 12));
@@ -884,7 +984,9 @@ public sealed class MapConversion
             platforms.Add(new JsonObject
             {
                 ["group"] = group, ["off"] = (flags & 0x200) != 0, ["lift"] = (flags & 0x100) != 0, ["start"] = Point(p + 0xA8, 1 / 4096f),
-                ["target"] = (int)(flags >> 27) & 3, ["forward"] = (flags & 1u << 26) != 0, ["waypoints"] = waypoints, ["legs"] = legs, ["footprint"] = footprint,
+                ["target"] = (int)(flags >> 27) & 3, ["forward"] = (flags & 1u << 26) != 0, ["leg"] = (int)(flags >> 29) & 7,
+                ["door_stop"] = (_map[p + 5] & 3), ["attributes"] = (long)BitConverter.ToUInt32(_map, p + 0xB4),
+                ["waypoints"] = waypoints, ["legs"] = legs, ["footprint"] = footprint,
             });
         }
         return platforms;
@@ -943,13 +1045,15 @@ public sealed class MapConversion
     /// <summary>
     /// Reads a character record:
     /// <list type="bullet">
+    /// <item>its character id (the u16 at 0; BATTLE.PRG copies it to the actor's +0x1a, 0x80076f24, where the AI
+    /// tells Guildenstern's final form, 173, by it);</item>
     /// <item>the model (low byte of the u16 at 2) and reach (low five bits of byte 3);</item>
     /// <item>hit and magic points (s16 at 0x1C and 0x1E);</item>
     /// <item>strength, intelligence and agility (bytes 0x20 to 0x22);</item>
     /// <item>two movement profiles, each flags and a speed (0x24 and 0x25, 0x26 and 0x27): flags 0x42 let it walk and
     /// 0x84 run at the profile's speed (BATTLE.PRG 0x800def8c), 0x08 hop up to 128 units a point of speed, 0x10 and
     /// 0x20 fly at it (0x800e6828);</item>
-    /// <item>the AI parameter word (0x2C) and the limb a whole-body hit lands on (0x32);</item>
+    /// <item>the status immunities (the word at 0x28), the AI parameter word (0x2C) and the limb a whole-body hit lands on (0x32);</item>
     /// <item>the weapon: the blade's equipment record at 0x34 and the grip's at 0x64, each 0x30 bytes. An
     /// equipment record holds its weapon model (byte 3), category (4), signed strength, intelligence and agility
     /// (5 to 7), material (0x13) and range (x, y, z, angle at 0x18).</item>
@@ -961,6 +1065,7 @@ public sealed class MapConversion
         int blade = at + 0x34, grip = at + 0x64;
         return new JsonObject
         {
+            ["id"] = (int)BitConverter.ToUInt16(data, at),
             ["model"] = (int)data[at + 2],
             ["reach"] = data[at + 3] & 31,
             ["hp"] = (int)BitConverter.ToInt16(data, at + 0x1C),
@@ -970,20 +1075,29 @@ public sealed class MapConversion
             ["agility"] = (int)data[at + 0x22],
             ["moves"] = new JsonArray { new JsonArray { (int)data[at + 0x24], (int)data[at + 0x25] }, new JsonArray { (int)data[at + 0x26], (int)data[at + 0x27] } },
             ["ai"] = (long)BitConverter.ToUInt32(data, at + 0x2C),
+            // The statuses it cannot take (its data's +0x944; a negative word also makes it immune to magic, status bit
+            // 31, BATTLE.PRG 0x80076cec).
+            ["immunity"] = (long)BitConverter.ToUInt32(data, at + 0x28),
             // The limb a blow or spell on the whole character lands on (BATTLE.PRG copies it to the actor's +0x36).
             ["default_limb"] = (int)data[at + 0x32],
+            // The two limbs whose loss keeps it slowed as an enemy reckons ahead (copied to its data's +0x34 and +0x35,
+            // BATTLE.PRG 0x80076a5c; 0x800de104), and what its moves add to its recovery (byte 0x23's low six bits,
+            // its data's +0x954 bits 18 to 23; 0x800859b4).
+            ["slowing_limbs"] = new JsonArray { (int)data[at + 0x30], (int)data[at + 0x31] },
+            ["recovery"] = data[at + 0x23] & 0x3F,
             ["class"] = data[at + 3] >> 5,
             ["name"] = DialogueConversion.Decode(data, at + 4).Text,
             ["weapon"] = new JsonObject
             {
+                ["id"] = (int)BitConverter.ToUInt16(data, blade),
                 ["model"] = (int)data[blade + 3],
                 ["category"] = (int)data[blade + 4],
                 ["strength"] = (sbyte)data[blade + 5] + (sbyte)data[grip + 5],
                 ["agility"] = (sbyte)data[blade + 7] + (sbyte)data[grip + 7],
                 ["intelligence"] = (sbyte)data[blade + 6] + (sbyte)data[grip + 6],
                 ["material"] = (int)data[at + 0x34 + 0xF0],
-                ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A] },
-                ["damage_type"] = (int)data[blade + 0x10], ["cost"] = (int)data[blade + 0x12],
+                ["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], (int)data[blade + 0x1B] },
+                ["damage_type"] = (int)data[blade + 0x10], ["cost_kind"] = (int)data[blade + 0x11], ["cost"] = (int)data[blade + 0x12],
                 ["dp"] = (int)BitConverter.ToUInt16(data, blade + 8), ["max_dp"] = (int)BitConverter.ToUInt16(data, blade + 0xA),
                 ["pp"] = (int)BitConverter.ToUInt16(data, blade + 0xC), ["max_pp"] = (int)BitConverter.ToUInt16(data, blade + 0xE),
                 ["types"] = Bytes(data, grip + 0x1C, 4), ["classes"] = Bytes(data, blade + 0x20, 8), ["affinities"] = Bytes(data, blade + 0x28, 8),
@@ -1023,7 +1137,7 @@ public sealed class MapConversion
         }
         int blade = at + 0x34, grip = at + 0x64;
         var weapon = Common(blade);
-        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost"] = (int)data[blade + 0x12];
+        weapon["damage_type"] = data[blade + 0x10] & 3; weapon["cost_kind"] = (int)data[blade + 0x11]; weapon["cost"] = (int)data[blade + 0x12];
         weapon["range"] = new JsonArray { (int)data[blade + 0x18], (int)data[blade + 0x19], (int)data[blade + 0x1A], data[blade + 0x1B] & 7 };
         weapon["classes"] = Bytes(data, blade + 0x20, 8); weapon["affinities"] = Bytes(data, blade + 0x28, 8);
         weapon["material"] = (int)data[at + 0x34 + 0xF0];
@@ -1122,19 +1236,48 @@ public sealed class MapConversion
             // Type 0 is a character; other types place objects.
             if (_map[record] != 0) continue;
             int template = _map[record + 4];
-            // Template 0x7f is made through the player's creation path rather than from the zone; not converted yet.
-            if (template == 0x7F) continue;
-            if (template >= templates || first + (template + 1) * 0x464 > _zone.Length) throw new InvalidDataException("A room actor names a missing character template.");
-            // The template's last word indexes the zone's unit files (sector, size), which hold its model, weapon and
-            // animations.
-            int unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
-            if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
+            // Template 0x7f is an actor without a model (0x80077330), used as an interaction target.
+            int unit = 0;
+            var stats = new JsonObject();
+            if (template != 0x7F)
+            {
+                if (template >= templates || first + (template + 1) * 0x464 > _zone.Length) throw new InvalidDataException("A room actor names a missing character template.");
+                // The template's last word indexes the zone's unit files (sector, size), which hold its model, weapon and
+                // animations.
+                unit = (int)BitConverter.ToUInt32(_zone, first + template * 0x464 + 0x460);
+                if (unit >= templates) throw new InvalidDataException("A room actor's template names a missing unit file.");
+                // The record's word at 0x14 goes to the actor's +0x34 (BATTLE.PRG 0x80077c30): with bit 0 its bits 1 to 11
+                // take the place of the AI word's bits 21 to 31 (0x800e5a74); bit 13 lets its planner fall back on its last
+                // resorts, bit 12 has it weigh the moves flagged 0x10 without reckoning them (0x800e5dc8).
+                stats = CharacterRecord(_zone, first + template * CharacterRecordSize);
+                uint planning = BitConverter.ToUInt32(_map, record + 0x14);
+                if ((planning & 1) != 0) stats["ai"] = (long)(((uint)(long)stats["ai"]! & 0x1FFFFFu) | (planning & 0xFFE) << 20);
+                stats["last_resorts"] = (planning >> 13 & 1) != 0;
+                // Bit 14 chooses how often a patroller turns back on its route (BATTLE.PRG's table at 0x80069C08, 0x800e5dd4).
+                stats["patrol_turns"] = (int)(planning >> 14 & 1);
+                stats["weighs_lightly"] = (planning >> 12 & 1) != 0;
+                // The record's word at 0x10 goes to the actor's +0x30: bits 4 to 8 choose its behaviour routine (BATTLE.PRG's
+                // table at 0x800F1790, 0x800e5e70), bits 0 to 3 are its group and bits 9 to 13 the group of the leader it
+                // keeps by (0x800e5998).
+                uint behaviour = BitConverter.ToUInt32(_map, record + 0x10);
+                stats["behaviour"] = (int)(behaviour >> 4 & 0x1F);
+                stats["group"] = (int)(behaviour & 0xF);
+                stats["leader"] = (int)(behaviour >> 9 & 0x1F);
+                // Bits 14 and 15 are the room's patrol route it walks (0x800e5e04).
+                stats["route"] = (int)(behaviour >> 14 & 3);
+                // Bits 22 to 26 and 27 to 31 are the home tile it wanders about and bits 16 to 21 how far (0x800e5e14, 63 a
+                // free wander); byte 0x26 has it lie dormant until stirred (0x800e6538).
+                stats["home"] = new JsonArray { (int)(behaviour >> 22 & 0x1F), (int)(behaviour >> 27) };
+                stats["home_radius"] = (int)(behaviour >> 16 & 0x3F);
+                stats["dormant"] = _map[record + 0x26] != 0;
+            }
             actors.Add(new JsonObject
             {
-                ["unit_sector"] = (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
-                ["stats"] = CharacterRecord(_zone, first + template * CharacterRecordSize),
+                ["virtual"] = template == 0x7F,
+                ["unit_sector"] = template == 0x7F ? 0L : (long)BitConverter.ToUInt32(_zone, units + 4 + unit * 8),
+                ["stats"] = stats,
                 ["slot"] = (int)_map[record + 5],
-                ["character"] = (int)_zone[first + template * 0x464 + 2],
+                ["character"] = template == 0x7F ? 127 : (int)_zone[first + template * 0x464 + 2],
                 ["tile"] = new JsonArray { (int)_map[record + 12], (int)_map[record + 14] },
                 ["level"] = _map[record + 13] & 1,
                 ["facing"] = _map[record + 15] * 1024 % 4096,
@@ -1292,7 +1435,8 @@ public sealed class MapConversion
     /// per tile: the top five bits are a height base and the low eleven bits index a 16-byte block that follows the
     /// layers, one signed byte per 32-unit sub-cell of the tile's 4x4. A sub-cell's height is (base + byte) &amp; 0x7F, its
     /// world height (map base - height * 2) * 8, and the byte's top bit is a flag. Returns the engine walkmesh, walkable
-    /// where the floor lies below the ceiling, and the floor heights by sub-cell for placing actors.
+    /// where the floor lies below the ceiling, the floor heights by sub-cell for placing actors, and by sub-cell whether
+    /// its floor byte has the flag (bit 15 of what BATTLE.PRG's 0x8008dc7c returns for it: "no floor" to the enemies).
     /// </summary>
     private (JsonArray Walkmeshes, JsonObject Floor) Collision(int room)
     {
@@ -1311,11 +1455,15 @@ public sealed class MapConversion
         var vertices = new JsonArray();
         var triangles = new JsonArray();
         var heights = new JsonArray();
+        var marks = new JsonArray();
+        var ceilings = new JsonArray();
         for (int z = 0; z < depth * 4; z++)
             for (int x = 0; x < width * 4; x++)
             {
-                int floorY = Height(0, x, z, out _), ceilingY = Height(1, x, z, out _);
+                int floorY = Height(0, x, z, out bool marked), ceilingY = Height(1, x, z, out _);
                 heights.Add(floorY);
+                marks.Add(marked ? 1 : 0);
+                ceilings.Add(ceilingY);
                 // Retail y is down: a floor is walkable when it lies below its ceiling.
                 if (floorY <= ceilingY) continue;
                 int first = vertices.Count;
@@ -1325,7 +1473,7 @@ public sealed class MapConversion
                 triangles.Add(new JsonObject { ["vertices"] = new JsonArray { first, first + 3, first + 2 } });
             }
         var walkmeshes = new JsonArray { new JsonObject { ["vertices"] = vertices, ["triangles"] = triangles } };
-        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights });
+        return (walkmeshes, new JsonObject { ["columns"] = width * 4, ["rows"] = depth * 4, ["cell"] = 32, ["heights"] = heights, ["marks"] = marks, ["ceilings"] = ceilings });
     }
 
     /// <summary>

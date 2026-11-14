@@ -28,17 +28,23 @@ public partial class TitleSequence : Control
     public enum Pad
     {
         None = 0, Circle = 1, Cross = 2, Start = 4, Select = 8, Up = 16, Down = 32, Left = 64, Right = 128,
+        L1 = 256, R1 = 512, L2 = 1024, R2 = 2048,
     }
 
     private static readonly (string Action, Pad Button)[] Buttons =
     {
         ("ps_circle", Pad.Circle), ("ps_cross", Pad.Cross), ("ps_start", Pad.Start), ("ps_select", Pad.Select),
         ("ps_up", Pad.Up), ("ps_down", Pad.Down), ("ps_left", Pad.Left), ("ps_right", Pad.Right),
+        ("ps_l1", Pad.L1), ("ps_r1", Pad.R1), ("ps_l2", Pad.L2), ("ps_r2", Pad.R2),
     };
 
     private RetailContent _content = null!;
+    // TITLE.PRG 0x8007138c increments 0x8004a528 once per title visit. Its low bit selects the idle demo.
+    private static int _visits;
+    private Scenes.Field.FieldView? _demo;
+    public Scenes.Field.FieldView? Demo => _demo;
     /// <summary>The title's screens, in the order the sequence first reaches them.</summary>
-    private enum Stage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract }
+    private enum Stage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract, ClearSave }
     private Stage _stage;
     private IEnumerator<int>? _presentation;
     private int _wait;
@@ -80,10 +86,10 @@ public partial class TitleSequence : Control
     public string Screen => _stage switch
     {
         Stage.Publisher => "publisher", Stage.Developer => "developer", Stage.Intro => "intro", Stage.Menu => "menu",
-        Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
+        Stage.ClearSave => "clear_save", Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
     };
     public bool MonoSound { get; private set; }
-    public bool Vibration { get; private set; } = true;
+    public bool Vibration { get => VibrationDriver.Enabled; private set => VibrationDriver.Enabled = value; }
     public int SelectedItem { get; private set; }
     public bool SettingsOpen => _settings.Visible;
     public AcceptDialog SettingsDialog => _settings;
@@ -154,13 +160,22 @@ public partial class TitleSequence : Control
         _cards = new Scenes.Field.MemoryCardMenu { Name = "MemoryCard" };
         cardsLayer.AddChild(_cards);
         _cards.Configure(_content, null);
+        _cards.Sound = Sound;
 
-        _audio.Mono = MonoSound;
-        Enter(Stage.Publisher);
+        MonoSound = _audio.Mono;
+        ++_visits;
+        if (Scenes.Field.FieldView.PendingClearSave is { } cleared)
+        {
+            Scenes.Field.FieldView.PendingClearSave = null;
+            _cards.SaveData = cleared;
+            Enter(Stage.ClearSave);
+        }
+        else Enter(_visits == 1 ? Stage.Publisher : Stage.Intro);
     }
 
     public override void _ExitTree()
     {
+        _demo?.QueueFree();
         _music.Stop();
         _music.Stream = null;
         _video.Stop();
@@ -189,6 +204,7 @@ public partial class TitleSequence : Control
             Stage.NewGame => Leave("", false),
             Stage.Field => StartField(),
             Stage.Continue => LoadScreens(),
+            Stage.ClearSave => ClearSaveScreens(),
             _ => Leave("", false),
         };
         _wait = 0;
@@ -543,6 +559,23 @@ public partial class TitleSequence : Control
         Finished();
     }
 
+    /// <summary>TITLE.PRG 0x8007136c / 0x8006edbc: offer SAVE before the post-ending title loop.</summary>
+    private IEnumerator<int> ClearSaveScreens()
+    {
+        _cards.OpenSave(48);
+        TakePressed();
+        int result = 0;
+        while (result == 0)
+        {
+            yield return 1;
+            Poll();
+            var pressed = TakePressed();
+            result = _cards.Step(action => Array.Find(Buttons, b => b.Action == action) is var (_, button) && button != Pad.None && (pressed & button) != 0);
+        }
+        _cards.SaveData = null;
+        Finished();
+    }
+
     private IEnumerator<int> Continue(Godot.Collections.Dictionary save)
     {
         Scenes.Field.FieldView.PendingSave = save;
@@ -569,6 +602,31 @@ public partial class TitleSequence : Control
             Poll();
             float level = Math.Min(255, i * 8) / 255f;
             _darken.Color = new Color(level, level, level);
+        }
+        if (_stage == Stage.Attract)
+        {
+            // 0x80071748 selects 4 - (visits & 1); 0x80071ce0 starts those demos at zone 20/map 0 and zone 2/map 1,
+            // with the demo and automatic-scene flags (13 and 14) set. The room and its chained events own the show.
+            _demo = GD.Load<PackedScene>(FieldScene).Instantiate<Scenes.Field.FieldView>();
+            _demo.StartZone = (_visits & 1) != 0 ? 20 : 2;
+            _demo.StartMap = (_visits & 1) != 0 ? 0 : 1;
+            _demo.Flags[13] = _demo.Flags[14] = 1;
+            _demo.KeepScene = true;
+            Hide();
+            GetParent().AddChild(_demo);
+            TakePressed();
+            while (true)
+            {
+                yield return 1;
+                Poll();
+                if (_demo.Failure.Length != 0) { string failure = _demo.Failure; _demo.QueueFree(); _demo = null; Show(); Fail(failure); yield break; }
+                if (TakePressed() != Pad.None || _demo.Settled || _demo.GameEnded) break;
+            }
+            _demo.GetParent().RemoveChild(_demo);
+            _demo.QueueFree();
+            _demo = null;
+            _visits++;
+            Show();
         }
         if (needsConfirmation)
         {

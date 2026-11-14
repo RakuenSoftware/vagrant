@@ -17,6 +17,9 @@ namespace Wol.Games.Vagrant.Runtime;
 /// </summary>
 public partial class RetailContent : Node
 {
+    // Register the separately compiled engine before Godot creates its autoloads.
+    static RetailContent() => Godot.Bridge.ScriptManagerBridge.LookupScriptsInAssembly(typeof(Wol.Engine.SceneManager).Assembly);
+
     public const string DefaultRoot = "user://vagrant-story";
 
     public string Root { get; private set; } = "";
@@ -39,6 +42,8 @@ public partial class RetailContent : Node
     public Vector2I PanelOrigin { get; private set; }
     public VideoStream IntroVideo { get; private set; } = null!;
     public AudioStream IntroMusic { get; private set; } = null!;
+    /// <summary>The ending's verified XA stream, decoded on first use from the owned installation.</summary>
+    public AudioStream EndingMusic() => AudioStreamOggVorbis.LoadFromFile(new RetailInstallation(GlobalRoot).EndingMusic());
 
     public override void _Ready()
     {
@@ -362,6 +367,8 @@ public partial class RetailContent : Node
             var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie();
             IntroVideo = new VideoStreamTheora { File = video };
             IntroMusic = AudioStreamOggVorbis.LoadFromFile(music);
+            if (!System.IO.File.Exists(System.IO.Path.Combine(GlobalRoot, "disc", RetailInstallation.EndingStream)))
+                throw new InvalidDataException("This older installation omits the ending music. Install again from your US disc.");
             Failure = "";
         }
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or NullReferenceException or InvalidOperationException or FormatException)

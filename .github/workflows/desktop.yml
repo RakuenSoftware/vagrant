@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Desktop player packages
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Archive version (letters, digits, dots and hyphens)
+        default: development
+        required: true
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  player:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+          - os: macos-15
+            target: macos-universal
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      BUILD_VERSION: ${{ inputs.version || (github.event_name == 'pull_request' && format('pr-{0}', github.event.number)) || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.403'
+      - name: Install Linux desktop runtime dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1
+      - name: Build, audit and verify the player using binary engine dependencies
+        shell: bash
+        run: python tools/release.py "$TARGET" --version "$BUILD_VERSION"
+      - name: Upload player archives only
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vagrant-${{ matrix.target }}
+          path: |
+            dist/Vagrant-*.zip
+            dist/Vagrant-*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

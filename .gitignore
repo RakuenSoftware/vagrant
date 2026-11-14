@@ -17,3 +17,15 @@ obj/
 
 # Local test captures and run output
 /test-results/
+
+# Player release archives and private export staging
+/dist/
+/release-work/
+
+# Python release tooling cache
+__pycache__/
+*.pyc
+
+# Intentional upstream binary dependencies, maintained as a vendored release.
+!/addons/wol_engine/native/bin/
+!/addons/wol_engine/native/bin/*

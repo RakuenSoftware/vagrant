@@ -27,6 +27,38 @@ public partial class Startup : Control
     public override void _Ready()
     {
         _content = GetNode<RetailContent>("/root/RetailContent");
+        if (Array.IndexOf(OS.GetCmdlineUserArgs(), "--verify-package") >= 0)
+        {
+            try
+            {
+                if (OS.HasFeature("editor")) throw new InvalidOperationException("Verify the exported executable, not the editor.");
+                if (!ClassDB.ClassExists("NativePs1AudioSandbox")) throw new InvalidOperationException("The compiled engine audio runtime is missing.");
+                if (typeof(Wol.Engine.World.FieldScene).Assembly == typeof(Startup).Assembly)
+                    throw new InvalidOperationException("The engine must be a separately compiled binary dependency.");
+                foreach (var type in typeof(Startup).Assembly.GetTypes())
+                    if (type.Namespace == "Wol.Games.Vagrant.Tests") throw new InvalidOperationException("Test code was compiled into the player.");
+                var directories = new System.Collections.Generic.Stack<string>();
+                directories.Push("res://");
+                while (directories.TryPop(out var directory))
+                {
+                    foreach (string child in DirAccess.GetDirectoriesAt(directory)) directories.Push(directory.PathJoin(child));
+                    foreach (string file in DirAccess.GetFilesAt(directory))
+                    {
+                        string path = directory.PathJoin(file), extension = System.IO.Path.GetExtension(file).ToLowerInvariant();
+                        if (path.StartsWith("res://tests/", StringComparison.Ordinal) || path.Contains("/.dependencies/", StringComparison.Ordinal)
+                            || path.Contains("/disc/", StringComparison.Ordinal) || extension is ".cpp" or ".hpp" or ".h" or ".pdb" or ".cue" or ".iso")
+                            throw new InvalidOperationException("Development/disc content in player: " + path);
+                        // Godot requires C# resource paths but exports only newline stubs when scripts_content=false.
+                        if (extension == ".cs" && !string.IsNullOrWhiteSpace(Godot.FileAccess.GetFileAsString(path)))
+                            throw new InvalidOperationException("C# source in player: " + path);
+                    }
+                }
+                GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
+                GetTree().Quit();
+            }
+            catch (Exception error) { GD.PrintErr("PACKAGE_FAILED: " + error.Message); GetTree().Quit(1); }
+            return;
+        }
         foreach (string argument in OS.GetCmdlineUserArgs())
         {
             if (!argument.StartsWith("--install-disc=", StringComparison.Ordinal)) continue;

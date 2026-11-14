@@ -136,14 +136,20 @@ public sealed partial class BattleHud : RetailScreen
 
     /// <summary>The chain timing's "!" sprite (SYSTEM.DAT section 1's page, 22 by 32 at (0xC0, 0)), when installed.</summary>
     public Texture2D? ChainCue { get; set; }
-    private Vector3? _cueAt;
+    private Vector2? _cueAt;
     private int _cueFrames;
-    private Func<Vector3, Vector2?>? _cueProject;
     private (int Grade, int Word, int Age)? _timing;
     private (int Count, int Age)? _chains;
 
-    /// <summary>Shows the red "!" over Ashley's head (a point in the field) for <paramref name="frames"/> frames (BATTLE.PRG 0x80096FF0).</summary>
-    public void Cue(Vector3 head, int frames, Func<Vector3, Vector2?> project) { _cueAt = head; _cueFrames += frames; _cueProject = project; QueueRedraw(); }
+    /// <summary>Shows the red "!" for some frames at Ashley's head as it is on the screen now: the point is taken once and held (BATTLE.PRG 0x80096ff0).</summary>
+    public void Cue(Vector3 head, int frames, Func<Vector3, Vector2?> project)
+    {
+        if (project(head) is not { } point) return;
+        var (scale, origin) = FieldView.Pin(GetViewportRect().Size, 1);
+        _cueAt ??= ((point - origin) / scale).Round();
+        _cueFrames += frames;
+        QueueRedraw();
+    }
 
     /// <summary>A press's grade (0 too fast, 1 fast, 2 in time, 3 slow, 4 too slow) and, in time, which word praises it.</summary>
     public void Timing(int grade, int word) { _timing = (grade, word, 0); QueueRedraw(); }
@@ -197,9 +203,8 @@ public sealed partial class BattleHud : RetailScreen
     /// </summary>
     private void DrawCue()
     {
-        if (ChainCue == null || _cueAt is not { } head || _cueProject?.Invoke(head) is not { } point) return;
+        if (ChainCue == null || _cueAt is not { } at) return;
         var (scale, origin) = FieldView.Pin(GetViewportRect().Size, 1);
-        var at = ((point - origin) / scale).Round();
         if (at.Y < 40) { float d = 40 - at.Y; at.Y = 40 + d; at.X += at.X + d < 288 ? d : -d; }
         DrawSetTransform(origin, 0, scale);
         DrawTextureRect(ChainCue, new Rect2(at.X - 11, at.Y - 32, 22, 32), false, new Color(240 / 128f, 64 / 128f, 32 / 128f));
@@ -241,7 +246,7 @@ public sealed partial class BattleHud : RetailScreen
         DrawSetTransform(Vector2.Zero);
     }
 
-    /// <summary>The enemies' balloons to draw: each head's point in the field, the kind (1 to 3 dots, 4 jagged) and the side.</summary>
+    /// <summary>The enemies' balloons to draw: each head's point in the field, the kind (1 to 3 dots, 4 jagged, 5 won over, 6 alarm, 7 searching) and the side.</summary>
     public void Balloons(List<(Vector3 Head, int Kind, int Side)> balloons, Func<Vector3, Vector2?> project)
     {
         _balloons = balloons;
@@ -250,10 +255,11 @@ public sealed partial class BattleHud : RetailScreen
     }
 
     // BATTLE.PRG's balloon tables (0x80068F04, 0x80068F64, 0x80068F94): the corners about the head's point and the
-    // page's texels for the rounded balloon (right, left) and the jagged one (right, left), and where the dots or mark
-    // stand. The page is SYSTEM.DAT's second, through the palette at (992, 220).
-    private static readonly Rect2[] BalloonCorners = { new(-6, -22, 24, 23), new(-17, -22, 24, 23), new(-10, -29, 30, 30), new(-19, -29, 28, 30) };
-    private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30) };
+    // page's texels for the rounded balloon (right, left), the jagged one (right, left) and the alarm (right, left),
+    // and where the dots or mark stand. The page is SYSTEM.DAT's second (texture page 0x17), through the palette at
+    // (992, 220); the left-hand texels run the other way over the same texels.
+    private static readonly Rect2[] BalloonCorners = { new(-6, -22, 24, 23), new(-17, -22, 24, 23), new(-10, -29, 30, 30), new(-19, -29, 28, 30), new(-9, -16, 20, 13), new(-10, -16, 20, 13) };
+    private static readonly Rect2[] BalloonTexels = { new(64, 16, 24, 23), new(64, 16, 24, 23), new(121, 17, 30, 30), new(121, 17, 30, 30), new(160, 17, 20, 13), new(160, 17, 20, 13) };
     private static readonly Vector2[] MarkOffsets = { new(-2, -16), new(-14, -16), new(0, -21), new(-7, -21) };
 
     private void DrawBalloons()
@@ -287,16 +293,32 @@ public sealed partial class BattleHud : RetailScreen
                     continue;
                 }
             }
-            int shape = kind == 4 ? 2 + side : side;
+            // The searching mark (7, 0x80095f2c) stands alone, 22 above the head; the alarm (6) is a balloon of its own.
+            if (kind == 7)
+            {
+                DrawTextureRectRegion(_emotes, new Rect2(point + new Vector2(0, -22), new Vector2(7, 12)), new Rect2(183, 17, 7, 12));
+                continue;
+            }
+            int shape = kind == 4 ? 2 + side : kind == 6 ? 4 + side : side;
             var corners = BalloonCorners[shape];
             var texels = BalloonTexels[shape];
             // The left-hand balloons are the right-hand ones mirrored.
             var target = new Rect2(point + corners.Position, corners.Size);
             if (side == 1) target = new Rect2(target.Position + new Vector2(target.Size.X, 0), new Vector2(-target.Size.X, target.Size.Y));
             DrawTextureRectRegion(_emotes, target, texels);
-            if (kind <= 3)
-                for (int k = 0; k < kind; k++) DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[side] + new Vector2(k * 6, 0), new Vector2(5, 5)), new Rect2(90, 18, 5, 5));
-            else DrawTextureRectRegion(_emotes, new Rect2(point + MarkOffsets[shape], new Vector2(7, 12)), new Rect2(152, 17, 7, 12));
+            if (kind <= 5)
+            {
+                var mark = MarkOffsets[kind == 4 ? shape : side];
+                var region = kind <= 3 ? new Rect2(90, 18, 5, 5) : kind == 4 ? new Rect2(152, 17, 7, 12) : new Rect2(152, 32, 16, 16);
+                for (int k = 0; k < (kind <= 3 ? kind : 1); k++)
+                {
+                    // 0x80095c18 adds packed screen coordinates: an x offset borrowing past zero also changes y.
+                    int dx = kind <= 3 ? k * 6 : kind == 5 ? 2 : 0, dy = kind == 5 ? -3 : 0;
+                    int word = unchecked(((int)point.Y << 16 | (int)point.X & 0xFFFF)
+                        + ((int)mark.Y << 16 | (int)mark.X & 0xFFFF) + (dy << 16 | dx & 0xFFFF));
+                    DrawTextureRectRegion(_emotes, new Rect2(new Vector2((short)word, (short)(word >> 16)), region.Size), region);
+                }
+            }
         }
         DrawSetTransform(Vector2.Zero);
     }
@@ -432,11 +454,11 @@ public sealed partial class BattleHud : RetailScreen
         [FieldBattle.Enlighten] = 64, [FieldBattle.Leadbones] = 80, [FieldBattle.Invigorate] = 96,
     };
 
-    /// <summary>Ashley's statuses, by effect id, shown as icons right of the MP block.</summary>
-    public void ShowStatuses(IEnumerable<int> statuses)
+    /// <summary>Ashley's statuses (her status bits, <see cref="FieldBattle.Combatant.Status"/>), shown as icons right of the MP block.</summary>
+    public void ShowStatuses(uint statuses)
     {
         var shown = new List<int>();
-        foreach (int status in statuses) if (StatusColumns.ContainsKey(status)) shown.Add(status);
+        foreach (int status in StatusColumns.Keys) if ((statuses >> FieldBattle.StatusBit(status) & 1) != 0) shown.Add(status);
         shown.Sort();
         if (shown.SequenceEqual(_statuses)) return;
         _statuses = shown.ToArray();
@@ -456,10 +478,76 @@ public sealed partial class BattleHud : RetailScreen
 
     private static int LimbState(int hp, int most) => hp < 2 ? 0 : 4 * hp < most ? 1 : 4 * hp < 3 * most ? 2 : hp < most ? 3 : 4;
 
+    /// <summary>The HUD page through the palette at (848, 223), which the gear-change notices are drawn from.</summary>
+    public Texture2D? NoticePage;
+
+    // The gear-change notices (BATTLE.PRG's popups of kind 7): the piece's and the value's sprites, rise or fall, colour,
+    // its wait (in turns of 21 frames) before it shows, its age once shown and how far newer ones have lifted it.
+    private sealed class Notice
+    {
+        public Rect2 Piece, Value;
+        public bool Raised;
+        public Color Colour;
+        public int Wait, Age, Lift;
+    }
+    private readonly List<Notice> _notices = new();
+    private int _noticeClock;
+
+    /// <summary>
+    /// Queues a gear-change notice (BATTLE.PRG 0x80096768): it waits a turn of 21 frames for each one queued before it
+    /// (0x80094234), then shows for 61 frames in the lower-left corner, lifting the ones before it 10 rows.
+    /// </summary>
+    public void AddNotice(Rect2 piece, Rect2 value, bool raised, Color colour) =>
+        _notices.Add(new Notice { Piece = piece, Value = value, Raised = raised, Colour = colour, Wait = _notices.Count });
+
+    /// <summary>The gear-change notices on the screen now.</summary>
+    public int NoticesShown => _notices.FindAll(n => n.Wait < 0).Count;
+
+    private void StepNotices()
+    {
+        if (_notices.Count == 0) return;
+        if (++_noticeClock >= 21)
+        {
+            _noticeClock = 0;
+            for (int i = 0; i < _notices.Count; i++)
+            {
+                if (_notices[i].Wait < 0 || --_notices[i].Wait != -1) continue;
+                for (int older = 0; older < i; older++) _notices[older].Lift += 10;
+            }
+        }
+        for (int i = _notices.Count - 1; i >= 0; i--)
+            if (_notices[i].Wait < 0 && ++_notices[i].Age >= 61) _notices.RemoveAt(i);
+        QueueRedraw();
+    }
+
+    /// <summary>
+    /// The notices shown (BATTLE.PRG 0x8009695c, from (8, 172) less their lift): the piece's sprite, 2 on the value's,
+    /// 2 on the arrow (8 by 8 from (120, 208) for a fall, (128, 208) for a rise, a row higher), then the digit 1 (6 by 10
+    /// from the digits' row 0, 5 on), each tinted with the notice's colour.
+    /// </summary>
+    private void DrawNotices()
+    {
+        if (NoticePage == null || _digits == null) return;
+        var unit = Unit;
+        foreach (var n in _notices)
+        {
+            if (n.Wait >= 0) continue;
+            float y = 172 - n.Lift, x = 8;
+            FieldView.Sprite(this, NoticePage, n.Piece, new Vector2(x, y), unit, n.Colour);
+            x += 2 + n.Piece.Size.X;
+            FieldView.Sprite(this, NoticePage, n.Value, new Vector2(x, y), unit, n.Colour);
+            x += 2 + n.Value.Size.X;
+            FieldView.Sprite(this, NoticePage, new Rect2(n.Raised ? 128 : 120, 208, 8, 8), new Vector2(x, y - 1), unit, n.Colour);
+            x += 2 + 5;
+            FieldView.Sprite(this, _digits, new Rect2(6, 0, 6, 10), new Vector2(x, y - 1), unit, n.Colour);
+        }
+    }
+
     /// <summary>BATTLE MODE moves on the 30 Hz frame: it slides in a step a frame (its pulse held) and out again.</summary>
     public override void _PhysicsProcess(double delta)
     {
         if ((++_ticks & 1) != 0) return;
+        StepNotices();
         if ((_parts != null || _leftParts != null) && _slideFrames < 16) { _slideFrames++; QueueRedraw(); }
         int slide = _slide;
         if (_drawn && _slide < 4) { _slide++; _pulse = 0; }
@@ -499,6 +587,7 @@ public sealed partial class BattleHud : RetailScreen
         if (_digits == null || _labels == null || MaxHp == 0 || Acting) return;
         // The blocks and the figure keep to the window's left edge, BATTLE MODE and the part list to its right.
         DrawSetTransform(FieldView.Pin(Size, 0).Offset);
+        DrawNotices();
         if (Risk != 0) Block(2, Risk, 100);
         else Letter("RISK  ZERO", new Vector2(12, 22));
         Block(1, Mp, MaxMp);

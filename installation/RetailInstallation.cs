@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Wol.Engine.Install;
 
@@ -21,6 +22,10 @@ public sealed class RetailInstallation
 
     /// <summary>Video frames the intro movie has; anything else is rejected.</summary>
     private const int IntroVideoFrames = 593;
+    // ENDING.PRG 0x8006b9b4 starts XA at 270000; its EOF audio sector is 303263.
+    public const string EndingStream = "ENDING/ENDING.XA";
+    public const int EndingSector = 270000, EndingSectors = 33264;
+    private const string EndingDigest = "288d0f48787290c10ae74a04555fd2becde2f03e609839abf40bcedd194ea6bd";
 
     public string Root { get; }
 
@@ -59,6 +64,8 @@ public sealed class RetailInstallation
                     using (var output = File.Create(file)) disc.CopyStream(path, output);
                     sectors[path] = located[path];
                 }
+                using (var output = File.Create(Path.Combine(stage, "disc", EndingStream))) CopyEnding(disc, output);
+                sectors[EndingStream] = EndingSector;
             }
             File.WriteAllText(Path.Combine(stage, RecordName), new JsonObject { ["volume"] = RetailDisc.VolumeIdentifier, ["sectors"] = sectors }.ToJsonString());
 
@@ -86,12 +93,14 @@ public sealed class RetailInstallation
     private void Prepare(Action<string> progress)
     {
         var movie = System.Threading.Tasks.Task.Run(IntroMovie);
+        var ending = System.Threading.Tasks.Task.Run(EndingMusic);
         Runtime.FieldContent Content() => new Runtime.FieldContent(Root);
         var rooms = Content().RoomNames();
         System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, Content,
             (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
         Content().Character("character_00");
         movie.GetAwaiter().GetResult();
+        ending.GetAwaiter().GetResult();
         progress($"Prepared {rooms.Count} rooms.");
     }
 
@@ -120,6 +129,77 @@ public sealed class RetailInstallation
         File.Move(partVideo, video, true);
         File.Move(partMusic, music, true);
         return (video, music);
+    }
+
+    /// <summary>Adds the verified unlisted XA sectors to an older file-only installation, atomically.</summary>
+    public void InstallEndingMusic(string discPath)
+    {
+        if (!File.Exists(RecordPath)) throw new InvalidDataException("Install the game from your disc first.");
+        string target = Path.Combine(DiscPath, EndingStream), part = target + ".partial";
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        try
+        {
+            using (var disc = PlayStationDisc.Open(discPath, RetailDisc.Catalog))
+            using (var output = File.Create(part)) CopyEnding(disc, output);
+            File.Move(part, target, true);
+            var record = JsonNode.Parse(File.ReadAllText(RecordPath))!.AsObject();
+            record["sectors"]![EndingStream] = EndingSector;
+            File.WriteAllText(RecordPath + ".partial", record.ToJsonString());
+            File.Move(RecordPath + ".partial", RecordPath, true);
+        }
+        finally { if (File.Exists(part)) File.Delete(part); }
+    }
+
+    private static void CopyEnding(PlayStationDisc disc, Stream output)
+    {
+        using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        for (int i = 0; i < EndingSectors; i++)
+        {
+            byte[] sector = disc.ReadSector(EndingSector + i);
+            digest.AppendData(sector, 16, sector.Length - 16);
+            output.Write(sector);
+        }
+        if (!Convert.ToHexString(digest.GetHashAndReset()).Equals(EndingDigest, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The ending music does not match the retail US disc.");
+    }
+
+    /// <summary>Decodes the owned disc's unlisted XA music, leaving its raw sectors byte for byte in disc/.</summary>
+    public string EndingMusic()
+    {
+        string raw = Path.Combine(DiscPath, EndingStream);
+        if (!File.Exists(raw)) throw new InvalidDataException("This older installation omits the ending music. Install again from your US disc.");
+        string music = Path.Combine(CachePath, "ending_music.ogg");
+        Directory.CreateDirectory(CachePath);
+        string stream = Path.Combine(CachePath, "ending_audio.partial.xa");
+        using (var input = File.OpenRead(raw))
+        using (var decodedInput = File.Exists(music) ? null : File.Create(stream))
+        using (var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            if (input.Length != (long)EndingSectors * PlayStationDisc.RawSectorSize) throw new InvalidDataException("The ending music is truncated.");
+            var sector = new byte[PlayStationDisc.RawSectorSize];
+            for (int i = 0; i < EndingSectors; i++)
+            {
+                input.ReadExactly(sector);
+                digest.AppendData(sector, 16, sector.Length - 16);
+                // Each 37.8 kHz stereo XA packet occupies four identical consecutive sectors. At 75 sectors/s,
+                // the CD's audio decoder consumes one packet per four sectors; feeding all copies repeats samples.
+                // Take the fourth copy, including the last packet's EOF submode.
+                if (i % 4 == 3) decodedInput?.Write(sector);
+            }
+            if (!Convert.ToHexString(digest.GetHashAndReset()).Equals(EndingDigest, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The installed ending music does not match the retail US disc.");
+        }
+        if (File.Exists(music)) return music;
+        string part = music + ".partial.ogg";
+        Run(Executable("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
+            "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", part);
+        var audio = JsonNode.Parse(Run(Executable("ffprobe"), "-v", "error", "-show_entries", "stream=channels,sample_rate,duration", "-of", "json", part))!["streams"]![0]!;
+        if ((int)audio["channels"]! != 2 || int.Parse((string)audio["sample_rate"]!) != 37800
+            || Math.Abs(double.Parse((string)audio["duration"]!, System.Globalization.CultureInfo.InvariantCulture) - 443.52) > 0.05)
+            throw new InvalidDataException("The ending music could not be decoded as the retail stereo stream.");
+        File.Move(part, music, true);
+        File.Delete(stream);
+        return music;
     }
 
     private static string Executable(string name)

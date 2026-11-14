@@ -161,7 +161,7 @@ public sealed class EventConversion
     private string Actor(int at)
     {
         int reference = Word(at);
-        return (reference >> 12) switch { 1 => $"slot:{reference & 0x1F}", 0 => $"id:{reference}", _ => reference == 0x2000 ? "none" : "all" };
+        return (reference >> 12) switch { 1 => $"slot:{reference & 0x1F}", 0 => $"id:{reference}", _ => reference == 0x2000 ? "none" : reference == 0x2003 ? "side:4" : "all" };
     }
 
     /// <summary>The room's flows (the main event first) and the opcodes translation did not cover.</summary>
@@ -779,9 +779,13 @@ public sealed class EventConversion
                     case 6:
                         // Frees the buffer f7 loaded its chained event into (0x800bb160); the chain itself stays set.
                         return null;
-                    case 3: case 4:
-                        // Unlocks (3) or asks after (4) an action; flag 0xb1 reports whether it was newly learned, or is known.
-                        Await(pc, "ability.learn", new JsonObject { ["action"] = Byte(pc + 2), ["learn"] = Byte(pc + 1) == 3 });
+                    case 3:
+                        // Unlocks an action; flag 0xb1 reports whether it was newly learned.
+                        Await(pc, "ability.learn", new JsonObject { ["action"] = Byte(pc + 2), ["learn"] = true });
+                        return null;
+                    case 4:
+                        // BATTLE.PRG 0x800bb130 counts side-4 fighters (0x8007cf80) into flag 0xb1.
+                        Command("battle.count", new JsonObject());
                         return null;
                 }
                 _unpresented.Add($"{pc - _script:x4} {Convert.ToHexStringLower(_map, pc, _lengths[op])}");
@@ -850,8 +854,13 @@ public sealed class EventConversion
                 // Writes the actor's tile (x, level, z) into three flags, which the script then tests.
                 Await(pc, "actor.tile_flags", new JsonObject { ["actor"] = Actor(pc + 1), ["flag"] = Word(pc + 3) });
                 return null;
+            case 0x21:
+                // Walks the actor to a tile's centre (BATTLE.PRG 0x800b75f4: x at +3, z at +5, each * 128 + 64), the same
+                // walk as 2a's (0x8007cff8) to that point.
+                Command("actor.path", new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = new JsonArray { Byte(pc + 3) * 128 + 64, Byte(pc + 5) * 128 + 64 } });
+                return null;
             case 0x2a:
-                // Walks the actor along a route to a map point (x, z); a wait on mask 1 waits for it to arrive.
+                // Walks the actor to a map point (x, z; BATTLE.PRG 0x800b7d10 by 0x8007cff8); a wait on mask 1 waits for it to arrive.
                 Command("actor.path", new JsonObject { ["actor"] = Actor(pc + 1), ["position"] = new JsonArray { Short(pc + 3), Short(pc + 5) } });
                 return null;
             case 0x2d:
@@ -1265,8 +1274,10 @@ public sealed class EventConversion
                 Command("actor.look", new JsonObject { ["actor"] = Actor(pc + 1), ["target"] = Actor(pc + 3), ["speed"] = Byte(pc + 5) });
                 return null;
             case 0xf1:
-                // Sets the frame step (0x8005e24c; 2 or 4): at 4 the game draws at 15 Hz and moves twice as far each
-                // frame, so its pace is the same. The field keeps its own rate.
+                // Sets the frame step (0x8005e24c, through 0x8007c36c, which takes only 2 or 4): at 4 the game draws at
+                // 15 Hz and moves twice as far each frame, so its pace is the same. The field keeps its own rate; the
+                // battle's clocks keep to the step.
+                if (Byte(pc + 1) is 2 or 4) Command("frame.step", new JsonObject { ["blanks"] = Byte(pc + 1) });
                 return null;
             case 0x61:
                 // Sets the depth (bit 15 on, low 11 bits; 0x200 by default) past which room polygons sample the
@@ -1274,10 +1285,21 @@ public sealed class EventConversion
                 // level of detail. The field's mipmapped textures choose their own detail, so nothing changes here.
                 return null;
             case 0xa9:
-                // Shakes the controller: 0xFF stops it, other values pick a pattern (the table at 0x800f4bc0, not
-                // read; here a short shake).
-                Command("pad.vibrate", new JsonObject { ["pattern"] = Byte(pc + 1) == 0xFF ? -1 : Byte(pc + 1) });
+            {
+                // BATTLE.PRG 0x800bab14: bit 3 copies the low-three-bit pattern to a scratch buffer; both paths
+                // play its envelope at record +8 on the first free channel, tagged 2. FF stops only tag 2.
+                int pattern = Byte(pc + 1);
+                var envelope = new JsonArray();
+                if (pattern != 0xFF)
+                {
+                    int table = _script + BitConverter.ToUInt16(_map, _script + 6), slot = (pattern & 8) != 0 ? pattern & 7 : pattern;
+                    int entry = BitConverter.ToUInt16(_map, table + slot * 2);
+                    if (entry != 0)
+                        foreach (byte value in Runtime.VibrationDriver.Decode(_map.AsSpan(table + entry + 8))) envelope.Add((int)value);
+                }
+                Command("pad.vibrate", new JsonObject { ["pattern"] = pattern == 0xFF ? -1 : pattern, ["envelope"] = envelope });
                 return null;
+            }
             case 0x74: case 0x76:
                 // Loads the room's sky image (the variant from room sub-section 15; the disc has one a room) or
                 // releases it: the sky is drawn while loaded.

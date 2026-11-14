@@ -51,6 +51,8 @@ public sealed partial class MemoryCardMenu : RetailScreen
 
     /// <summary>The field that saves, or null where there is nothing to save (the title).</summary>
     private FieldView? _view;
+    /// <summary>Resident menu sounds, supplied by the field or title owner.</summary>
+    public Action<int>? Sound;
     /// <summary>The screen's fade to black as a loaded game, or a menu left for the title, goes.</summary>
     private ColorRect _shade = null!;
     /// <summary>Where the sweep and flash are drawn, added to the screen.</summary>
@@ -68,11 +70,14 @@ public sealed partial class MemoryCardMenu : RetailScreen
 
     /// <summary>The save the screens loaded, once they return 1 from loading.</summary>
     public GDictionary? Loaded { get; private set; }
+    /// <summary>A cleared record supplied by the ending, saved through the same card screens.</summary>
+    public GDictionary? SaveData;
     private readonly GDictionary?[] _files = new GDictionary?[5];
 
     public void Configure(Wol.Games.Vagrant.Runtime.RetailContent content, FieldView? view)
     {
         _view = view;
+        if (view != null) Sound = view.MenuSound;
         Texture2D? Page(string name)
         {
             try { return content.ScreenTexture(name); }
@@ -102,7 +107,7 @@ public sealed partial class MemoryCardMenu : RetailScreen
     /// <summary>Back to the slots: the leaving sound, both slots slide out to come in again, the card's slot chosen, no message.</summary>
     private void BackToSlots()
     {
-        _view?.MenuSound(FieldView.MenuLeave);
+        Sound?.Invoke(FieldView.MenuLeave);
         Slide(1, 320);
         Slide(2, 320);
         _slot = _card - 1;
@@ -198,7 +203,7 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 _elements[2 - _slot].Selected = false;
                 if (pressed("ps_cross"))
                 {
-                    _view?.MenuSound(FieldView.MenuLeave);
+                    Sound?.Invoke(FieldView.MenuLeave);
                     for (int i = 0; i < 3; i++) Slide(i, 320);
                     _message = "";
                     Enter(Stage.Leaving);
@@ -208,7 +213,7 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 else if (pressed("ps_circle"))
                 {
                     // The chosen slot moves out to SAVE's column and takes its colour; the other leaves.
-                    _view?.MenuSound(FieldView.MenuSelect);
+                    Sound?.Invoke(FieldView.MenuSelect);
                     _card = 1 + _slot;
                     _message = Text(7);
                     Slide(1 + _slot, 180);
@@ -216,7 +221,7 @@ public sealed partial class MemoryCardMenu : RetailScreen
                     Slide(2 - _slot, 320);
                     Enter(Stage.Checking);
                 }
-                else if (step != 0) { _slot = 1 - _slot; _view?.MenuSound(FieldView.MenuChange); }
+                else if (step != 0) { _slot = 1 - _slot; Sound?.Invoke(FieldView.MenuChange); }
                 break;
             case Stage.Checking:
                 if (!Settled()) break;
@@ -267,13 +272,13 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 if (pressed("ps_circle") && !_saving)
                 {
                     // Only a file holding a save can be loaded.
-                    if (_files[chosen] != null) { _view?.MenuSound(FieldView.MenuSelect); _message = Text(15); Enter(Stage.Saving); }
-                    else _view?.MenuSound(FieldView.MenuInvalid);
+                    if (_files[chosen] != null) { Sound?.Invoke(FieldView.MenuSelect); _message = Text(15); Enter(Stage.Saving); }
+                    else Sound?.Invoke(FieldView.MenuInvalid);
                     break;
                 }
                 if (pressed("ps_circle"))
                 {
-                    _view?.MenuSound(FieldView.MenuSelect);
+                    Sound?.Invoke(FieldView.MenuSelect);
                     _elements[5 + chosen].Selected = true;
                     if (_files[chosen] == null) BeginSaving();
                     else
@@ -289,7 +294,7 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 }
                 if (step < 0) { if (_slot == 0) { if (_page > 0) _page--; } else _slot--; }
                 if (step > 0) { if (_slot == 2) { if (_page < 2) _page++; } else _slot++; }
-                if (_page + _slot != chosen) _view?.MenuSound(FieldView.MenuChange);
+                if (_page + _slot != chosen) Sound?.Invoke(FieldView.MenuChange);
                 for (int i = 0; i < 5; i++)
                 {
                     _elements[5 + i].Y = 72 + 40 * (i - _page);
@@ -304,14 +309,14 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 if (pressed("ps_circle") || pressed("ps_cross"))
                 {
                     bool yes = pressed("ps_circle") && _confirm == 0;
-                    _view?.MenuSound(yes ? FieldView.MenuSelect : FieldView.MenuLeave);
+                    Sound?.Invoke(yes ? FieldView.MenuSelect : FieldView.MenuLeave);
                     Slide(3, -126);
                     Slide(4, -126);
                     _elements[3].Motion = _elements[4].Motion = Motion.FromLeft;
                     if (yes) BeginSaving();
                     else { _message = Text(12); Enter(Stage.Files); }
                 }
-                else if (step != 0) { _confirm = 1 - _confirm; _view?.MenuSound(FieldView.MenuChange); }
+                else if (step != 0) { _confirm = 1 - _confirm; Sound?.Invoke(FieldView.MenuChange); }
                 break;
             case Stage.Saving when !_saving:
                 if (_stageFrames == LoadFrames)
@@ -324,14 +329,14 @@ public sealed partial class MemoryCardMenu : RetailScreen
                 }
                 break;
             case Stage.Saving:
-                if (_stageFrames == SaveFrames && _view != null)
+                if (_stageFrames == SaveFrames && (_view != null || SaveData != null))
                 {
                     int chosen = _page + _slot;
-                    bool saved = _view.SaveGame(_card, chosen + 1, _location) == Error.Ok;
+                    bool saved = (_view != null ? _view.SaveGame(_card, chosen + 1, _location) : FieldView.WriteCardFile(_card, chosen + 1, _location, SaveData!)) == Error.Ok;
                     _files[chosen] = saved ? FieldView.ReadCardFile(_card, chosen + 1) : _files[chosen];
                     _message = Text(saved ? 16 : 10);
                     _result = saved ? 1 : -1;
-                    _view.MenuSound(saved ? FieldView.MenuFileDone : FieldView.MenuInvalid);
+                    Sound?.Invoke(saved ? FieldView.MenuFileDone : FieldView.MenuInvalid);
                     Enter(Stage.Saved);
                 }
                 break;

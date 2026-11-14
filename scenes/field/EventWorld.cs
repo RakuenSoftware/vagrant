@@ -35,6 +35,9 @@ public sealed class EventWorld : FlowStateSchema<EventWorld, EventCommand>, IFlo
 
     public EventWorld()
     {
+        // TITLE.PRG 0x8007137c clears game data, then 0x80071254 initializes these two flags to one
+        // (0x8007130c). Flag 1 selects normal-play room actors, including the first Minotaur.
+        Flags[1] = Flags[0x11C] = 1;
         IntegerSequence("flags", _ => FlagCount, (world, index) => world.Flags[index], (world, index, value) => world.Flags[index] = (int)value);
         for (int index = 0; index < FlagCount; index++) IntegerElement($"flags/{index}", "flags", index);
         IntegerSequence("loops", _ => 256, (world, index) => world.Loops[index], (world, index, value) => world.Loops[index] = (int)value);
@@ -43,9 +46,24 @@ public sealed class EventWorld : FlowStateSchema<EventWorld, EventCommand>, IFlo
         ReadOnlyInteger("skip", world => world.Skip);
     }
 
-    /// <summary>Clears what a new script starts without: the switch, the loop counters and any skip. The flags carry on.</summary>
+    /// <summary>The MPD loader clears room variables 0x20..0x3f; a disk resume preserves them (0x800be98c).</summary>
+    public void BeginRoom(bool resume)
+    {
+        Flags[0xA9] = 0;
+        if (!resume) Array.Clear(Flags, 0x20, 0x20);
+    }
+
+    /// <summary>The ZND loader clears zone variables 0x40..0x7f, except on resume (0x80088ff4, 0x800beb9c).</summary>
+    public void BeginZone(bool resume)
+    {
+        if (!resume) Array.Clear(Flags, 0x40, 0x40);
+    }
+
+    /// <summary>Clears a new script's variables 0x10..0x1f and 0xa8 (0x800bf6dc/0x800bf7dc), switch, loops and skip.</summary>
     public void BeginScript()
     {
+        Array.Clear(Flags, 0x10, 0x10);
+        Flags[0xA8] = 0;
         Switch = 0;
         Array.Clear(Loops);
         Skip = -1;

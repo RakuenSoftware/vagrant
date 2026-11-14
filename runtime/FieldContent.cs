@@ -25,6 +25,27 @@ public sealed class FieldContent
     private const long MusicSectors = 0x8004A6C0, SoundFileMap = 0x8004B1B0, SoundSectors = 0x8004A530, EffectSectors = 0x8004A9E0;
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
     private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
+    private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
+    private const int CrateRepulsion = 0x809AC; // BATTLE.PRG 0x800E91AC
+    private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
+    private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
+    private const int SineTable = 0x30A10;       // SLUS_010.40 0x80040210
+    private const int ArctangentTable = 0x31214; // SLUS_010.40 0x80040A14
+    private const int RootTable = 0x31418;       // SLUS_010.40 0x80040C18
+    private const int InverseRootTable = 0x31598; // SLUS_010.40 0x80040D98
+    private const int Relations = 0x140C;        // BATTLE.PRG 0x80069C0C
+    private const int SightRanges = 0x141C;      // BATTLE.PRG 0x80069C1C
+    private const int ViewCones = 0x88FB8;       // BATTLE.PRG 0x800F17B8
+    private const int TurnRates = 0x88FD8;       // BATTLE.PRG 0x800F17D8
+    private const int WanderTimes = 0x143C;      // BATTLE.PRG 0x80069C3C
+    private const int PatrolOdds = 0x1408;       // BATTLE.PRG 0x80069C08
+    private const int PlanHorizons = 0x13F0;     // BATTLE.PRG 0x80069BF0 and the kept counts at 0x80069BFC
+    private const int SwoopSteps = 0x88FDC;      // BATTLE.PRG 0x800F17DC
+    private const int StatusGroups = 0x13BC;     // BATTLE.PRG 0x80069BBC
+    private const int PhantomShares = 0x7FAF4;   // BATTLE.PRG 0x800E82F4
+    private const int CrippledBits = 0x7FA00;    // BATTLE.PRG 0x800E8200
+    private const int TargetKinds = 0x7F994;     // BATTLE.PRG 0x800E8194, then 0x800E81B4, 0x800E81C4 and 0x800E81D4
+    private const int NoticePieces = 0x944, NoticeValues = 0x97C, NoticeColours = 0xB94;   // BATTLE.PRG 0x80069144, 0x8006917C, 0x80069394
 
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
@@ -165,7 +186,13 @@ public sealed class FieldContent
             "item_help" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/ITEMHELP.BIN")) },
             // SETUP's pages (MENU/MENU12.BIN, laid out as ITEMHELP.BIN is): their words, help and refusals.
             "setup_menu" => new JsonObject { ["list"] = InventoryConversion.Help(Read("MENU/MENU12.BIN")) },
+            // MENU8's weapon naming commands, confirmation and 14 by 9 keyboard (0x80105db4).
+            "name_menu" => new JsonObject { ["strings"] = InventoryConversion.MenuStrings(Read("MENU/MENU8.PRG"), 0x35B4) },
             "gadget_bag" => InventoryConversion.GadgetBag(Read("MENU/MENUB.PRG")),
+            // OPTIONS' words (MENU/MENU8.PRG, loaded at 0x80102800; its string table at 0x80105558, file offset 0x2D58): each setting's name
+            // and help, then each setting's choices with their help (WEAPON STATUS 4 and 5 with ON and OFF at 30 to 33,
+            // ARMOR STATUS 6 and 7 with 34 to 37; 0x80102c0c and 0x80102dbc).
+            "options_menu" => new JsonObject { ["strings"] = InventoryConversion.MenuStrings(Read("MENU/MENU8.PRG"), 0x2D58) },
             "item_menu" => ItemMenu(),
             "equip_labels" => InventoryConversion.EquipLabels(Read("MENU/MAINMENU.PRG")),
             "container_menu" => InventoryConversion.ContainerMenu(Read("MENU/MENUD.PRG")),
@@ -203,7 +230,6 @@ public sealed class FieldContent
         if (name.StartsWith("field_", StringComparison.Ordinal) && name.Length >= 14) Data(name[..14]);
         else if (name.StartsWith("effect_", StringComparison.Ordinal)) Data(name[..10]);
         else if (name.StartsWith("manual_", StringComparison.Ordinal)) Data("manual");
-        else if (name.StartsWith("ending_", StringComparison.Ordinal)) Data("ending");
         else if (name.StartsWith("hud_page_", StringComparison.Ordinal) && int.TryParse(name["hud_page_".Length..], out int clut))
             _images[name] = new HudConversion(Read("BATTLE/SYSTEM.DAT"), _battle).Page(clut);
         else if (name.StartsWith("hud_second_", StringComparison.Ordinal) && name["hud_second_".Length..].Split('_') is [var px, var py] && int.TryParse(px, out int secondX) && int.TryParse(py, out int secondY))
@@ -217,7 +243,6 @@ public sealed class FieldContent
         else if (name == "item_menu_backdrop") Data("item_menu");
         else if (name == "map_backdrop") Data("map_menu");
         else if (name == "memory_card_pictures") Data("memory_card");
-        else if (name is "results_sheet" or "results_reel") Data("results");
         else if (name.StartsWith("overlay_", StringComparison.Ordinal) && int.TryParse(name[8..11], out int overlay)) Overlay(overlay);
         return _images.GetValueOrDefault(name);
     }
@@ -247,12 +272,9 @@ public sealed class FieldContent
         return MemoryCardConversion.Export(Read("MENU/MCMAN.BIN"), _executable, _battle, Read("MENU/MENU7.PRG"));
     }
 
-    /// <summary>The CONGRATULATIONS screen's tables and lettering (<see cref="ResultsConversion"/>).</summary>
+    /// <summary>The CONGRATULATIONS screen's tables (<see cref="ResultsConversion"/>); its lettering is SMALL/RANK.DIS as the disc holds it.</summary>
     private JsonObject Results()
     {
-        var rank = Read("SMALL/RANK.DIS");
-        _images["results_sheet"] = ResultsConversion.Sheet(rank, 0);
-        _images["results_reel"] = ResultsConversion.Sheet(rank, 2);
         return ResultsConversion.Export(Read("MENU/MENUF.PRG"));
     }
 
@@ -302,15 +324,10 @@ public sealed class FieldContent
 
     private JsonObject Ending()
     {
-        // The ending: its illustrations and credits (see EndingConversion).
-        var illustrations = new JsonArray();
-        for (int n = EndingConversion.FirstIllustration; n <= EndingConversion.LastIllustration; n++)
-        {
-            string asset = $"ending_illust_{n:d2}";
-            _images[asset] = EndingConversion.Tim(EndingConversion.Decompress(Read($"ENDING/ILLUST{n:d2}.BIN")));
-            illustrations.Add(asset);
-        }
-        return new JsonObject { ["illustrations"] = illustrations, ["credits"] = EndingConversion.Credits(Read("ENDING/ENDING.PRG")) };
+        // The ending runs ENDING.PRG itself (see Scenes.Ending.Ending), with the illustrations it unpacks; its closing
+        // CONGRATULATIONS screen is ENDING.PRG's copy of MENUF's.
+        for (int n = EndingConversion.FirstIllustration; n <= EndingConversion.LastIllustration; n++) Read($"ENDING/ILLUST{n:d2}.BIN");
+        return new JsonObject { ["program"] = "ENDING/ENDING.PRG", ["results"] = ResultsConversion.Export(Read("ENDING/ENDING.PRG"), true) };
     }
 
     /// <summary>Every room the disc has, by name ("z001_m00"): each zone's maps, in its list's order.</summary>
@@ -352,7 +369,7 @@ public sealed class FieldContent
         string room = $"field_z{zone:d3}_m{map:d2}";
         if (Cached(room + ".json") is not { } file || !System.IO.File.Exists(file) || _cache == null) return false;
         var document = JsonNode.Parse(System.IO.File.ReadAllBytes(file));
-        foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => (int)actor!["character"]!)))
+        foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(System.Linq.Enumerable.Where(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => !(bool)(actor?["virtual"] ?? false)), actor => (int)actor!["character"]!)))
             if (Directory.GetFiles(_cache, $"character_{character:X2}_*.glb").Length == 0) return false;
         return true;
     }
@@ -385,6 +402,7 @@ public sealed class FieldContent
             _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
             foreach (var actor in kept["room_actors"]!.AsArray())
             {
+                if ((bool)(actor!["virtual"] ?? false)) continue;
                 int character = (int)actor!["character"]!;
                 _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
                 _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));
@@ -400,6 +418,7 @@ public sealed class FieldContent
         _roomBanks[$"{zone:d3}{map:d2}"] = room.SoundBank;
         foreach (var actor in document["room_actors"]!.AsArray())
         {
+            if ((bool)(actor!["virtual"] ?? false)) continue;
             int character = (int)actor!["character"]!;
             _units.TryAdd(character, PathAt((uint)(long)actor["unit_sector"]!));
             _battleSets.TryAdd(character, BattleSet(character, actor["stats"]!["weapon"]!));
@@ -516,6 +535,234 @@ public sealed class FieldContent
         var swings = new int[16];
         for (int category = 0; category < 16; category++) swings[category] = _battle[SwingSounds + category];
         return swings;
+    }
+
+    /// <summary>
+    /// A broken crate's collapse (BATTLE.PRG motion 247, 0x800b1308): for each of its 15 steps, how far it moves down
+    /// (y down; 0x800E9238) and its x, y and z scale, 64 a whole (0x800E9248, 0x800E9258, 0x800E9268), signed bytes.
+    /// </summary>
+    public (int Down, int X, int Y, int Z)[] CrateCollapseSteps()
+    {
+        var steps = new (int, int, int, int)[15];
+        for (int i = 0; i < 15; i++)
+            steps[i] = ((sbyte)_battle[CrateCollapse + i], (sbyte)_battle[CrateCollapse + 16 + i], (sbyte)_battle[CrateCollapse + 32 + i], (sbyte)_battle[CrateCollapse + 48 + i]);
+        return steps;
+    }
+
+    /// <summary>Magnetic repulsion, motion 253 (0x800b101c): steps 1 through 14 of the signed Y and
+    /// three rotation increments at 0x800E91AC..0x800E91DC. Rotation uses 4096 units per turn.</summary>
+    public (int Down, int X, int Y, int Z)[] CrateRepulsionSteps()
+    {
+        var steps = new (int, int, int, int)[14];
+        for (int i = 0; i < steps.Length; i++)
+            steps[i] = ((sbyte)_battle[CrateRepulsion + i + 1], (sbyte)_battle[CrateRepulsion + 17 + i],
+                (sbyte)_battle[CrateRepulsion + 33 + i], (sbyte)_battle[CrateRepulsion + 49 + i]);
+        return steps;
+    }
+
+    /// <summary>
+    /// A status bit's standing in an enemy's reckoning of a fighter's well-being (BATTLE.PRG 0x80069BD0, a signed byte a
+    /// bit; 0x800dcc94), and its rules (SLUS_010.40 0x8004EECC, 16 bytes a bit; 0x80081020): the statuses it clears as
+    /// it lands and those that keep it off.
+    /// </summary>
+    /// <remarks>Its period (the rule's halfword at 6) is how many seconds poison and regeneration take a turn in, as an
+    /// enemy reckons them ahead (0x800de228).</remarks>
+    /// <remarks>Its own mask (the rule's word at 0) is what the target's immunities (its data's +0x944) are tested
+    /// against (0x8007f4b0), and its duration (the halfword at 4) is how many status ticks its group's timer is loaded
+    /// with (0x80086fa8).</remarks>
+    public (int Weight, uint Clears, uint BlockedBy, int Period, uint Own, int Duration) Status(int bit) =>
+        ((sbyte)_battle[StatusWeights + bit], BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 8), BitConverter.ToUInt32(_executable, StatusRules + bit * 16 + 12),
+            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 6), BitConverter.ToUInt32(_executable, StatusRules + bit * 16),
+            BitConverter.ToUInt16(_executable, StatusRules + bit * 16 + 4));
+
+    /// <summary>
+    /// A gear-change notice's sprites on the HUD page (BATTLE.PRG 0x8009695c, 8 bytes each: u, v, width and height):
+    /// the piece (<paramref name="value"/> false; 0 weapon, 1 shield, 2 right arm, 3 left arm, 4 head, 5 body, 6 legs,
+    /// the table at 0x80069144) or the class or affinity (classes 0 to 5, then affinities 6 to 12; 0x8006917C).
+    /// </summary>
+    public (int U, int V, int Width, int Height) NoticeSprite(bool value, int index)
+    {
+        int at = (value ? NoticeValues : NoticePieces) + Math.Clamp(index, 0, value ? 12 : 6) * 8;
+        return (_battle[at], _battle[at + 2], BitConverter.ToInt16(_battle, at + 4), BitConverter.ToInt16(_battle, at + 6));
+    }
+
+    /// <summary>A gear-change notice's colour (BATTLE.PRG 0x80069394: red, green and blue for a fall, then for a rise; 128 leaves a texel as it is).</summary>
+    public (int Red, int Green, int Blue) NoticeColour(bool raised)
+    {
+        int at = NoticeColours + (raised ? 4 : 0);
+        return (_battle[at], _battle[at + 1], _battle[at + 2]);
+    }
+
+    /// <summary>
+    /// The statuses that share one of a fighter's five status timers (BATTLE.PRG 0x80069BBC, a word a timer; its data's
+    /// +0x94c to +0x950): set by 0x80086fa8, counted down by the status tick 0x80087ef4 and read ahead by 0x800de030.
+    /// </summary>
+    public uint StatusGroup(int timer) => BitConverter.ToUInt32(_battle, StatusGroups + timer * 4);
+
+    /// <summary>
+    /// How much of a weapon's phantom points count in its blow, by its category (BATTLE.PRG 0x800E82F4, a halfword a
+    /// category, read by the physical damage 0x80081148): its PP times this over its most.
+    /// </summary>
+    public int PhantomShare(int category) => category is >= 0 and < 12 ? BitConverter.ToInt16(_battle, PhantomShares + category * 2) : 0;
+
+    /// <summary>
+    /// The status bit that marks one of Ashley's first four limbs crippled (BATTLE.PRG 0x800E8200, a byte a limb; set and
+    /// cleared by 0x80085008 and the status tick 0x80088244).
+    /// </summary>
+    public int CrippledBit(int limb) => limb is >= 0 and < 4 ? _battle[CrippledBits + limb] : -1;
+
+    /// <summary>
+    /// How an action's target kind (its record's byte 2, high four bits) takes its targets (BATTLE.PRG's four 16-byte
+    /// tables): whether it strikes an area round a point (0x800E8194), may be used on its user (0x800E81B4), takes each
+    /// limb inside its shape rather than the fighter (0x800E81C4), and the side bits a fighter must have to be taken
+    /// (0x800E81D4: 7 for fighters, 0x20 traps, 0x80 map objects).
+    /// </summary>
+    public (bool Area, bool Self, bool Limbs, int Sides) TargetKind(int kind) =>
+        (_battle[TargetKinds + kind] != 0, _battle[TargetKinds + 0x20 + kind] != 0, _battle[TargetKinds + 0x30 + kind] != 0, _battle[TargetKinds + 0x40 + kind]);
+
+    /// <summary>
+    /// The executable's sine and cosine table (SLUS_010.40 0x80040210, read by its sine 0x80040f28): for each angle
+    /// 0 to 512 (4096 a turn) its sine and cosine, 4096 a whole.
+    /// </summary>
+    public int Sine(int angle, bool cosine) => BitConverter.ToUInt16(_executable, SineTable + angle * 4 + (cosine ? 2 : 0));
+
+    /// <summary>
+    /// The executable's sine of an angle, 4096 a turn and 4096 a whole (SLUS_010.40 0x80040f28): the angle reflected
+    /// into the table's first eighth by its bits (a quarter turn exactly is 4096; past it the angle is taken from a half
+    /// turn; its second eighth reads the cosine column), negative when the angle's bit 0x800 is set.
+    /// </summary>
+    public int Sin(int angle)
+    {
+        if ((angle & 0x400) != 0)
+        {
+            if ((angle & 0x3FF) == 0) return (angle & 0x800) != 0 ? -4096 : 4096;
+            angle = 2048 - angle;
+        }
+        int t = angle & 0x1FF, v = (angle & 0x200) != 0 ? Sine(512 - t, cosine: true) : Sine(t, cosine: false);
+        return (angle & 0x800) != 0 ? -v : v;
+    }
+
+    /// <summary>The executable's cosine (SLUS_010.40 0x80040f24): the sine a quarter turn on.</summary>
+    public int Cos(int angle) => Sin(angle + 1024);
+
+    /// <summary>The executable's arctangent table (SLUS_010.40 0x80040A14, read by its ratan2 0x8004137c): for a ratio 0 to 512 (512 a whole), its angle, 512 an eighth of a turn.</summary>
+    public int Arctangent(int ratio) => _executable[ArctangentTable + ratio];
+
+    /// <summary>
+    /// The executable's square root table (SLUS_010.40 0x80040C18, read by its square root 0x80041b94): entry
+    /// <paramref name="index"/> is 4096 times the root of (index + 64) / 64. Read as the executable reads it, so an
+    /// index out of the table reads what lies beside it.
+    /// </summary>
+    public int SquareRoot(int index) => BitConverter.ToInt16(_executable, RootTable + index * 2);
+
+    /// <summary>The executable's inverse square root table (SLUS_010.40 0x80040D98, read by its normaliser 0x80041af4): entry <paramref name="index"/> is 4096 over the root of (index + 64) / 64, read as <see cref="SquareRoot"/> is.</summary>
+    public int InverseSquareRoot(int index) => BitConverter.ToInt16(_executable, InverseRootTable + index * 2);
+
+    /// <summary>
+    /// How one fighter stands to another as a battle begins (BATTLE.PRG 0x80069C0C, read by 0x800e7370): by its
+    /// faction (its AI word's bits 21 and 22), a byte for the player and one for others of factions 0 to 2. 3 is a foe,
+    /// 2 an ally and 1 neither.
+    /// </summary>
+    public int Relation(int faction, bool toPlayer) => _battle[Relations + faction * 2 + (toPlayer ? 0 : 1)];
+
+    /// <summary>
+    /// An enemy's senses by its AI word (BATTLE.PRG 0x800e5a9c): how far it sees, squared (bits 18 to 20 into the words
+    /// at 0x80069C1C), how wide its view is in degrees (bits 16 and 17 into the words at 0x800F17B8), and its turning
+    /// rate in sixteenths (bits 2 and 3 into the bytes at 0x800F17D8).
+    /// </summary>
+    public (uint SightSquared, int ConeDegrees, int TurnRate) Senses(uint ai) =>
+        (BitConverter.ToUInt32(_battle, SightRanges + (int)(ai >> 18 & 7) * 4), BitConverter.ToInt32(_battle, ViewCones + (int)(ai >> 16 & 3) * 4),
+            _battle[TurnRates + (int)(ai >> 2 & 3)]);
+
+    /// <summary>
+    /// An enemy's wandering pace by its AI word's bits 4 to 6 (BATTLE.PRG's 6-byte rows at 0x80069C3C, 0x800e5cfc): the
+    /// frames it moves, the frames it idles after, and the power of two its odds of a new heading are one in. Rows 6
+    /// and 7 run on into the data after the table, as BATTLE.PRG reads them.
+    /// </summary>
+    public (int Move, int Idle, int Chance) WanderPace(uint ai)
+    {
+        int row = WanderTimes + (int)(ai >> 4 & 7) * 6;
+        return (BitConverter.ToUInt16(_battle, row), BitConverter.ToUInt16(_battle, row + 2), _battle[row + 4]);
+    }
+
+    /// <summary>
+    /// A patroller's odds of turning back on its route each frame between points, one in two to the power of this
+    /// (BATTLE.PRG's bytes at 0x80069C08, by its room record's +0x14 bit 14, 0x800e5dd4; 9 and 7).
+    /// </summary>
+    public int PatrolTurns(int bit) => _battle[PatrolOdds + (bit & 1)];
+
+    /// <summary>
+    /// Guildenstern's final form's swoop (BATTLE.PRG's s16 pairs at 0x800F17DC, read by 0x800e7698): a step a frame,
+    /// how far along its heading it moves and how far down (y grows downward), to the (0, 0) that ends the path.
+    /// </summary>
+    public (int Ahead, int Down)[] SwoopPath()
+    {
+        var steps = new List<(int, int)>();
+        for (int at = SwoopSteps; ; at += 4)
+        {
+            int ahead = BitConverter.ToInt16(_battle, at), down = BitConverter.ToInt16(_battle, at + 2);
+            if (ahead == 0 && down == 0) return steps.ToArray();
+            steps.Add((ahead, down));
+        }
+    }
+
+    /// <summary>
+    /// The enemy planner's three passes (BATTLE.PRG 0x80069BF0 and 0x80069BFC, read by 0x800de3e4): how far ahead
+    /// each looks, in frames, and how many of its best moves it keeps.
+    /// </summary>
+    public (int Horizon, int Keep)[] PlanPasses()
+    {
+        var passes = new (int, int)[3];
+        for (int i = 0; i < 3; i++) passes[i] = (BitConverter.ToInt32(_battle, PlanHorizons + i * 4), BitConverter.ToInt32(_battle, PlanHorizons + 12 + i * 4));
+        return passes;
+    }
+
+    /// <summary>
+    /// An action's record as an enemy plans with it (SLUS_010.40's action table, 52 bytes an action):
+    /// <list type="bullet">
+    /// <item>its target kind (byte 2's high four bits; BATTLE.PRG 0x800e5710 sorts them into one target, a target's
+    /// limbs or an area);</item>
+    /// <item>its cost's kind (byte 2 bits 1 to 3: 1 MP, 3 HP above half, 4 the weapon's DP, 6 the weapon's PP;
+    /// 0x800e4df8, 0x800dc888) and the cost (byte 3);</item>
+    /// <item>its range (bytes 4 to 7: x, y and z radii and an angle and shape; 255 first is the weapon's; 0x800e5698);</item>
+    /// <item>its recovery (byte 12; 255 is the user's own; 0x800859b4);</item>
+    /// <item>its planning flags (the halfword at 14: 0x10 weighed without reckoning by some, 0x20 passed over nine times
+    /// in ten, 0x40 a last resort, 0x4000 help, 0x8000 harm, bits 9 to 11 the troubles a help is for, 0x100 any;
+    /// 0x800dcc94, 0x800e4cf4).</item>
+    /// <item>its area (bytes 8 to 11, the same four for the shape round the chosen point; 0x80072734);</item>
+    /// <item>whether it flies to its target (byte 13 bit 6, the word at 12's 0x4000; 0x80085f44);</item>
+    /// <item>its two effects (the words at 0x14 and 0x18, <see cref="ActionEffect"/>).</item>
+    /// </list>
+    /// </summary>
+    public ActionRecord Action(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return new ActionRecord(id, _executable[record + 2] >> 4, _executable[record + 2] >> 1 & 7, _executable[record + 3],
+            new[] { (int)_executable[record + 4], _executable[record + 5], _executable[record + 6], _executable[record + 7] },
+            new[] { (int)_executable[record + 8], _executable[record + 9], _executable[record + 10], _executable[record + 11] },
+            _executable[record + 12], BitConverter.ToUInt16(_executable, record + 14), (_executable[record + 13] & 0x40) != 0,
+            new[] { new ActionEffect(BitConverter.ToUInt32(_executable, record + 0x14)), new ActionEffect(BitConverter.ToUInt32(_executable, record + 0x18)) });
+    }
+
+    /// <summary>
+    /// An action's near range (bytes 8 to 11 of its record, laid out as its range): with its planning flag 0x80, an enemy
+    /// keeps out of it before it makes the action (BATTLE.PRG 0x800e5600); with 0x2000 the second byte, 32 units a point,
+    /// is that margin by itself.
+    /// </summary>
+    public int[] NearRange(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return new[] { (int)_executable[record + 8], _executable[record + 9], _executable[record + 10], _executable[record + 11] };
+    }
+
+    /// <summary>
+    /// Whether an enemy pays an action on it no heed (BATTLE.PRG 0x800dd000): the effect class (bits 7 to 12) of its
+    /// record's word at 0x14 or at 0x18 is 3.
+    /// </summary>
+    public bool Unheeded(int id)
+    {
+        int record = InventoryConversion.Actions + id * 52;
+        return (BitConverter.ToUInt32(_executable, record + 0x14) >> 7 & 0x3F) == 3 || (BitConverter.ToUInt32(_executable, record + 0x18) >> 7 & 0x3F) == 3;
     }
 
     /// <summary>
@@ -757,3 +1004,6 @@ public sealed class FieldContent
         return ("bank_" + kind, bank, id, pan, group);
     }
 }
+
+/// <summary>An action's record as an enemy plans with it: see <see cref="FieldContent.Action"/>.</summary>
+public readonly record struct ActionRecord(int Id, int TargetKind, int CostKind, int Cost, int[] Range, int[] Area, int Recovery, int Flags, bool Projectile, ActionEffect[] Effects);

@@ -5,14 +5,19 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Wol.Games.Vagrant</RootNamespace>
     <AssemblyName>Vagrant</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WolEngineTarget Condition="'$(WolEngineTarget)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">windows-x64</WolEngineTarget>
+    <WolEngineTarget Condition="'$(WolEngineTarget)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">macos-universal</WolEngineTarget>
+    <WolEngineTarget Condition="'$(WolEngineTarget)' == ''">linux-x64</WolEngineTarget>
+    <WolEngineSdkRoot>$(MSBuildProjectDirectory)/addons/wol_engine/platforms/$(WolEngineTarget)</WolEngineSdkRoot>
+    <GodotApiConfiguration Condition="'$(Configuration)' == 'Release'">Release</GodotApiConfiguration>
   </PropertyGroup>
-  <ItemGroup>
-    <Compile Remove="addons/wol_engine/.godot/**/*.cs" />
-    <Compile Remove="addons/wol_engine/.dependencies/**/*.cs" />
-    <Compile Remove="addons/wol_engine/scripts/**/*.cs" />
-    <Compile Remove="addons/wol_engine/tests/**/*.cs" />
-    <Compile Remove="addons/wol_engine/obj/**/*.cs" />
-    <Compile Remove="addons/wol_engine/bin/**/*.cs" />
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' or '$(Configuration)' == 'ExportRelease'">
+    <AllowedReferenceRelatedFileExtensions>.dll.config</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Release' or '$(Configuration)' == 'ExportRelease'">
+    <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
-  <Import Project="addons/wol_engine/GodotApi.props" />
+  <Import Project="$(WolEngineSdkRoot)/WolEngine.props" />
+  <Import Project="$(WolEngineSdkRoot)/GodotApi.props" />
 </Project>

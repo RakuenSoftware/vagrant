@@ -69,6 +69,9 @@ public sealed class FieldPlayer
     /// <summary>Whether it plays its own walking, running, climbing and falling animations; a fighter's are the battle's.</summary>
     public bool Animates = true;
 
+    /// <summary>Whether walking turns it to its heading; an enemy's body turns by its own turn (BATTLE.PRG 0x800a6660).</summary>
+    public bool Turns = true;
+
     /// <summary>Whether she is moving under the player's input this frame.</summary>
     public bool Moving { get; private set; }
 
@@ -96,9 +99,10 @@ public sealed class FieldPlayer
 
     /// <summary>
     /// Advances one frame. <paramref name="heading"/> is the facing the input points to, or null with no input;
-    /// <paramref name="walk"/> holds her to walking pace; <paramref name="jump"/> is a fresh Square press.
+    /// <paramref name="walk"/> holds her to walking pace; <paramref name="jump"/> is a fresh Square press;
+    /// <paramref name="facing"/> is a facing to turn to other than the heading (an enemy facing its target as it goes).
     /// </summary>
-    public void Step(float? heading, bool walk, bool jump = false)
+    public void Step(float? heading, bool walk, bool jump = false, float? facing = null)
     {
         Moving = heading != null;
         float speed = (walk ? WalkSpeed : RunSpeed) * Pace;
@@ -116,14 +120,12 @@ public sealed class FieldPlayer
                 if (--_frames <= 0) Launch(0, Vector3.Zero);
                 return;
             case State.Air:
-                // A leap keeps its course to its point; a jump is steered by the stick.
-                if (_leaping) { }
-                else if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
+                if (heading is { } steer) { Face(steer); _velocity = Motion(steer, Math.Min(31, _jumpType == 1 ? WalkSpeed * Pace : speed)); }
                 else _velocity = Vector3.Zero;
                 StepAir();
                 return;
         }
-        if (heading is { } target) Face(target);
+        if (heading is { } target && Turns) Face(facing ?? target);
         if (jump)
         {
             if (heading is { } leap) { Launch(walk ? 1 : 2, Motion(leap, speed)); return; }
@@ -139,23 +141,6 @@ public sealed class FieldPlayer
         Settle();
         Animate(walk);
     }
-
-    /// <summary>
-    /// Leaps to a point (a hopping enemy's tile; BATTLE.PRG lands command 23 through the same air physics, 0x800ac980):
-    /// the jump's arc (up at 30, gravity 3 a frame), over as many frames as it takes to come down to the point's height,
-    /// and across at the pace that reaches it then (0x800a208c). Nothing while it is off the ground.
-    /// </summary>
-    public void Leap(Vector3 target)
-    {
-        if (_state != State.Ground) return;
-        int frames = 0;
-        float vertical = -30, y = _actor.Position.Y;
-        do { vertical += 3; y += vertical; frames++; } while (!(vertical > 0 && y >= target.Y) && frames < 120);
-        var across = (target - _actor.Position) with { Y = 0 };
-        Launch(1, across / frames);
-        _leaping = true;
-    }
-    private bool _leaping;
 
     private void Launch(int type, Vector3 velocity)
     {
@@ -180,12 +165,12 @@ public sealed class FieldPlayer
         _airVertical += 3;
         var position = _actor.Position;
         var next = position + _velocity;
-        if (_velocity != Vector3.Zero && !_leaping)
+        if (_velocity != Vector3.Zero)
         {
             float? ahead = _floor(next + _velocity.Normalized() * Radius);
             if (ahead is not { } floorAhead || position.Y - floorAhead > 32 && !_stairs(next))
             {
-                if (ahead is { } ledge && position.Y - ledge is > 32 and <= 255 && Climb(next, ledge)) return;
+                if (ahead is { } ledge && position.Y - ledge is > 32 and <= 255 && Climb(next, ledge, _velocity.Normalized())) return;
                 next = position;
             }
         }
@@ -195,7 +180,6 @@ public sealed class FieldPlayer
         if (phase != _airAnimation && phase > 0) { _airAnimation = phase; if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][phase]}", phase == 1 ? 16 : 8, once: true); }
         if (_airVertical > 0 && next.Y >= floor)
         {
-            _leaping = false;
             _actor.Position = next with { Y = floor };
             _state = State.Ground;
             if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][3]}", 8, once: true);
@@ -210,12 +194,11 @@ public sealed class FieldPlayer
     /// Starts climbing onto a ledge at <paramref name="ledge"/> ahead of <paramref name="at"/>: over 8 frames a 64-unit
     /// level for a climb (36, or 39 for the third level), or a grab and pull-up for the fourth (41, then 39).
     /// </summary>
-    private bool Climb(Vector3 at, float ledge)
+    private bool Climb(Vector3 at, float ledge, Vector3 direction)
     {
         float rise = _actor.Position.Y - ledge;
         if (rise > 256 || !Climbs) return false;
         int level = (int)Math.Ceiling(rise / 64);
-        var direction = _velocity != Vector3.Zero ? _velocity.Normalized() : new Vector3(-Mathf.Sin(_actor.Facing * Mathf.Tau / 4096f), 0, -Mathf.Cos(_actor.Facing * Mathf.Tau / 4096f));
         _climbFrom = _actor.Position;
         _climbTo = (at + direction * (Radius + 8)) with { Y = ledge };
         _climbTotal = _climbFrames = level >= 4 ? 28 : level * 8;
@@ -258,13 +241,15 @@ public sealed class FieldPlayer
     private void Move(Vector3 motion, float heading)
     {
         var position = _actor.Position;
-        var front = position + motion.Normalized() * (Radius + 4);
+        // The ground solver probes the proposed position (0x800a7818), as the air solver below does. Probing only
+        // the old position can leave the body blocked by a ledge before the climbing probe ever reaches it.
+        var front = position + motion + motion.Normalized() * (Radius + 4);
         if (_floor(front) is { } ahead)
         {
             float rise = position.Y - ahead;
             if (rise is > StepHeight and <= 256 && !_stairs(front))
             {
-                if (++_push >= 8 && Climb(position, ahead)) return;
+                if (++_push >= 8 && Climb(position, ahead, motion.Normalized())) return;
             }
             else _push = 0;
             float drop = ahead - position.Y;

@@ -14,8 +14,10 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// blended as each record says. Retail positions are map units (y down); particles keep 20.12 fixed point.
 /// </summary>
 /// <remarks>
-/// The PLG renderers are in FieldEffectRenderers.cs. Not yet followed: the common battle sounds and effect sequences, rumble, bystanders' colour shifts, camera moves,
-/// and the exact spline control points.
+/// The PLG renderers are in FieldEffectRenderers.cs. The timeline's tracks are BATTLE.PRG's (0x800D6AEC, its table at
+/// 0x80069B20): sounds and the effect's sequence, children, renderers, the pad's vibration, colour shifts, the sky, the
+/// actions of track 12 (their table at 0x80069AE0) and the camera's shake; its camera moves and anchor paths are
+/// retail's integer steps.
 /// </remarks>
 public sealed partial class FieldEffect : Node3D
 {
@@ -25,23 +27,32 @@ public sealed partial class FieldEffect : Node3D
         public EventActor? Actor;
         public Vector3 Point;
         public int Bone = -1;
+        /// <summary>Where each bone (or, at -1, the actor whole) was last seen, which an actor an event deletes leaves behind.</summary>
+        private readonly System.Collections.Generic.Dictionary<int, Vector3> _lastSeen = new();
 
         public Vector3 Position(int bone = -1)
         {
-            if (Actor == null) return Point;
             int b = bone >= 0 ? bone : Bone;
+            if (Actor == null) return Point;
+            // An actor an event deletes while its effect plays leaves the effect where it last stood.
+            if (!GodotObject.IsInstanceValid(Actor.Node)) return _lastSeen.TryGetValue(b, out var last) ? last : Point;
             // An actor taken whole stands at its root bone (the hips), which goes with it when it lies down (the dying
             // soldier of E232, MAP010); one without a skeleton, 150 above its feet.
-            return b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
+            return _lastSeen[b] = b >= 0 ? Actor.BonePosition(b) : Actor.Skeleton != null ? Actor.BonePosition(0) : Actor.Position + new Vector3(0, -150, 0);
         }
     }
 
     private sealed class Anchor
     {
-        public Vector3 Translation, From, To, Control;
+        public Vector3 Translation, From, To, Control1, Control2;
         // The anchor's turn: an actor's bone's (or its facing alone), which local particles are placed by.
         public Basis Basis = Basis.Identity;
-        public bool Path, Spline, Started;
+        /// <summary>
+        /// Whether its path is a spline, has started (runtime flag 4), has its end (flag 2; taken once unless the
+        /// record's flag 0x100 has it follow), has its spline's control points (flag 8, set once), and runs from its end
+        /// to its start (mode 0x80).
+        /// </summary>
+        public bool Path, Spline, Started, Aimed, Shaped, Reversed;
         public int Tick, Limit, Ease, Curve;
         /// <summary>The actor and bone it is placed on (the record's +52 and +53 in BATTLE.PRG), which a trail is drawn from.</summary>
         public EventActor? Actor;
@@ -115,8 +126,8 @@ public sealed partial class FieldEffect : Node3D
 
     public bool Finished { get; private set; }
 
-    /// <summary>The actor an event's effect is requested on (a0's actor), whose colours a shift on the source changes while the effect itself comes from the point (0, 0, 0).</summary>
-    public EventActor? Caster { get; init; }
+    /// <summary>The executable's tables (its sine), which the shake and the camera's moves read.</summary>
+    public required Runtime.FieldContent Content { get; init; }
 
     /// <summary>The character in an actor-table slot (0 is Ashley), for anchors on a fixed actor.</summary>
     public Func<int, EventActor?>? Slot { get; init; }
@@ -153,14 +164,36 @@ public sealed partial class FieldEffect : Node3D
     /// </summary>
     public Action<EventActor?, int, Vector3, int>? ColourShift;
 
-    private Instance? _focusInstance;
-    private int _focusAnchor;
+    /// <summary>
+    /// The camera as it stands: retail eye, look-at and projection distance. Read as the effect is requested, when
+    /// BATTLE.PRG (0x800CF0E8) keeps it to come back to (0x800F55A8), and as a camera move starts (0x800D1B18).
+    /// </summary>
+    public Func<(Vector3 Eye, Vector3 Target, float Projection)>? Camera
+    {
+        get => _camera;
+        init { _camera = value; if (value != null) _home = value(); }
+    }
+    private readonly Func<(Vector3 Eye, Vector3 Target, float Projection)>? _camera;
+    private (Vector3 Eye, Vector3 Target, float Projection) _home;
+    private (Vector3 Eye, Vector3 Target) _moveFrom, _moveTo;
+    private (Vector3 Eye, Vector3 Target)? _view;
+    private int _moveTick, _moveLength;
+    private bool _moveHome;
 
-    /// <summary>Where the effect has the camera look (track 12 action 13), until it gives it back (14) or ends.</summary>
-    public Vector3? Focus => _focusInstance != null && !Finished ? AnchorAt(_focusInstance, _focusAnchor) : null;
+    /// <summary>
+    /// The camera an effect's move has set (track 12 actions 13 and 14; BATTLE.PRG 0x800D2560, 0x800D1B80): its eye and
+    /// look-at, and the projection distance the effect started under, which the move's record keeps (its +56, set
+    /// by 0x8007CCF0). Retail's camera stays where a move leaves it; here the effect holds it until a move back
+    /// (14) has run or the effect ends. Null while no move has run.
+    /// </summary>
+    public (Vector3 Eye, Vector3 Target, float Projection)? View => _view is { } view && !Finished ? (view.Eye, view.Target, _home.Projection) : null;
 
-    /// <summary>Rumbles the pad by an envelope (its first value, 128 full).</summary>
-    public Action<int, int>? Rumble;
+    /// <summary>
+    /// Starts the pad's vibration (track 5; SLUS_010.40 0x800433B4 on any free channel, id 1): an envelope of block 11
+    /// as it stands, its first byte the offset of the large motor's (duration, level) pairs, the small motor's from
+    /// byte 1.
+    /// </summary>
+    public Action<byte[]>? Rumble;
 
     /// <summary>Plays an installed sound by its key, panned by where a retail point stands on the screen (none: centred).</summary>
     public Action<string, Vector3?>? Sound;
@@ -205,6 +238,7 @@ public sealed partial class FieldEffect : Node3D
     }
     private readonly ShakeChannel[] _shake = { new(), new(), new(), new() };
     private readonly List<int[]> _envelopes = new();
+    private readonly List<byte[]> _rumbles = new();
     /// <summary>Whom the effect's colour shifts changed, restored should it end before its own events restore them.</summary>
     private readonly HashSet<EventActor?> _shifted = new();
 
@@ -237,6 +271,7 @@ public sealed partial class FieldEffect : Node3D
         foreach (var e in data["emitters"].AsGodotArray()) _emitters.Add(Ints(e.AsGodotArray()));
         foreach (var c in data["curves"].AsGodotArray()) _curves.Add(Ints(c.AsGodotArray()));
         foreach (var envelope in data.GetValueOrDefault("envelopes", new GArray()).AsGodotArray()) _envelopes.Add(Ints(envelope.AsGodotArray()));
+        foreach (var rumble in data.GetValueOrDefault("rumbles", new GArray()).AsGodotArray()) _rumbles.Add(Array.ConvertAll(Ints(rumble.AsGodotArray()), b => (byte)b));
         var frames = data["frames"].AsGodotArray();
         _frames = new int[frames.Count][][];
         for (int t = 0; t < frames.Count; t++)
@@ -309,7 +344,6 @@ public sealed partial class FieldEffect : Node3D
     public void Clear()
     {
         _instances.Clear();
-        _focusInstance = null;
         Shake = Vector4.Zero;
         Scene?.DrawTriangles(_key, ReadOnlySpan<Wol.Engine.World.FieldTriangle>.Empty, FieldView.EffectLayer);
         if (!Armed) Finish();
@@ -330,7 +364,6 @@ public sealed partial class FieldEffect : Node3D
     public void Tick()
     {
         if (Finished || Idle) return;
-        StepShake();
         // A runaway effect stops after half a minute.
         if (++_ticks > 900) { Finish(); return; }
         foreach (var instance in _instances.ToArray())
@@ -341,6 +374,10 @@ public sealed partial class FieldEffect : Node3D
             Run(instance);
             instance.Frame++;
         }
+        // The camera follows the effects' tick (0x800CF060 calls 0x800D2560 after the effect manager): a move's step,
+        // then the shake.
+        StepCamera();
+        StepShake();
         _instances.RemoveAll(i => i.Ended && i.Particles.Count == 0 && i.Renderers.Count == 0);
         if (_instances.Count == 0)
         {
@@ -437,9 +474,12 @@ public sealed partial class FieldEffect : Node3D
     }
 
     /// <summary>
-    /// One timeline tick: each track fires its events whose frame has come. 1 fires an emitter once a tick, repeat
-    /// times, at its emission count; 3 starts a child per target (one each delay ticks), then one more; 12 action 5
-    /// starts an anchor's path and 6 pauses the clock. The others are not followed.
+    /// One timeline tick: each track fires its events whose frame has come (0x800D6AEC). 1 fires an emitter once a tick,
+    /// repeat times, at its emission count; 2 plays a sound; 3 starts a child per target (one each delay ticks), then
+    /// one more; 4 starts a renderer; 5 vibrates the pad; 6 to 9 shift colours; 10 the sky's; 11 does nothing in
+    /// retail (its table entry goes straight on); 12 is an action; 13 shakes the camera. Of track 12's actions, 12
+    /// (0x800D66CC: the map object at a point target, 0x8006CE70; effects 36 and 39) and 15 (0x800D6860: opens Ashley's
+    /// timing window in her battle state, 0x80069C6C) are the trap and the combat code's to follow.
     /// </summary>
     private void RunTimeline(Instance instance)
     {
@@ -478,10 +518,12 @@ public sealed partial class FieldEffect : Node3D
                 }
                 if (track.Type == 5 && Rumble != null)
                 {
-                    // Rumble (block 11's envelope n) when the caster, a target, or anyone is the player, or always (0).
-                    int value = e[0] | e[1] << 8, who = value >> 14;
-                    bool player = who switch { 1 => instance.Source.Actor?.Id == "slot:0", 2 => instance.Target.Actor?.Id == "slot:0", 3 => instance.Source.Actor?.Id == "slot:0" || _targets.Exists(t => t.Actor?.Id == "slot:0"), _ => true };
-                    if (player) Rumble((value >> 9) & 0x1F, Envelope((value >> 9) & 0x1F, 0) is var strength && strength > 0 ? strength : 128);
+                    // The pad's vibration (0x800D5E00) by block 11's envelope n (bits 9 to 13): always (bits 14 and
+                    // 15 at 0), or when Ashley (actor 0) is the instance's source (1), its target (2) or any of the
+                    // request's targets (3).
+                    int value = e[0] | e[1] << 8, who = value >> 14, envelope = (value >> 9) & 0x1F;
+                    bool player = who switch { 1 => instance.Source.Actor?.Id == "slot:0", 2 => instance.Target.Actor?.Id == "slot:0", 3 => _targets.Exists(t => t.Actor?.Id == "slot:0"), _ => true };
+                    if (player && envelope < _rumbles.Count) Rumble(_rumbles[envelope]);
                 }
                 if (track.Type == 4)
                 {
@@ -511,14 +553,15 @@ public sealed partial class FieldEffect : Node3D
                 }
                 if (track.Type == 2)
                 {
-                    // A sound (0x800d5904): bank 0 a resident one on the one-shot voices, 1 the effect's own (block
-                    // 12), 2 starts the effect's sound sequence (block 13). Placed (bits 20 and 21), it pans by where
-                    // its anchor (bits 22 to 27) stands on the screen; otherwise it is centred.
+                    // A sound (0x800d5904): bank 0 the battle's common sounds (the resident set, source 0x7E), 1 and 3
+                    // the effect's own (block 12, source 0xF00000), 2 starts the effect's sound sequence (block 13).
+                    // Placed (bits 20 and 21), it is played at its anchor's point (bits 22 to 27; 0x80045AA8), which
+                    // sets its pan and volume by where it stands on the screen; otherwise it is centred at full volume.
                     uint word = Word(e);
                     int id = (int)(word >> 9) & 0x1FF, bank = (int)(word >> 18) & 3;
                     Vector3? placed = ((word >> 20) & 3) != 0 ? AnchorAt(instance, (int)(word >> 22) & 0x3F) : null;
                     if (bank == 0) Sound?.Invoke($"effect_{id}_p128", placed);
-                    if (bank == 1) Sound?.Invoke($"fx{_data["id"].AsInt32():d3}_{id}_p128", placed);
+                    if (bank is 1 or 3) Sound?.Invoke($"fx{_data["id"].AsInt32():d3}_{id}_p128", placed);
                     if (bank == 2 && Sequence != null) { Sequence(_data["id"].AsInt32()); SequenceStarted = true; }
                 }
                 if (track.Type == 10 && SkyShift != null)
@@ -529,15 +572,22 @@ public sealed partial class FieldEffect : Node3D
                 }
                 if (track.Type is >= 6 and <= 9 && ColourShift != null)
                 {
-                    // A palette transform (BATTLE.PRG 0x800D5FF8, the call opcode 70 makes) on the source, each
-                    // target or the room: operation e[7], the fade (halfword 2, passed to the routine as it is) and
-                    // a change of r, g, b less 128 in 5-bit steps. Bystanders (8): every other character the request
-                    // lists (0x800D61AC), so Ashley takes the drain's purple in MAP010 as the dying soldier does.
+                    // A palette transform (opcode 70's call, 0x8007B29C; the room's 0x8007B1B8) by operation e[7], the
+                    // fade (halfword 2, passed to the routine as it is) and a change of r, g, b less 128 in 5-bit
+                    // steps. 6 (0x800D5F8C) shifts the instance's second entity, an actor's only: an event's effect
+                    // comes from a point, so nothing. 7 (0x800D6048) shifts every target the request lists when the
+                    // timeline starts children (its header's flag 2, set as a track of type 3 is loaded,
+                    // 0x800D55A4), else the instance's own target. 8 (0x800D61AC) shifts the request's bystanders:
+                    // an event's are every other character in the actor table (0x8007BE20). 9 the room.
                     int fade = e[2] | e[3] << 8, operation = e[7];
                     var change = new Vector3(e[4] - 128, e[5] - 128, e[6] - 128) / 31f;
                     var shifted = new List<EventActor?>();
-                    if (track.Type == 6) shifted.Add(instance.Source.Actor ?? Caster);
-                    if (track.Type == 7) foreach (var target in _targets) shifted.Add(target.Actor);
+                    if (track.Type == 6) shifted.Add(instance.Secondary.Actor);
+                    if (track.Type == 7)
+                    {
+                        if (instance.Timeline!.Exists(t => t.Type == 3)) foreach (var target in _targets) shifted.Add(target.Actor);
+                        else shifted.Add(instance.Target.Actor);
+                    }
                     if (track.Type == 9) shifted.Add(null);
                     if (track.Type == 8 && Bystanders != null) foreach (var other in Bystanders()) if (other != instance.Source.Actor && !_targets.Exists(t => t.Actor == other)) shifted.Add(other);
                     foreach (var actor in shifted)
@@ -555,8 +605,9 @@ public sealed partial class FieldEffect : Node3D
                     // 0 and 1 are the hit's moment on the target or the source (0x8006cb04, 0x8006ca20): what the action
                     // does lands then.
                     if (action is 0 or 1) Struck = true;
-                    // 9 stops an anchor's path (5's inverse).
-                    if (action == 9 && e[2] < 16 && instance.Anchors[e[2]] is { } stopped) stopped.Started = false;
+                    // 9 (0x800D65A8) has an anchor take its entity and its path's end again (clears its runtime flags 1
+                    // and 2); its path keeps running.
+                    if (action == 9 && e[2] < 16 && instance.Anchors[e[2]] is { } replaced) replaced.Aimed = false;
                     // 3 starts a weapon trail (0x800d6448) on the actor and bone of the anchor byte 2 names, in the style
                     // byte 3 gives; 4 ends every trail.
                     if (action == 3 && e[2] < 16 && instance.Anchors[e[2]] is { Actor: { } bearer } placed)
@@ -578,9 +629,17 @@ public sealed partial class FieldEffect : Node3D
                         _lastActorSound = sound;
                         ActorSound(instance.Secondary.Actor, sound);
                     }
-                    // 13 turns the camera to look at anchor a (over b ticks), 14 gives it back.
-                    if (action == 13) { _focusAnchor = e[2]; _focusInstance = instance; }
-                    if (action == 14) _focusInstance = null;
+                    // 13 (0x800D66FC) moves the camera's look-at to anchor e[2]'s point over e[3] ticks (0 is 1), the
+                    // eye staying; 14 (0x800D67C4) moves it back to where it stood as the effect was requested.
+                    if (action is 13 or 14 && _camera != null)
+                    {
+                        var live = _view ?? (_camera().Eye, _camera().Target);
+                        _moveFrom = (Whole(live.Eye), Whole(live.Target));
+                        _moveTo = action == 13 ? (_moveFrom.Eye, Whole(AnchorAt(instance, e[2]))) : (Whole(_home.Eye), Whole(_home.Target));
+                        _moveLength = Math.Max(1, e[3]);
+                        _moveTick = 0;
+                        _moveHome = action == 14;
+                    }
                 }
             }
         }
@@ -616,26 +675,61 @@ public sealed partial class FieldEffect : Node3D
         return time == 0 ? points[at + 1] : -1;
     }
 
+    /// <summary>
+    /// The shake's step (0x800D206C): each channel on reads its envelope at its age (a byte); past its end the channel
+    /// goes off and keeps its last value until no channel is on, when all are cleared. Its value is the executable's
+    /// sine of its phase (a byte, 32 a step) times the envelope and the gain over 256, in 4096ths of a map unit across,
+    /// up and toward the target, or over 2^20 a roll in 4096ths of a turn; its phase then steps by its speed and
+    /// jitter, each a value or a curve read at its age.
+    /// </summary>
     private void StepShake()
     {
-        var shake = Vector4.Zero;
         for (int c = 0; c < 4; c++)
         {
             var channel = _shake[c];
             if (!channel.On) continue;
             int v = Envelope(channel.Envelope, channel.Time);
             if (v < 0) { channel.On = false; continue; }
-            float value = Mathf.Sin(channel.Phase * 32 * Mathf.Tau / 4096f) * v * channel.Gain / 256f;
-            shake[c] = value;
-            channel.Phase += (channel.SpeedCurve ? Curve(channel.Speed, channel.Time) : channel.Speed) + JitterOf(channel);
-            channel.Time++;
+            int product = Content.Sin((channel.Phase & 0xFF) << 5) * v * channel.Gain;
+            _shakeValues[c] = c == 3 ? product >> 20 : product >> 8;
+            channel.Phase = (channel.Phase + (channel.SpeedCurve ? Curve(channel.Speed, channel.Time) : channel.Speed) + JitterOf(channel)) & 0xFF;
+            channel.Time = (channel.Time + 1) & 0xFF;
         }
+        if (!Array.Exists(_shake, channel => channel.On)) Array.Clear(_shakeValues);
+        var shake = new Vector4(_shakeValues[0] / 4096f, _shakeValues[1] / 4096f, _shakeValues[2] / 4096f, _shakeValues[3]);
         Shake = shake;
         MostShake = Math.Max(MostShake, Math.Max(Math.Abs(shake.X), Math.Abs(shake.Y)));
     }
 
     /// <summary>The largest shake across or up so far, for tests.</summary>
     public float MostShake { get; private set; }
+
+    private readonly int[] _shakeValues = new int[4];
+
+    /// <summary>
+    /// A camera move's step (0x800D2560, mode 2: 0x800D236C): the eye and look-at, each in whole map units, eased from
+    /// the move's start to its end by 4096 less the cosine of the tick over the move's length as a half turn (8192 the
+    /// whole way), one tick more than its length; then the move is over and the camera stays.
+    /// </summary>
+    private void StepCamera()
+    {
+        if (_moveLength == 0) return;
+        int w = 4096 - Content.Cos((_moveTick << 11) / _moveLength);
+        _view = (Ease(_moveFrom.Eye, _moveTo.Eye, w), Ease(_moveFrom.Target, _moveTo.Target, w));
+        if (++_moveTick <= _moveLength) return;
+        _moveTick = _moveLength = 0;
+        // Back where it stood, the camera is the game's again.
+        if (_moveHome) _view = null;
+    }
+
+    /// <summary>Retail's lerp of whole units by a weight over 8192, rounded toward zero (0x800D1678).</summary>
+    private static int Ease(int from, int to, int w) => from + (to - from) * w / 8192;
+
+    private static Vector3 Ease(Vector3 from, Vector3 to, int w) =>
+        new(Ease((int)from.X, (int)to.X, w), Ease((int)from.Y, (int)to.Y, w), Ease((int)from.Z, (int)to.Z, w));
+
+    /// <summary>A point in whole map units, as retail's 20.12 camera words shifted down (0x800D236C).</summary>
+    private static Vector3 Whole(Vector3 point) => new(Mathf.Floor(point.X), Mathf.Floor(point.Y), Mathf.Floor(point.Z));
 
     private static uint Word(int[] e) => (uint)(e[0] | e[1] << 8 | e[2] << 16 | e[3] << 24);
 
@@ -685,22 +779,118 @@ public sealed partial class FieldEffect : Node3D
         }
         anchor.From = at;
         anchor.Translation = at;
-        if ((flags & 0x80) != 0) anchor.To = Pick(instance, (flags >> 10) & 3).Position((flags & 0x200) != 0 ? -1 : definition["bone"].AsInt32());
+        Aim(instance, i);
         anchor.Path = ((flags >> 12) & 3) != 0;
         int packed = definition["packed"].AsInt32(), mode = definition["mode"].AsInt32();
         anchor.Limit = (packed & 0xFF) + 1;
         anchor.Ease = (mode >> 5) & 3;
         anchor.Curve = Ints(definition["curves"].AsGodotArray())[1];
-        // A spline bends through a control point off the line's middle by the control radius (32 a step, give or take
-        // its jitter), chosen once.
+        anchor.Reversed = (mode & 0x80) != 0;
         anchor.Spline = ((flags >> 12) & 3) == 2;
-        if (anchor.Spline && !anchor.Started)
+        if (anchor.Spline && !anchor.Shaped)
         {
-            float radius = ((packed >> 8) & 15) * 32 + Rand(-((packed >> 12) & 15) * 32, ((packed >> 12) & 15) * 32);
-            var side = new Vector3(Rand(-1, 1), -1, Rand(-1, 1)).Normalized();
-            anchor.Control = (anchor.From + anchor.To) / 2 + side * radius;
+            Shape(anchor, packed, definition["shape"].AsInt32());
+            anchor.Shaped = true;
         }
-        if ((definition["mode"].AsInt32() & 0x80) != 0) (anchor.From, anchor.To) = (anchor.To, anchor.From);
+        if (anchor.Path && (flags & 0x80) != 0) anchor.Translation = PathPoint(anchor);
+    }
+
+    /// <summary>
+    /// An anchor's path end (BATTLE.PRG 0x800D0D9C, record flag 0x80): the entity the flags' bits 10 and 11 pick, at
+    /// its middle (0x200) or the record's bone; taken once, again after track 12 action 9, or each tick with 0x100.
+    /// </summary>
+    private void Aim(Instance instance, int i)
+    {
+        var anchor = instance.Anchors[i];
+        int flags = _anchors[i].AsGodotDictionary()["flags"].AsInt32();
+        if ((flags & 0x80) == 0 || anchor.Aimed && (flags & 0x100) == 0) return;
+        anchor.To = Pick(instance, (flags >> 10) & 3).Position((flags & 0x200) != 0 ? -1 : _anchors[i].AsGodotDictionary()["bone"].AsInt32());
+        anchor.Aimed = true;
+    }
+
+    /// <summary>
+    /// A spline's two control points (0x800D05F4), chosen once from where it starts and ends (its ends swapped when it
+    /// runs back): in a frame whose z runs from start to end (0x8007AFA8: z the direction, x z across the up (0, -4096,
+    /// 0), y x across z), each stands at its radius (the packed field's bits 8 to 11 times 32, plus the executable's
+    /// rand modulo bits 12 to 15 times 32 when they are set) about the z axis, at its angle (the shape's bits 0 to 3
+    /// times 256, plus rand modulo bits 4 to 7 times 256), and along z at an eighth of the distance times the shape's
+    /// bits 8 to 11 less 8 for the first, and the distance plus that times bits 12 to 15 less 8 for the second.
+    /// </summary>
+    private void Shape(Anchor anchor, int packed, int shape)
+    {
+        Vector3 start = Truncated(anchor.Reversed ? anchor.To : anchor.From), end = Truncated(anchor.Reversed ? anchor.From : anchor.To);
+        var span = end - start;
+        int distance = (int)Math.Sqrt((double)span.X * span.X + (double)span.Y * span.Y + (double)span.Z * span.Z);
+        int along1 = (short)((((shape >> 8) & 15) - 8) * distance / 8), along2 = (short)((distance & 0xFFFF) + (((shape >> 12) & 15) - 8) * distance / 8);
+        int radius1 = (packed >> 3) & 0x1E0, radius2 = radius1, radiusJitter = (packed >> 12) << 5;
+        if ((packed & 0xF000) != 0) { radius1 += Rand() % radiusJitter; radius2 += Rand() % radiusJitter; }
+        int angle1 = (shape & 15) << 8, angle2 = angle1, angleJitter = (shape << 4) & 0xF00;
+        if ((shape & 0xF0) != 0) { angle1 += Rand() % angleJitter; angle2 += Rand() % angleJitter; }
+        var z = span.LengthSquared() > 0 ? span.Normalized() : Vector3.Zero;
+        var x = z.Cross(new Vector3(0, -1, 0));
+        x = x.LengthSquared() > 0 ? x.Normalized() : Vector3.Zero;
+        var y = x.Cross(z);
+        y = y.LengthSquared() > 0 ? y.Normalized() : Vector3.Zero;
+        Vector3 Placed(int angle, int radius, int along)
+        {
+            int across = (short)(Content.Cos(angle) * radius >> 12), up = (short)(Content.Sin(angle) * radius >> 12);
+            var point = start + x * across + y * up + z * along;
+            return new Vector3(Mathf.Floor(point.X), Mathf.Floor(point.Y), Mathf.Floor(point.Z));
+        }
+        anchor.Control1 = Placed(angle1, radius1, along1);
+        anchor.Control2 = Placed(angle2, radius2, along2);
+    }
+
+    /// <summary>The executable's rand (0x80026EC4): 0 to 32767.</summary>
+    private int Rand() => _random.RandiRange(0, 32767);
+
+    private static Vector3 Truncated(Vector3 point) => new((int)point.X, (int)point.Y, (int)point.Z);
+
+    /// <summary>
+    /// Where an anchor's path stands at its tick (0x800D0548), in whole map units. A line (0x800D01E4) eases from start
+    /// to end by a weight over 8192: the tick over the length (0), 4096 less the cosine of the tick over the length as
+    /// a half turn (1), or the anchor's curve (its byte 5 plus 1) at the tick times 64 (2). A spline (0x800D037C) runs
+    /// a cubic through start, the two control points and end at -4096, 0, 4096 and 8192 (0x800D1390), its parameter
+    /// three times the tick over the length less 4096 (0), 2048 less one and a half times the cosine (1), or the
+    /// curve times 96 less 4096 (2). No path on the disc uses mode 3, which leaves retail's weight unset.
+    /// </summary>
+    private Vector3 PathPoint(Anchor anchor)
+    {
+        Vector3 start = Truncated(anchor.Reversed ? anchor.To : anchor.From), end = Truncated(anchor.Reversed ? anchor.From : anchor.To);
+        if (anchor.Spline)
+        {
+            int u = anchor.Ease switch
+            {
+                1 => -Content.Cos((anchor.Tick << 11) / anchor.Limit) * 3 / 2 + 2048,
+                2 => Curve(anchor.Curve + 1, anchor.Tick) * 96 - 4096,
+                _ => (3 * anchor.Tick << 12) / anchor.Limit - 4096,
+            };
+            return new Vector3(Cubic((int)start.X, (int)anchor.Control1.X, (int)anchor.Control2.X, (int)end.X, u),
+                Cubic((int)start.Y, (int)anchor.Control1.Y, (int)anchor.Control2.Y, (int)end.Y, u),
+                Cubic((int)start.Z, (int)anchor.Control1.Z, (int)anchor.Control2.Z, (int)end.Z, u));
+        }
+        int w = anchor.Ease switch
+        {
+            1 => 4096 - Content.Cos((anchor.Tick << 11) / anchor.Limit),
+            2 => Curve(anchor.Curve + 1, anchor.Tick) << 6,
+            3 => 0,
+            _ => (anchor.Tick << 13) / anchor.Limit,
+        };
+        return Ease(start, end, w);
+    }
+
+    /// <summary>The cubic through four points at -4096, 0, 4096 and 8192 (0x800D1390), in retail's 32-bit integer steps.</summary>
+    private static int Cubic(int p0, int p1, int p2, int p3, int u)
+    {
+        unchecked
+        {
+            int t3 = -u, t2 = u - 4096, t1 = u + 4096, t0 = u - 8192;
+            int w0 = ((((t3 * t2) >> 12) * t0 >> 12) * 2730) >> 14;
+            int w1 = ((t1 * t2) >> 12) * t0 >> 13;
+            int w2 = ((t1 * t3) >> 12) * t0 >> 13;
+            int w3 = ((((t1 * u) >> 12) * t2 >> 12) * 2730) >> 14;
+            return (short)p0 * w0 + (short)p1 * w1 + (short)p2 * w2 + (short)p3 * w3 >> 12;
+        }
     }
 
     private void UpdateAnchors(Instance instance)
@@ -709,15 +899,11 @@ public sealed partial class FieldEffect : Node3D
         {
             if (instance.Anchors[i] is not { } anchor) continue;
             if (!anchor.Started) { PlaceAnchor(instance, i); continue; }
-            if (!anchor.Path) continue;
-            float t = Math.Min(1f, (float)anchor.Tick / anchor.Limit);
-            // Linear, eased, or along the anchor's path curve.
-            if (anchor.Ease == 1) t = t * t * (3 - 2 * t);
-            else if (anchor.Ease == 2 && anchor.Curve > 0) t = Curve(anchor.Curve, anchor.Tick) / 128f;
-            anchor.Translation = anchor.Spline
-                ? anchor.From * (1 - t) * (1 - t) + anchor.Control * 2 * (1 - t) * t + anchor.To * t * t
-                : anchor.From.Lerp(anchor.To, t);
-            anchor.Tick++;
+            Aim(instance, i);
+            if (!anchor.Path || (_anchors[i].AsGodotDictionary()["flags"].AsInt32() & 0x80) == 0) continue;
+            anchor.Translation = PathPoint(anchor);
+            // The tick stops one past the length (0x800D05AC).
+            if (anchor.Tick < anchor.Limit) anchor.Tick++;
         }
     }
 
@@ -994,7 +1180,11 @@ public sealed partial class FieldEffect : Node3D
                 Vector3 across = right, down = -up;
                 if ((p.Flags & (1 << 16)) != 0 && p.Velocity.LengthSquared() > 0)
                 {
-                    var ahead = camera.UnprojectPosition(EventActor.RetailSpace * (retail + p.Velocity / 4096f * 128)) - camera.UnprojectPosition(centre);
+                    // Use the same limited GTE projection as the drawn corners. Godot's unprojection divides
+                    // by zero when a sprite or its projected motion passes through the camera plane.
+                    float least = Math.Max(NearLimit, front / unit);
+                    var ahead = EventActor.GteProjection(eye * (EventActor.RetailSpace * (retail + p.Velocity / 4096f * 128)) / unit, Math.Max(1, Projection), least, front / unit).Screen
+                        - EventActor.GteProjection(eye * centre / unit, Math.Max(1, Projection), least, front / unit).Screen;
                     if (ahead.LengthSquared() > 0)
                     {
                         float angle = Mathf.Atan2(ahead.Y, ahead.X);

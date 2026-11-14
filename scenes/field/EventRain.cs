@@ -107,7 +107,7 @@ public sealed class EventRain
         float scale = Math.Clamp(_intensity * 6, 12, 90), speed = scale * 1.75f;
         float Unit(float a) => a * Mathf.Tau / 4096;
         var wind = new Vector3(Mathf.Sin(Unit(_yaw)) * Mathf.Cos(Unit(_pitch)), Mathf.Sin(Unit(_pitch)), -Mathf.Cos(Unit(_yaw)) * Mathf.Cos(Unit(_pitch))) * speed;
-        int active = _type == 0 ? 0 : Math.Clamp((int)(_intensity * 8), 4, _capacity);
+        int active = _type == 0 ? 0 : Math.Min(_capacity, Math.Max((int)(_intensity * 8), 4));
         for (int i = 0; i < active; i++)
         {
             if (_type == 4)
