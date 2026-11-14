@@ -1884,7 +1884,7 @@ public partial class FieldContracts : Node
         }
         // Kesch Bridge crosses the river by two isolated stones. Approach down the
         // northern bank, jump each gap, and land before walking onto the southern road.
-        if ((_view.Zone, _view.Map, _campaignDoor) == (32, 16, 1) && _campaignPuzzle < 9)
+        if ((_view.Zone, _view.Map) == (32, 16) && _campaignDoor is 1 or 2 && _campaignPuzzle < 9)
         {
             _campaignDoorAt = _frame;
             if (_campaignPuzzle >= 2 && ashley.Actor.Position.Z < 448 && ashley.Actor.Position.Y <= -576)
