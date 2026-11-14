@@ -1234,8 +1234,9 @@ public partial class FieldContracts : Node
         }
         var lateBoss = !(_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             && ((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23) && _view.Battle is { Ashley: { } bossRunner } bossBattle
-            ? bossBattle.Combatants.Values.FirstOrDefault(c => c.Targetable && c.Marked && c.MaxHp >= 300 && FieldBattle.Relation(c, bossRunner) == 3) : null;
-        int lateAffinity = lateBoss == null ? 0 : Enumerable.Range(0, 5).MinBy(i => lateBoss.Limbs.Where(l => l.MaxHp > 0 && l.ChainEvasion == lateBoss.Limbs.Where(p => p.MaxHp > 0).Min(p => p.ChainEvasion)).Min(l => l.Affinities[i]));
+            ? bossBattle.Combatants.Values.FirstOrDefault(c => c.Targetable && (c.Marked || c.Name == "Kali" || c.Name == "Last Crusader" && !_view.Spells.Contains(91) && _view.Items.GetValueOrDefault(429) == 0 || c.Name == "Minotaur Lord" && _view.Items.GetValueOrDefault(460) == 0) && c.MaxHp >= 300 && FieldBattle.Relation(c, bossRunner) == 3) : null;
+        var lateLimb = lateBoss?.Limbs.Where(l => l.MaxHp > 0).MinBy(l => l.ChainEvasion);
+        int lateAffinity = lateLimb == null ? 0 : Enumerable.Range(0, 5).MinBy(i => lateLimb.Affinities[i]);
         bool quarryTreasure = _view.Zone == 53 && _campaignLoot == (_view.Zone, _view.Map);
         bool quarryWater = (_view.Zone, _view.Map) == (53, 1);
         bool sparkSupply = _campaignLoot == (51, 5) && _campaignLootItem == 450 && (_view.Zone, _view.Map) is (51, 4) or (51, 5);
@@ -1336,7 +1337,7 @@ public partial class FieldContracts : Node
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
             if (!_campaignResting && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) or (53, 23) or (53, 29) ? 30 : 50)) && restBattle.HostileCount() > 0
-                && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
+                && new[] { 331, 332, 333, 334, 337, 338 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
                 _campaignRestPoint = (_view.Zone, _view.Map) == (40, 24) ? new Vector3(960, 0, 832) : restRunner.Actor.Position;
@@ -1345,6 +1346,7 @@ public partial class FieldContracts : Node
                     var away = new[] { new Vector3(320, 0, 320), new Vector3(_view.Zone == 31 ? 1216 : 1344, 0, 320),
                         new Vector3(_view.Zone == 31 ? 1216 : 1344, 0, _view.Zone == 30 ? 1728 : _view.Zone == 31 ? 2112 : 1984),
                         new Vector3(320, 0, _view.Zone == 30 ? 1728 : _view.Zone == 31 ? 2112 : 1984) }
+                        .Select(p => p with { Y = _view.FloorAt(p) ?? p.Y })
                         .Where(p => (p - restRunner.Actor.Position).Dot(lateBoss.Actor.Position - restRunner.Actor.Position) <= 0).ToArray();
                     if (away.Length > 0) _campaignRestPoint = away.MinBy(p => p.DistanceTo(restRunner.Actor.Position));
                 }
@@ -1378,7 +1380,8 @@ public partial class FieldContracts : Node
                     {
                         var corners = new[] { new Vector3(320, 0, 320), new Vector3(_view.Zone == 31 ? 1216 : 1344, 0, 320),
                         new Vector3(_view.Zone == 31 ? 1216 : 1344, 0, _view.Zone == 30 ? 1728 : _view.Zone == 31 ? 2112 : 1984),
-                        new Vector3(320, 0, _view.Zone == 30 ? 1728 : _view.Zone == 31 ? 2112 : 1984) };
+                        new Vector3(320, 0, _view.Zone == 30 ? 1728 : _view.Zone == 31 ? 2112 : 1984) }
+                            .Select(p => p with { Y = _view.FloorAt(p) ?? p.Y }).ToArray();
                         int at = Array.IndexOf(corners, _campaignRestPoint);
                         if (at >= 0) _campaignRestPoint = new[] { corners[(at + 1) % 4], corners[(at + 3) % 4] }.MaxBy(p =>
                         {
@@ -1409,7 +1412,7 @@ public partial class FieldContracts : Node
         int fusionSpell = lateBoss != null ? 65 + lateAffinity : quarryWater ? 67 : airFusion ? 66 : mineEarth ? 68 : grissomFight ? 67 : 69, fusionItem = lateBoss != null ? 448 + lateAffinity : quarryWater ? 450 : airFusion ? 449 : mineEarth ? 451 : grissomFight ? 450 : 452, fusionStatus = lateBoss != null ? 18 + lateAffinity : quarryWater ? 20 : airFusion ? 19 : mineEarth ? 21 : grissomFight ? 20 : 22;
         int guardSpell = earthDragon || mineElemental && !mineEarth ? 72 : grissomFight || mineEarth ? 70 : 71, guardItemId = guardSpell == 72 ? 455 : guardSpell == 70 ? 453 : 454, guardStatus = guardSpell == 72 ? 25 : guardSpell == 70 ? 23 : 24;
         bool fusionAvailable = (lateBoss == null || lateAffinity != 0) && (_view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0);
-        bool mineDebuff = (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+        bool mineDebuff = (!_campaignBypassEnemies || lateBoss != null) && (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
         if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff
@@ -1452,7 +1455,7 @@ public partial class FieldContracts : Node
                     : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
                     : guard && _view.Items.GetValueOrDefault(guardItem) > 0 ? new[] { guardItem }
                     : guard && patient.Mp < cost ? new[] { 327, 328, 329, 330, 335, 336 }
-                    : !life ? new[] { 331, 332, 333, 334 }
+                    : !life ? new[] { 331, 332, 333, 334, 337, 338 }
                     : _view.Spells.Contains(96) && patient.Mp < cost ? new[] { 327, 328, 329, 330, 335, 336, 323, 324, 325, 326, 337, 338 }
                     : new[] { 425, 323, 324, 325, 326, 335, 336, 337, 338 };
                 foreach (int item in choices)
@@ -1525,7 +1528,7 @@ public partial class FieldContracts : Node
                     }
                     break;
                 case 6:
-                    if (_view.MenuOpen) { Tap("ps_cross"); break; }
+                    if (_view.MenuOpen || healing.Paused) { Tap("ps_cross"); break; }
                     if (!healing.Busy && !healing.Paused && !_view.MenuOpen)
                     {
                         GD.Print(_campaignHealMagic ? $"CAMPAIGN: cast learned spell {_campaignHealSpell}, HP {recovering.Hp}/{recovering.MaxHp}, MP {recovering.Mp}"
@@ -1554,7 +1557,7 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
-        if (_campaignLoot == (_view.Zone, _view.Map) && (!(clearWesternPassage || quarryTreasure) || battle.HostileCount() == 0) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
+        if (_campaignLoot == (_view.Zone, _view.Map) && (!(clearWesternPassage || quarryTreasure || lateBoss != null) || battle.HostileCount() == 0) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
             .Select(v => v.AsGodotDictionary()).FirstOrDefault(c => (c["lock"].AsInt32() == 0 || c["lock"].AsInt32() == 2 && (_view.Spells.Contains(92) || _view.Items.GetValueOrDefault(446) > 0)) && _view.ChestContents(c).Count > 0) is { } treasure)
         {
             if (_campaignLootStart == 0) _campaignLootStart = _frame;
@@ -1709,7 +1712,7 @@ public partial class FieldContracts : Node
         // An introduction can arm a marked foe after this room was initially safe to cross.
         if (_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             _campaignBypassEnemies = true;
-        else if (battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
+        else if (lateBoss != null || battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
             _campaignBypassEnemies = false;
         if (sparkSupply && (_view.Zone, _view.Map) == (51, 4) && _view.Flags[1011] == 0) _campaignBypassEnemies = true;
         if (sparkSupply && (_view.Zone, _view.Map) == (51, 5) && _view.Flags[1011] != 0) _campaignBypassEnemies = false;
@@ -1789,7 +1792,7 @@ public partial class FieldContracts : Node
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             return;
         }
-        bool breakingStack = (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) is (13, 15, 0, 1) or (15, 8, 0, 1) or (50, 18, 1, 6) or (51, 28, 0, 3) or (53, 21, 0, 12);
+        bool breakingStack = (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) is (13, 15, 0, 1) or (15, 8, 0, 1) or (50, 18, 1, 6) or (51, 28, 0, 3) or (53, 21, 0, 12) || (_view.Zone, _view.Map) == (30, 2) && _campaignPuzzle is 4 or 14;
         if (battle.Busy && !(battle.Paused && breakingStack))
         { Steer(Vector2.Zero); return; }
         if (battle.Drawn && !breakingStack)
@@ -2239,6 +2242,252 @@ public partial class FieldContracts : Node
             if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
             float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // Cross the cleared Hall of Prayer along its northern gallery, keeping
+        // ahead of the ordinary Crusader that can return on a later room visit.
+        if ((_view.Zone,_view.Map)==(30,1) && _campaignDoor is 1 or 2 && _campaignBypassEnemies && _view.Spells.Contains(91) && _campaignPuzzle<3)
+        {
+            _campaignDoorAt=_frame;
+            if (_frame-_campaignPuzzleAt>1800) { Finish($"campaign: Hall of Prayer return {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            float near=_campaignDoor==2?1344:320, far=_campaignDoor==2?320:1344;
+            var point=new Vector3(_campaignPuzzle==0?near:far,0,_campaignPuzzle==2?832:320);
+            point.Y=_view.FloorAt(point)??0;
+            if (new Vector2(point.X-ashley.Actor.Position.X,point.Z-ashley.Actor.Position.Z).Length()<12 && Math.Abs(point.Y-ashley.Actor.Position.Y)<2)
+            { _campaignPuzzle++; _campaignPuzzleAt=_frame; Steer(Vector2.Zero); return; }
+            float turn=(ashley.Actor.FacingToward(point)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+            Steer(new Vector2(Mathf.Sin(turn),-Mathf.Cos(turn))); Input.ActionRelease("ps_r2"); return;
+        }
+        // With the Silver Key collected, return along the eastern passage and
+        // jump the entrance chasm from its right-hand edge.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (30, 2, 0) && _view.Items.GetValueOrDefault(460)>0 && _campaignPuzzle<5)
+        {
+            _campaignDoorAt=_frame;
+            if (_frame-_campaignPuzzleAt>1800) { Finish($"campaign: Silver return step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point=_campaignPuzzle switch
+            {
+                0 => new Vector3(1472,-256,2112), 1 => new Vector3(1472,-384,320),
+                2 => new Vector3(960,-384,192), 3 => new Vector3(903,-384,192), _ => new Vector3(320,-384,192),
+            };
+            bool landed=_view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor-ashley.Actor.Position.Y)<2;
+            if (new Vector2(point.X-ashley.Actor.Position.X,point.Z-ashley.Actor.Position.Z).Length()<(_campaignPuzzle==3?5:12)
+                && Math.Abs(point.Y-ashley.Actor.Position.Y)<2 && landed)
+            { GD.Print($"CAMPAIGN: Silver return step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt=_frame; _campaignBoarding=false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle==4 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (_frame-_campaignPuzzleAt>=45 && landed && _press==0) { Tap("ps_square"); _campaignBoarding=true; _campaignHallAt=_frame; }
+                return;
+            }
+            if (_campaignPuzzle==4 && _frame-_campaignHallAt<4) { Steer(Vector2.Zero); return; }
+            float turn=(ashley.Actor.FacingToward(point)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+            Steer(new Vector2(Mathf.Sin(turn),-Mathf.Cos(turn)));
+            if (_campaignPuzzle==4) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // Those who Drink the Dark: use the three upper crates to feed two
+        // supports into the lower corridor, then bridge the tall crate back to its raised side.
+        if ((_view.Zone, _view.Map) == (30, 2) && _campaignDoor is 1 or 2 && _view.Flags[287] == 0 && _campaignPuzzle < 44)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400)
+            { Finish($"campaign: Drink the Dark step {_campaignPuzzle} stalled at {ashley.Actor.Position}; blocks {string.Join(';', _view.Crates)}"); return; }
+            var moves = new (string Id,int X,int Z,int Dx,int Dz,int Fx,int Fz)[]
+            {
+                ("55",9,11,0,1,-1,-1),
+                ("51",8,8,0,0,9,8),
+                ("50",8,6,0,-1,-1,-1),
+                ("54",9,5,0,1,8,3),
+                ("54",10,5,1,0,8,4),
+                ("53",8,6,-1,0,11,6),
+                ("53",8,5,0,-1,9,7),
+                ("53",8,4,0,-1,-1,-1),
+                ("53",8,3,0,-1,-1,-1),
+                ("53",8,2,0,-1,-1,-1),
+                ("53",9,2,1,0,8,2),
+                ("50",8,6,0,0,9,6),
+                ("53",9,3,0,1,-1,-1),
+                ("53",9,4,0,1,-1,-1),
+                ("53",9,5,0,1,-1,-1),
+                ("52",10,6,1,0,-1,-1),
+                ("54",10,6,0,1,-1,-1),
+                ("54",10,7,0,1,-1,-1),
+                ("53",10,5,1,0,10,5),
+                ("52",9,6,-1,0,-1,-1),
+                ("54",10,8,0,1,-1,-1),
+                ("52",10,6,1,0,10,6),
+                ("53",10,6,0,1,9,4),
+                ("54",10,9,0,1,-1,-1),
+                ("53",10,7,0,1,-1,-1),
+                ("52",11,6,1,0,-1,-1),
+                ("54",10,10,0,1,-1,-1),
+                ("53",10,8,0,1,-1,-1),
+                ("54",10,11,0,1,-1,-1),
+                ("53",10,9,0,1,-1,-1),
+                ("54",10,12,0,1,-1,-1),
+                ("53",10,10,0,1,-1,-1),
+                ("53",10,11,0,1,-1,-1),
+                ("55",10,11,1,0,8,10),
+                ("55",10,12,0,1,9,10),
+                ("55",9,12,-1,0,11,11),
+                ("55",9,13,0,1,10,11),
+                ("55",9,14,0,1,-1,-1),
+                ("55",9,15,0,1,-1,-1),
+            };
+            if (_campaignPuzzle is >= 3 and < 42)
+            {
+                var move = moves[_campaignPuzzle-3];
+                bool breaking = move.Dx == 0 && move.Dz == 0;
+                bool exists = _view.Crates.Any(c => c.Id == move.Id);
+                if (breaking && !exists)
+                {
+                    Steer(Vector2.Zero);
+                    if (battle.Paused || !battle.Busy && battle.Drawn) { Tap("ps_cross"); return; }
+                    if (battle.Busy || _view.CrateObjects.Any(c => !c.Resting)) return;
+                    GD.Print($"CAMPAIGN: Drink the Dark step {_campaignPuzzle} broke {move.Id}");
+                    _campaignPuzzle++; _campaignPuzzleAt=_frame; _campaignBoarding=false; _campaignMinePerch=0; _campaignCubePicks=0; return;
+                }
+                var block = _view.Crates.First(c => c.Id == move.Id);
+                if (!breaking && block.X == move.X && block.Z == move.Z)
+                {
+                    Steer(Vector2.Zero); if (_frame-_campaignHallAt<60) return;
+                    GD.Print($"CAMPAIGN: Drink the Dark step {_campaignPuzzle} pushed {move.Id} to {move.X},{move.Z}");
+                    _campaignPuzzle++; _campaignPuzzleAt=_frame; _campaignBoarding=false; _campaignMinePerch=0; return;
+                }
+                var stand = breaking ? new Vector3(move.Fx*128+64,0,move.Fz*128+64)
+                    : new Vector3((block.X-move.Dx)*128+64,0,(block.Z-move.Dz)*128+64);
+                stand.Y=_view.FloorAt(stand)??0;
+                var point = !breaking && move.Fx>=0 && _campaignMinePerch==0 ? new Vector3(move.Fx*128+64,0,move.Fz*128+64) : stand;
+                point.Y=_view.FloorAt(point)??0;
+                bool reached=new Vector2(point.X-ashley.Actor.Position.X,point.Z-ashley.Actor.Position.Z).Length()<12 && Math.Abs(point.Y-ashley.Actor.Position.Y)<2;
+                if (reached && !breaking && move.Fx>=0 && _campaignMinePerch==0)
+                { _campaignMinePerch=1; Steer(Vector2.Zero); return; }
+                if (breaking && reached)
+                {
+                    Steer(Vector2.Zero);
+                    if (_press==0)
+                    {
+                        if (battle.Paused)
+                        {
+                            if (battle.SphereTarget is { Cube:true } target && target.Actor.Id==move.Id) { Tap("ps_circle"); _campaignCubePicks=0; }
+                            else if (++_campaignCubePicks>8) { Tap("ps_cross"); _campaignCubePicks=0; }
+                            else Tap("ps_right");
+                        }
+                        else if (!battle.Busy && _frame%20==0) Tap("ps_circle");
+                    }
+                    return;
+                }
+                if (!breaking && reached && !_campaignBoarding) { _campaignBoarding=true; _campaignHallAt=_frame; }
+                if (_campaignBoarding)
+                {
+                    float face=(ashley.Actor.FacingToward(stand+new Vector3(move.Dx*128,0,move.Dz*128))-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+                    Steer(_frame-_campaignHallAt<4 ? new Vector2(Mathf.Sin(face),-Mathf.Cos(face)) : Vector2.Zero);
+                    Input.ActionPress("ps_r2");
+                    if (_frame-_campaignHallAt>=24 && (_frame-_campaignHallAt)%30==24 && _press==0) Tap("ps_cross");
+                    return;
+                }
+                if (battle.Paused || !battle.Busy && battle.Drawn) { Steer(Vector2.Zero); Tap("ps_cross"); return; }
+                if (battle.Busy) { Steer(Vector2.Zero); return; }
+                var path = _campaignPuzzle == 3 ? _view.Path(ashley.Actor.Position,point,256) : new List<Vector3>();
+                while (path.Count>1 && new Vector2(path[0].X-ashley.Actor.Position.X,path[0].Z-ashley.Actor.Position.Z).Length()<16) path.RemoveAt(0);
+                var next=path.Count>0?path[0]:point;
+                float turn=(ashley.Actor.FacingToward(next)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+                Steer(new Vector2(Mathf.Sin(turn),-Mathf.Cos(turn))); Input.ActionPress("ps_r2"); return;
+            }
+            var targetPoint = _campaignPuzzle switch
+            {
+                0 => new Vector3(320,-384,192), 1 => new Vector3(380,-384,192), 2 => new Vector3(960,-384,192),
+                42 => new Vector3(1216,-512,1984), _ => new Vector3(1216,-896,2368),
+            };
+            bool landed=_view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor-ashley.Actor.Position.Y)<2;
+            if (new Vector2(targetPoint.X-ashley.Actor.Position.X,targetPoint.Z-ashley.Actor.Position.Z).Length()<(_campaignPuzzle==1?5:12)
+                && Math.Abs(targetPoint.Y-ashley.Actor.Position.Y)<2 && landed)
+            { GD.Print($"CAMPAIGN: Drink the Dark step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt=_frame; _campaignBoarding=false; _campaignMinePerch=0; Steer(Vector2.Zero); return; }
+            bool jump=_campaignPuzzle is 2 or 43;
+            if (jump && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (_frame-_campaignPuzzleAt>=45 && landed && _press==0) { Tap("ps_square"); _campaignBoarding=true; _campaignHallAt=_frame; }
+                return;
+            }
+            if (jump && _frame-_campaignHallAt<4) { Steer(Vector2.Zero); return; }
+            float heading=(ashley.Actor.FacingToward(targetPoint)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+            Steer(new Vector2(Mathf.Sin(heading),-Mathf.Cos(heading)));
+            if (jump) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // The Resentful Ones: stop the sliding block with the numbered stones,
+        // bridge the first rise, then move the high crate between two lower supports.
+        if ((_view.Zone, _view.Map) == (30, 4) && _campaignDoor is 1 or 2 && _view.Flags[287] == 0 && _campaignPuzzle < 33)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400)
+            { Finish($"campaign: Resentful step {_campaignPuzzle} stalled at {ashley.Actor.Position}; blocks {string.Join(';',_view.Crates)}"); return; }
+            var pushes = new (string Id,int X,int Z,int Dx,int Dz,int Fx,int Fz)[]
+            {
+                ("49",4,6,0,1,-1,-1), ("49",4,7,0,1,-1,-1), ("49",3,7,-1,0,5,6),
+                ("48",3,4,0,1,4,2), ("48",4,4,1,0,2,3), ("48",4,3,0,-1,3,5),
+                ("47",3,3,1,0,1,4), ("47",3,6,0,1,2,2), ("47",8,6,1,0,2,3), ("51",8,6,0,1,3,4),
+                ("55",16,11,-1,0,18,10), ("57",16,11,1,0,-1,-1), ("56",15,12,0,1,-1,-1),
+                ("56",16,12,1,0,14,11), ("57",16,12,0,1,15,10), ("55",17,11,1,0,-1,-1),
+                ("55",17,12,0,1,16,10), ("57",17,12,1,0,15,11), ("56",16,13,0,1,-1,-1),
+                ("56",17,13,1,0,15,12), ("57",17,13,0,1,16,11), ("55",18,12,1,0,-1,-1),
+                ("55",18,13,0,1,17,11), ("57",18,13,1,0,16,12), ("56",17,14,0,1,-1,-1),
+                ("56",18,14,1,0,16,13), ("57",18,14,0,1,17,12),
+            };
+            int pushAt = _campaignPuzzle < 10 ? _campaignPuzzle : _campaignPuzzle is >= 13 and < 30 ? _campaignPuzzle - 3 : -1;
+            if (pushAt >= 0)
+            {
+                var push = pushes[pushAt]; var block = _view.Crates.First(c => c.Id == push.Id);
+                if (block.X == push.X && block.Z == push.Z)
+                {
+                    Steer(Vector2.Zero); if (_frame - _campaignHallAt < 60) return;
+                    GD.Print($"CAMPAIGN: Resentful step {_campaignPuzzle} pushed {push.Id} to {push.X},{push.Z}");
+                    _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; _campaignMinePerch = 0; return;
+                }
+                var stand = new Vector3((block.X - push.Dx)*128+64,0,(block.Z - push.Dz)*128+64);
+                stand.Y = _view.FloorAt(stand) ?? 0;
+                var point = push.Fx >= 0 && _campaignMinePerch == 0 ? new Vector3(push.Fx*128+64,0,push.Fz*128+64) : stand;
+                point.Y = _view.FloorAt(point) ?? 0;
+                bool reached = new Vector2(point.X-ashley.Actor.Position.X,point.Z-ashley.Actor.Position.Z).Length() < 12
+                    && Math.Abs(point.Y-ashley.Actor.Position.Y) < 2;
+                if (reached && push.Fx >= 0 && _campaignMinePerch == 0)
+                { _campaignMinePerch = 1; Steer(Vector2.Zero); return; }
+                if (reached && !_campaignBoarding) { _campaignBoarding = true; _campaignHallAt = _frame; }
+                if (_campaignBoarding)
+                {
+                    float face = (ashley.Actor.FacingToward(stand+new Vector3(push.Dx*128,0,push.Dz*128))-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+                    Steer(_frame-_campaignHallAt < 4 ? new Vector2(Mathf.Sin(face),-Mathf.Cos(face)) : Vector2.Zero);
+                    Input.ActionPress("ps_r2");
+                    if (_frame-_campaignHallAt >= 24 && (_frame-_campaignHallAt)%30 == 24 && _press == 0) Tap("ps_cross");
+                    return;
+                }
+                var path = _campaignPuzzle is 0 or 13 ? _view.Path(ashley.Actor.Position,point,256) : new List<Vector3>();
+                while (path.Count > 1 && new Vector2(path[0].X-ashley.Actor.Position.X,path[0].Z-ashley.Actor.Position.Z).Length()<16) path.RemoveAt(0);
+                var next = path.Count > 0 ? path[0] : point;
+                float turn = (ashley.Actor.FacingToward(next)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+                Steer(new Vector2(Mathf.Sin(turn),-Mathf.Cos(turn))); Input.ActionPress("ps_r2"); return;
+            }
+            var target = _campaignPuzzle switch
+            {
+                10 => new Vector3(1088,-256,832), 11 => new Vector3(1088,-256,888), 12 => new Vector3(1088,-576,1216),
+                30 => new Vector3(2368,-256,1856), 31 => new Vector3(2368,-256,1860), _ => new Vector3(2368,-576,1984),
+            };
+            bool onFloor = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor-ashley.Actor.Position.Y)<2;
+            if (new Vector2(target.X-ashley.Actor.Position.X,target.Z-ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 11 or 31 ? 5 : 12)
+                && Math.Abs(target.Y-ashley.Actor.Position.Y)<2 && onFloor)
+            { GD.Print($"CAMPAIGN: Resentful step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt=_frame; _campaignBoarding=false; _campaignMinePerch=0; Steer(Vector2.Zero); return; }
+            bool jumping = _campaignPuzzle is 12 or 32;
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (_frame-_campaignPuzzleAt >= 45 && onFloor && _press == 0) { Tap("ps_square"); _campaignBoarding=true; _campaignHallAt=_frame; }
+                return;
+            }
+            if (jumping && _frame-_campaignHallAt<4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(target)-_view.Gameplay.Yaw)*Mathf.Tau/4096;
+            Steer(new Vector2(Mathf.Sin(heading),-Mathf.Cos(heading)));
             if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
             return;
         }

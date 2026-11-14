@@ -3709,7 +3709,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Cross at a crate in front of Ashley, its base no more than 128 below her and 64 above. A crate (kinds 0 to 3)
+    /// Cross at a crate in front of Ashley, its base no more than 128 above her and 64 below. A crate (kinds 0 to 3)
     /// is pushed one tile on, if the tile beyond is free and no higher than its base, and she steps after it; kinds 0
     /// and 1 roll onto their next face as they go, kind 3 slides on while the next tile is level and free, and the
     /// breaking crate (1) breaks after its set number of moves. A block (kinds 4 to 6) is lifted onto her head, and
