@@ -659,6 +659,8 @@ public partial class FieldContracts : Node
             GD.Print($"CAMPAIGN: blocks on entry {string.Join(';', _view.CrateObjects.Select(c => $"{c.Id}:{c.X},{c.Z},{c.Bottom}"))}; flag 0 {_view.Flags[0]}");
             Capture($"campaign_{_campaignRooms:d4}_{_view.Zone:d3}_{_view.Map:d2}");
         }
+        if (!_view.Controlled && _frame % 600 == 0)
+            GD.Print($"CAMPAIGN: scene {_view.Zone},{_view.Map}, node {_view.EventNode}, {_view.WaitingOn}");
         if (_view.Battle?.GameOver == true) { Finish($"campaign: Ashley fell in {_view.Zone},{_view.Map} after {_campaignRooms} room entries"); return; }
         // A defeated enemy can open the gadget bag during recovery. Collect its actual drops before menu navigation.
         if (_view.MenuOpen && _view.MenuPage == 11)
@@ -1058,13 +1060,13 @@ public partial class FieldContracts : Node
             var (dx, dz) = (facing / 1024) switch { 0 => (0, 1), 1 => (1, 0), 2 => (0, -1), _ => (-1, 0) };
             var point = new Vector3((chestTile[0].AsInt32() + dx) * 128 + 64, 0, (chestTile[1].AsInt32() + dz) * 128 + 64);
             point.Y = _view.FloorAt(point) ?? ashley.Actor.Position.Y;
-            if ((_view.Zone, _view.Map) == (50, 14) && _campaignPuzzle == 0)
+            if ((_view.Zone, _view.Map) is (50, 10) or (50, 14) && _campaignPuzzle == 0)
             {
                 point = new Vector3(832, 0, 960);
                 if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
                 { _campaignPuzzle = 1; Steer(Vector2.Zero); return; }
             }
-            if (((_view.Zone, _view.Map) != (50, 14) || _campaignPuzzle > 0) && (_campaignLootAt > 0 || new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16))
+            if (((_view.Zone, _view.Map) is not ((50, 10) or (50, 14)) || _campaignPuzzle > 0) && (_campaignLootAt > 0 || new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16))
             {
                 if (_campaignLootAt == 0) _campaignLootAt = _frame;
                 float turn = (facing - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
