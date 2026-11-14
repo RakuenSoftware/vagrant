@@ -48,6 +48,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/container_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/pit_contracts.tscn -- --install-root=/path/to/installation
+# Cloudstone height limit and a running ledge grab across Revelation Shaft.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/platform_contracts.tscn -- --install-root=/path/to/installation
 # Isolated earthquake scene: enemy-only actor flags must leave Ashley's animation running.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=50,20 --flag=1:1 --flag=130:34 --flag=187:13 --flag=200:20 --play=event_z050_m20_l0
 # SETUP's Repair: YES/NO, Cross cancellation, all carried equipment, PP cost, accessories and storage.
@@ -71,6 +73,7 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # This diagnostic save uses the real serializer; it does not test the save-point menu.
 # --campaign-route=ZONE,MAP/ZONE,MAP/... supplies ordered doors, including timed corridors.
 # --campaign-use=ID,ID,... consumes those already-owned items through ITEMS before continuing.
+# --campaign-store uses the workshop container for spare weapons/armour; --campaign-rest waits for native HP/MP recovery.
 # --campaign-repair uses SETUP's Repair at a workshop; --campaign-save-ui uses DATA's SAVE at a magic circle.
 # --campaign-loot=ZONE,MAP approaches its chest, using an owned Unlock if needed; --campaign-loot-item=ID stops after that item.
 # --campaign-item=ID makes the checkpoint require that owned item and allows surviving enemies there.
