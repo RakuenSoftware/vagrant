@@ -1,3 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Preserve the hashes of vendored files on every checkout, including Windows.
 /addons/wol_engine/** -text
+
+/tools/*.sh text eol=lf

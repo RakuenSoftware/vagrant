@@ -2,7 +2,7 @@
 
 # Desktop distribution
 
-Vagrant includes the compiled wol-engine dependency in Git at
+Project Vagrant includes the compiled wol-engine dependency in Git at
 `addons/wol_engine`. This is an ordinary vendored directory, not a submodule.
 A fresh clone contains the managed DLLs, native libraries, matching Godot API
 DLLs and runtime resources for all three desktop targets. CI does not download
@@ -94,8 +94,38 @@ checksum, native hashes and game dirty state, plus a SHA-256 sidecar. These are
 provenance checks, not a bit-for-bit reproducibility claim.
 
 No retail assets, disc images, BIOS, installed files or decoded caches are
-bundled. A verified owned US disc is required. Vagrant remains AGPL-3.0-only;
-its game source is publicly downloadable. FFmpeg and ffprobe remain external
-first-install dependencies on PATH. macOS packages are ad-hoc signed and need
+bundled. A verified owned US disc is required. Project Vagrant remains AGPL-3.0-only;
+its game source is publicly downloadable. FFmpeg and ffprobe are bundled with
+matching source and notices. macOS packages are ad-hoc signed and need
 Developer ID signing/notarization for public friction-free downloads. Credentials
 stay outside Git. Linux CI builds on Ubuntu 22.04 for host-library compatibility.
+
+The display name is Project Vagrant. Archives use `ProjectVagrant-<version>-<target>.zip`;
+Linux and Windows launchers are `ProjectVagrant.x86_64` and `ProjectVagrant.exe`,
+and the macOS application is `Project Vagrant.app`. The original user-data directory
+and macOS bundle identifier are retained so existing installations, saves and
+preferences remain available after upgrading. Internal C# assembly names remain stable.
+
+## Bundled media conversion
+
+Each native CI runner builds FFmpeg 9.0.2, libogg 1.3.6, libvorbis 1.3.7 and
+libtheora 1.2.0 from the exact source archives pinned by SHA-256 in
+`distribution/media-sources.json`. `tools/build_media.sh` owns their compiler
+configuration. GPL, nonfree, networking and unrelated codecs are disabled;
+FFmpeg is LGPL-2.1-or-later and the Xiph libraries retain their BSD-style licences.
+Windows uses MSYS2's MinGW compiler with static runtime linkage; macOS builds
+Intel and Apple Silicon executables and combines them with lipo.
+
+`ffmpeg` and `ffprobe` live in `media/` beside the player executable, including
+inside `Contents/MacOS/` in the macOS app. The app is re-signed after adding them.
+The installer resolves this location first; only development/editor sessions may
+fall back to PATH. Packaged child processes run with PATH cleared. Native CI
+verifies that both game-input decoders are present and actually encodes synthetic
+Theora video/stereo Vorbis audio, then probes the result. No game files are used.
+
+Every release also provides `ProjectVagrant-media-sources.zip` with all four
+original source tarballs, their digest manifest, the exact build scripts and
+instructions. Tool licences and configuration are included in `media/licenses/`,
+and `media/MEDIA.json` records source and binary hashes. The separate media-source
+archive contains no engine implementation or retail game data. Rebuild just the
+tools with `python tools/release.py <native-target> --media-only --output <dir>`.

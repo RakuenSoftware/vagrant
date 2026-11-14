@@ -32,6 +32,10 @@ public partial class Startup : Control
             try
             {
                 if (OS.HasFeature("editor")) throw new InvalidOperationException("Verify the exported executable, not the editor.");
+                string legacyData = System.IO.Path.Combine(OS.GetDataDir(), OperatingSystem.IsLinux() ? "godot" : "Godot", "app_userdata", "Vagrant");
+                if (!System.IO.Path.GetFullPath(OS.GetUserDataDir()).Equals(System.IO.Path.GetFullPath(legacyData),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                    throw new InvalidOperationException("The renamed player must retain existing installations, saves and preferences.");
                 if (!ClassDB.ClassExists("NativePs1AudioSandbox")) throw new InvalidOperationException("The compiled engine audio runtime is missing.");
                 if (typeof(Wol.Engine.World.FieldScene).Assembly == typeof(Startup).Assembly)
                     throw new InvalidOperationException("The engine must be a separately compiled binary dependency.");
@@ -72,6 +76,8 @@ public partial class Startup : Control
                             throw new InvalidOperationException("Retail disc content/signature in player: " + path);
                     }
                 }
+                RetailInstallation.VerifyMediaTools();
+                GD.Print("MEDIA_TOOLS_OK: bundled video/audio conversion and probe work with no PATH dependencies");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
                 GetTree().Quit();
             }
@@ -126,7 +132,7 @@ public partial class Startup : Control
         centre.AddChild(column);
         column.AddChild(new Label
         {
-            Text = "Vagrant — unofficial Vagrant Story runtime",
+            Text = "Project Vagrant — unofficial Vagrant Story runtime",
             HorizontalAlignment = HorizontalAlignment.Center,
         });
         column.AddChild(new Label

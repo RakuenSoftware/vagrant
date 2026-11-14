@@ -13,6 +13,10 @@ on:
   push:
     tags: ['v*']
 
+concurrency:
+  group: desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -44,17 +48,26 @@ jobs:
           dotnet-version: '10.0.403'
       - name: Install Linux desktop runtime dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon0 libxcursor1 libxinerama1 libxi6 libgl1 build-essential pkg-config
+      - name: Install Windows media compiler
+        id: msys2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: make pkgconf diffutils mingw-w64-x86_64-gcc
       - name: Build, audit and verify the player using binary engine dependencies
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         shell: bash
         run: python tools/release.py "$TARGET" --version "$BUILD_VERSION"
       - name: Upload player archives only
         uses: actions/upload-artifact@v4
         with:
-          name: Vagrant-${{ matrix.target }}
+          name: ProjectVagrant-${{ matrix.target }}
           path: |
-            dist/Vagrant-*.zip
-            dist/Vagrant-*.zip.sha256
+            dist/ProjectVagrant-*.zip
+            dist/ProjectVagrant-*.zip.sha256
           if-no-files-found: error
           retention-days: 14
   release:
@@ -80,4 +93,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" release-dist/*.zip release-dist/*.zip.sha256 --verify-tag --prerelease --title "Vagrant $RELEASE_TAG — unofficial runtime preview" --notes-file distribution/RELEASE-NOTES.txt
+          gh release create "$RELEASE_TAG" release-dist/*.zip release-dist/*.zip.sha256 --verify-tag --prerelease --title "Project Vagrant $RELEASE_TAG — unofficial runtime preview" --notes-file distribution/RELEASE-NOTES.txt

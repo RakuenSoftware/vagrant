@@ -1,6 +1,6 @@
 SPDX-License-Identifier: AGPL-3.0-only
 
-Preview of Vagrant, an independent, unofficial Vagrant Story runtime.
+Preview of Project Vagrant, an independent, unofficial Vagrant Story runtime.
 Not affiliated with or endorsed by Square Enix. Original game content and
 branding belong to their respective rights holders.
 
@@ -13,10 +13,12 @@ You must supply your own US Vagrant Story disc (SLUS-01040) as BIN/CUE. Installa
 verifies its files locally. No retail game assets, disc images, BIOS, original-game fonts, music, movies,
 dialogue, manual or installed-disc cache are supplied in these packages.
 
-FFmpeg and ffprobe are external first-install dependencies and must be on PATH.
+FFmpeg and ffprobe are bundled; no separate installation or PATH configuration is needed.
+The matching FFmpeg/Xiph source and build instructions are in the adjacent
+ProjectVagrant-media-sources.zip download.
 macOS previews are ad-hoc signed and are not notarized. This is preview software;
 visual fidelity and retail parity remain subject to the limitations in the README.
 
-Vagrant code remains AGPL-3.0-only. Third-party software retains its own licences.
+Project Vagrant code remains AGPL-3.0-only. Third-party software retains its own licences.
 That licence does not grant rights to the original game's content. Requiring an
 owned disc is not a legal clearance or a guarantee against third-party complaints.

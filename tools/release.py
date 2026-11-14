@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import urllib.request
 import zipfile
 
@@ -17,9 +19,9 @@ import zipfile
 class DesktopRelease:
     VERSION = "4.7.2"
     TARGETS = {
-        "linux-x64": ("Linux x86_64", "linux", "x86_64", "Vagrant.x86_64"),
-        "windows-x64": ("Windows x86_64", "windows", "x86_64", "Vagrant.exe"),
-        "macos-universal": ("macOS Universal", "macos", "universal", "Vagrant.app"),
+        "linux-x64": ("Linux x86_64", "linux", "x86_64", "ProjectVagrant.x86_64"),
+        "windows-x64": ("Windows x86_64", "windows", "x86_64", "ProjectVagrant.exe"),
+        "macos-universal": ("macOS Universal", "macos", "universal", "Project Vagrant.app"),
     }
 
     def __init__(self, args):
@@ -179,6 +181,71 @@ class DesktopRelease:
         (self.root / ".godot/extension_list.cfg").write_text("res://addons/wol_engine/native/spatial.gdextension\n")
         return editor, api
 
+    def bundle_media(self, output):
+        host = {"Linux": "linux-x64", "Windows": "windows-x64", "Darwin": "macos-universal"}[platform.system()]
+        if host != self.args.target:
+            raise RuntimeError("Build media tools on their native CI runner.")
+        output.mkdir(parents=True, exist_ok=True)
+        sources = json.loads((self.root / "distribution/media-sources.json").read_text())["sources"]
+        downloaded = []
+        media_cache = self.cache / "media-sources"
+        media_cache.mkdir(exist_ok=True)
+        for name, source in sources.items():
+            filename = source["url"].rsplit("/", 1)[1]
+            archive = media_cache / filename
+            supplied = self.root / "sources" / filename
+            if supplied.is_file():
+                archive = supplied
+            elif not archive.is_file():
+                partial = archive.with_suffix(".download")
+                urllib.request.urlretrieve(source["url"], partial)
+                partial.replace(archive)
+            with archive.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != source["sha256"]:
+                    raise RuntimeError("Media source checksum mismatch: " + name)
+            downloaded.append((name, archive))
+        with tempfile.TemporaryDirectory(prefix="media-build-", dir=self.cache) as temporary:
+            work = Path(temporary)
+            for name, archive in downloaded:
+                with tarfile.open(archive) as packed:
+                    packed.extractall(work / "sources", filter="data")
+                if not (work / "sources" / name / "configure").is_file():
+                    raise RuntimeError("Missing media configure script: " + name)
+            bash = (Path(os.environ.get("MSYS2_ROOT") or "C:/msys64") / "usr/bin/bash.exe").as_posix() if platform.system() == "Windows" else "bash"
+            command = [bash, (self.root / "tools/build_media.sh").as_posix(), self.args.target, work.as_posix(), output.as_posix()]
+            print("+", " ".join(command), flush=True)
+            subprocess.run(command, check=True, env={**os.environ, "MSYSTEM": "MINGW64"})
+            notices = output / "licenses"
+            notices.mkdir(exist_ok=True)
+            for name, _ in downloaded:
+                for original in (work / "sources" / name).iterdir():
+                    if original.is_file() and (original.name.startswith("COPYING") or original.name in ("LICENSE", "LICENSE.md", "AUTHORS")):
+                        shutil.copy2(original, notices / (name + "-" + original.name + ".txt"))
+            shutil.copy2(self.root / "distribution/MEDIA-NOTICES.txt", notices / "MEDIA-NOTICES.txt")
+        suffix = ".exe" if platform.system() == "Windows" else ""
+        manifest = {"target": self.args.target, "sources": sources, "files": {}}
+        for tool in ("ffmpeg", "ffprobe"):
+            executable = output / (tool + suffix)
+            executable.chmod(executable.stat().st_mode | 0o111)
+            manifest["files"][executable.name] = hashlib.sha256(executable.read_bytes()).hexdigest()
+            configuration = subprocess.check_output([str(executable), "-buildconf"], stderr=subprocess.STDOUT, text=True)
+            if "--disable-gpl" not in configuration or "--disable-nonfree" not in configuration:
+                raise RuntimeError("Unexpected media tool licence configuration")
+            (notices / (tool + "-buildconf.txt")).write_text(configuration, encoding="utf-8", newline="\n")
+        (output / "MEDIA.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        # Host the exact corresponding source next to the binaries, once per release.
+        if self.args.target == "linux-x64":
+            source_zip = self.root / "dist/ProjectVagrant-media-sources.zip"
+            source_zip.parent.mkdir(exist_ok=True)
+            with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED) as packed:
+                for _, archive in downloaded:
+                    packed.write(archive, "sources/" + archive.name)
+                for name in ("LICENSE", "tools/release.py", "tools/build_media.sh", "distribution/media-sources.json", "distribution/MEDIA-NOTICES.txt"):
+                    packed.write(self.root / name, name)
+            source_zip.with_suffix(".zip.sha256").write_text(
+                hashlib.sha256(source_zip.read_bytes()).hexdigest() + "  " + source_zip.name + "\n",
+                encoding="utf-8", newline="\n")
+
     def audit(self, output):
         # Inspect loose files as well as the PCK, whose contents the exported player checks below.
         retail = json.loads((self.root / "installation/retail_digests.json").read_text())
@@ -257,6 +324,11 @@ class DesktopRelease:
             self.run("dotnet", "build", stage / "Vagrant.csproj", "-c", "ExportRelease", "--nologo")
             self.run(editor, "--headless", "--editor", "--import", "--path", stage, "--quit")
             self.run(editor, "--headless", "--path", stage, "--export-release", self.preset, output / self.executable)
+        media = output / ("Project Vagrant.app/Contents/MacOS/media" if self.native_platform == "macos" else "media")
+        self.bundle_media(media)
+        if self.native_platform == "macos":
+            self.run("codesign", "--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", output / self.executable)
+            self.run("codesign", "--verify", "--deep", "--strict", output / self.executable)
         self.audit(output)
         shutil.copy2(self.root / "LICENSE", output / "LICENSE")
         shutil.copy2(self.root / "distribution/README.txt", output / "README.txt")
@@ -298,15 +370,16 @@ class DesktopRelease:
         if host == self.args.target:
             executable = output / self.executable
             if platform.system() == "Darwin":
-                executable = executable / "Contents/MacOS/Vagrant"
+                with (executable / "Contents/Info.plist").open("rb") as info:
+                    executable = executable / "Contents/MacOS" / plistlib.load(info)["CFBundleExecutable"]
             executable.chmod(executable.stat().st_mode | 0o111)
             with tempfile.TemporaryDirectory(prefix="vagrant-no-disc-") as empty:
                 self.run(executable, "--headless", "--", "--verify-package", "--install-root=" + empty, cwd=output)
-        archive = output.parent / f"Vagrant-{version}-{self.args.target}.zip"
+        archive = output.parent / f"ProjectVagrant-{version}-{self.args.target}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as packed:
             for file in sorted(output.rglob("*")):
                 if file.is_file():
-                    packed.write(file, Path("Vagrant") / file.relative_to(output))
+                    packed.write(file, Path("ProjectVagrant") / file.relative_to(output))
         archive.with_suffix(".zip.sha256").write_text(
             hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n",
             encoding="utf-8", newline="\n")
@@ -319,6 +392,7 @@ if __name__ == "__main__":
     parser.add_argument("--version", default="development")
     parser.add_argument("--output")
     parser.add_argument("--vendor-runtime", nargs=3, metavar="SDK_ZIP", help="Vendor three upstream release SDKs; this maintainer operation is never run by CI")
+    parser.add_argument("--media-only", action="store_true", help="Build only the bundled FFmpeg/ffprobe tools from pinned sources")
     parser.add_argument("--prepare", action="store_true", help="Prepare the public editor/templates against vendored API binaries for development")
     parser.add_argument("--audit", type=Path, help="Audit an existing player directory without building")
     args = parser.parse_args()
@@ -327,6 +401,8 @@ if __name__ == "__main__":
         release.vendor()
     elif not args.target:
         parser.error("a desktop target is required")
+    elif args.media_only:
+        release.bundle_media(Path(args.output or "dist/media").resolve())
     elif args.prepare:
         editor, _ = release.prepare()
         print("QUALIFIED_EDITOR:", editor)

@@ -1,0 +1,28 @@
+SPDX-License-Identifier: AGPL-3.0-only
+
+Project Vagrant includes the ffmpeg and ffprobe command-line programs from FFmpeg
+(https://ffmpeg.org/), built under GNU LGPL version 2.1 or later. GPL and nonfree
+components are disabled. These programs run as separate processes; the game does
+not link to FFmpeg libraries.
+
+The media tools also include libogg, libvorbis and libtheora from Xiph.Org, under
+their respective BSD-style licences. Full upstream notices and FFmpeg's licence
+texts accompany the tools in media/licenses/ beside the player executable.
+Windows also includes MinGW runtime notices and the GCC Runtime Library Exception
+in media/licenses/toolchain/. Compiler packages are identified in the adjacent
+toolchain-package-versions.txt file.
+
+The exact unmodified source releases, SHA-256 manifest and build instructions are
+provided in ProjectVagrant-media-sources.zip alongside each release's player ZIPs:
+https://github.com/RakuenSoftware/vagrant/releases
+The source archive includes the original sources for every linked Xiph library.
+The binaries' configure options are recorded by `ffmpeg -buildconf` and in the
+build script. No game disc data is part of the media tools or their source bundle.
+
+To rebuild from the source archive, extract it and run:
+  python tools/release.py linux-x64 --media-only --output /absolute/output/path
+On Windows use windows-x64 with MSYS2 at C:/msys64 (or set MSYS2_ROOT), installing
+make, pkgconf,
+diffutils and mingw-w64-x86_64-gcc. Linux needs a C compiler, make and pkg-config.
+macOS needs Xcode command-line tools and pkg-config; macos-universal builds both
+Intel and Apple Silicon executables. Python 3.12 or later is required.
