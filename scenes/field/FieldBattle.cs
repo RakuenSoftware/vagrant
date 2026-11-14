@@ -3310,10 +3310,10 @@ public sealed partial class FieldBattle
             _flash = 0;
             return;
         }
-        // The chosen part's own hit points, and the chance to hit it.
+        // The estimated damage and chance to hit the chosen part (the manual's target readout).
         // Its chance is the attack's preview (BATTLE.PRG 0x8008631c, unvaried; without Ashley's hidden 10).
-        int odds = Resolve(1, Ashley, Request(_view.Content.Field.Action(1), who, limb), live: false).Targets[0].Chance;
-        string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { limb >= 0 && limb < who.Limbs.Count ? who.Limbs[limb].Hp : who.Hp, odds });
+        var preview = Resolve(1, Ashley, Request(_view.Content.Field.Action(1), who, limb), live: false).Targets[0];
+        string hp = SystemBox.Fill(text["hit_points"].AsGodotDictionary(), numbers: new[] { preview.Hp, preview.Chance });
         // A single blow (kind 1), its blade's damage type (1 blunt, 2 edged, 3 piercing), its affinity, the target's
         // class, in the information box.
         _view.SystemBox.Open(4, 0);
