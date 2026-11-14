@@ -20,6 +20,7 @@ obj/
 
 # Player release archives and private export staging
 /dist/
+/.engine-runtime/
 /release-work/
 
 # Python release tooling cache

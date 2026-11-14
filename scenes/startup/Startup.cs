@@ -33,6 +33,8 @@ public partial class Startup : Control
             {
                 if (OS.HasFeature("editor")) throw new InvalidOperationException("Verify the exported executable, not the editor.");
                 if (!ClassDB.ClassExists("NativePs1AudioSandbox")) throw new InvalidOperationException("The compiled engine audio runtime is missing.");
+                if (typeof(Wol.Engine.World.FieldScene).Assembly == typeof(Startup).Assembly)
+                    throw new InvalidOperationException("The engine must be a separately compiled binary dependency.");
                 foreach (var type in typeof(Startup).Assembly.GetTypes())
                     if (type.Namespace == "Wol.Games.Vagrant.Tests") throw new InvalidOperationException("Test code was compiled into the player.");
                 var directories = new System.Collections.Generic.Stack<string>();

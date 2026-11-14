@@ -70,34 +70,38 @@ class DesktopRelease:
 
     def prepare(self):
         host = platform.system()
-        if self.native_platform == "macos" and host != "Darwin":
-            raise RuntimeError("Build the universal native macOS runtime on a macOS runner.")
-        if self.args.godot:
-            editor = Path(self.args.godot).resolve()
-        else:
-            slug = {"Linux": "linux_x86_64", "Windows": "win64", "Darwin": "macos.universal"}[host]
-            directory = self.cache / ("editor-" + slug)
-            if not directory.exists():
-                self.unzip(self.download(f"Godot_v{self.VERSION}-stable_mono_{slug}.zip"), directory)
-            if host == "Darwin":
-                editor = next(directory.rglob("Contents/MacOS/Godot"))
-            elif host == "Windows":
-                editor = next(directory.rglob("*mono_win64.exe"))
-            else:
-                editor = next(directory.rglob("*mono_linux.x86_64"))
-            editor.chmod(editor.stat().st_mode | 0o111)
-        if not self.args.skip_native:
-            command = [self.args.scons_python, "-m", "SCons", "-C", self.engine,
-                       "game_root=../..", f"platform={self.native_platform}", f"arch={self.arch}",
-                       "target=template_release", "precision=single", f"godot_editor={editor}", "-j4"]
-            if host != "Windows" and self.native_platform == "windows":
-                command.append("use_mingw=yes")
-            self.run(*command)
+        expected = subprocess.check_output(["git", "rev-parse", "HEAD:addons/wol_engine"], cwd=self.root, text=True).strip()
+        archive = Path(self.args.engine_package).resolve()
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        sidecar = archive.with_suffix(".zip.sha256")
+        if not sidecar.is_file() or sidecar.read_text().split()[0] != digest:
+            raise RuntimeError("The engine package SHA-256 sidecar is missing or mismatched.")
+        self.engine = self.cache / "runtime" / digest
+        if not self.engine.exists():
+            with tempfile.TemporaryDirectory(prefix="wol-sdk-", dir=self.cache) as temp:
+                stage = Path(temp)
+                with zipfile.ZipFile(archive) as packed:
+                    for entry in packed.infolist():
+                        if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                            raise RuntimeError("Symlinks are not allowed in the engine SDK")
+                self.unzip(archive, stage)
+                manifest = json.loads((stage / "RUNTIME.json").read_text())
+                expected_files = set(manifest["files"]) | {"RUNTIME.json"}
+                actual_files = {p.relative_to(stage).as_posix() for p in stage.rglob("*") if p.is_file()}
+                if actual_files != expected_files:
+                    raise RuntimeError("Engine package file list does not match its manifest")
+                for name, checksum in manifest["files"].items():
+                    file = stage / name
+                    if hashlib.sha256(file.read_bytes()).hexdigest() != checksum:
+                        raise RuntimeError("Engine package file checksum mismatch: " + name)
+                self.engine.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(stage, self.engine)
+        self.runtime = json.loads((self.engine / "RUNTIME.json").read_text())
+        if self.runtime["commit"] != expected or self.runtime["target"] != self.args.target or self.runtime["godot"] != self.VERSION:
+            raise RuntimeError("The engine SDK does not match the pinned commit, target and Godot version")
+        editor = self.engine / self.runtime["editor"]
+        editor.chmod(editor.stat().st_mode | 0o111)
         api = self.engine / ".dependencies/godot-api"
-        profile = json.loads((api / "qualified.json").read_text())
-        editor = Path(profile["executable"])
-        if not editor.is_file():
-            raise RuntimeError("The qualified editor profile is stale; rebuild the engine.")
         if host == "Windows":
             templates = Path(os.environ["APPDATA"]) / "Godot/export_templates"
         elif host == "Darwin":
@@ -119,10 +123,12 @@ class DesktopRelease:
                 raise RuntimeError("Source, symbols or disc image in player: " + str(file))
             if file.is_file() and any(p in ("disc", "test-results", ".git", ".dependencies") for p in file.relative_to(output).parts):
                 raise RuntimeError("Private/development data in player: " + str(file))
-        expected = hashlib.sha256((self.engine / ".dependencies/godot-api/api/Release/GodotSharp.dll").read_bytes()).hexdigest()
-        apis = list(output.rglob("GodotSharp.dll"))
-        if not apis or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected for p in apis):
-            raise RuntimeError("The player did not retain the qualified Release GodotSharp API.")
+        for name, source in (("GodotSharp.dll", ".dependencies/godot-api/api/Release/GodotSharp.dll"),
+                             ("WolEngine.dll", "managed/Release/WolEngine.dll")):
+            expected = hashlib.sha256((self.engine / source).read_bytes()).hexdigest()
+            libraries = list(output.rglob(name))
+            if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected for p in libraries):
+                raise RuntimeError("The player did not retain the pinned Release library: " + name)
 
     def build(self):
         editor, api = self.prepare()
@@ -144,14 +150,18 @@ class DesktopRelease:
                     shutil.copy2(source, stage / name)
             addon = stage / "addons/wol_engine"
             shutil.copytree(self.engine / "runtime", addon / "runtime")
-            shutil.copy2(self.engine / "GodotApi.props", addon / "GodotApi.props")
+            sdk = stage / ".engine-runtime"
+            sdk.mkdir()
+            shutil.copy2(self.engine / "GodotApi.props", sdk / "GodotApi.props")
+            shutil.copy2(self.engine / "WolEngine.props", sdk / "WolEngine.props")
+            shutil.copytree(self.engine / "managed", sdk / "managed")
             (addon / "native/bin").mkdir(parents=True)
             shutil.copy2(self.engine / "native/spatial.gdextension", addon / "native/spatial.gdextension")
             for binary in (self.engine / "native/bin").iterdir():
                 if binary.suffix in (".so", ".dll", ".dylib"):
                     shutil.copy2(binary, addon / "native/bin" / binary.name)
             for configuration in ("Debug", "Release"):
-                destination = addon / ".dependencies/godot-api/api" / configuration
+                destination = sdk / ".dependencies/godot-api/api" / configuration
                 destination.mkdir(parents=True)
                 for dll in (api / "api" / configuration).glob("*.dll"):
                     shutil.copy2(dll, destination / dll.name)
@@ -176,8 +186,8 @@ class DesktopRelease:
         notices.mkdir()
         for source in (self.root / "distribution").glob("GODOT-*.txt"):
             shutil.copy2(source, notices / source.name)
-        shutil.copy2(self.engine / "native/THIRD_PARTY_NOTICES.txt", notices / "WOL-THIRD-PARTY-NOTICES.txt")
-        shutil.copy2(self.engine / "native/src/ps1_spu/LICENSE", notices / "PS1-SPU-LICENSE.txt")
+        shutil.copy2(self.engine / "licenses/WOL-THIRD-PARTY-NOTICES.txt", notices / "WOL-THIRD-PARTY-NOTICES.txt")
+        shutil.copy2(self.engine / "licenses/PS1-SPU-LICENSE.txt", notices / "PS1-SPU-LICENSE.txt")
         # The self-contained .NET runtime is distributed under its own MIT/third-party notices.
         nuget = Path(os.environ.get("NUGET_PACKAGES", Path.home() / ".nuget/packages"))
         runtime_notices = 0
@@ -199,10 +209,10 @@ class DesktopRelease:
         manifest = {
             "version": version, "target": self.args.target,
             "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip(),
-            "engine_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.engine, text=True).strip(),
+            "engine_commit": self.runtime["commit"],
             "godot": self.VERSION, "native_sha256": native,
             "game_worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain", "--ignore-submodules=all"], cwd=self.root)),
-            "engine_worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=self.engine)),
+            "engine_package_sha256": hashlib.sha256(Path(self.args.engine_package).read_bytes()).hexdigest(),
             "disc_content_included": False, "engine_source_included": False,
         }
         (output / "BUILD.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -228,13 +238,12 @@ if __name__ == "__main__":
     parser.add_argument("target", choices=DesktopRelease.TARGETS)
     parser.add_argument("--version", default="development")
     parser.add_argument("--output")
-    parser.add_argument("--godot", help="Original .NET editor; the engine qualifies its matching API before export")
-    parser.add_argument("--scons-python", default=sys.executable)
-    parser.add_argument("--skip-native", action="store_true", help="Use already-built native libraries and qualified API")
+    parser.add_argument("--engine-package", required=True, help="Versioned binary SDK ZIP and adjacent .sha256 from wol-engine CI")
     parser.add_argument("--audit", type=Path, help="Audit an existing player directory without building")
     args = parser.parse_args()
     release = DesktopRelease(args)
     if args.audit:
+        release.prepare()
         release.audit(args.audit.resolve())
         print("PACKAGE_FILES_OK")
     else:

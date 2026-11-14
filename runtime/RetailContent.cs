@@ -17,6 +17,9 @@ namespace Wol.Games.Vagrant.Runtime;
 /// </summary>
 public partial class RetailContent : Node
 {
+    // Register the separately compiled engine before Godot creates its autoloads.
+    static RetailContent() => Godot.Bridge.ScriptManagerBridge.LookupScriptsInAssembly(typeof(Wol.Engine.SceneManager).Assembly);
+
     public const string DefaultRoot = "user://vagrant-story";
 
     public string Root { get; private set; } = "";

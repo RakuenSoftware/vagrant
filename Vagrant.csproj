@@ -6,6 +6,7 @@
     <RootNamespace>Wol.Games.Vagrant</RootNamespace>
     <AssemblyName>Vagrant</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WolEngineSdkRoot Condition="'$(WolEngineSdkRoot)' == ''">$(MSBuildProjectDirectory)/.engine-runtime</WolEngineSdkRoot>
     <GodotApiConfiguration Condition="'$(Configuration)' == 'Release'">Release</GodotApiConfiguration>
   </PropertyGroup>
   <ItemGroup>
@@ -22,5 +23,6 @@
   <ItemGroup Condition="'$(Configuration)' == 'Release' or '$(Configuration)' == 'ExportRelease'">
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
-  <Import Project="addons/wol_engine/GodotApi.props" />
+  <Import Project="$(WolEngineSdkRoot)/WolEngine.props" />
+  <Import Project="$(WolEngineSdkRoot)/GodotApi.props" />
 </Project>

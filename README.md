@@ -29,15 +29,21 @@ FFmpeg/ffprobe remain required for first-time disc conversion.
 
 ## Build
 
-Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the game decodes the opening movie and ending XA music with them into its cache).
+Use the pinned wol-engine **binary SDK release**, Python 3.12+ and .NET SDK
+10.0.403. The SDK includes the matching qualified Godot 4.7.2 editor/API binaries.
+No engine source checkout, SCons or C++ compiler is needed for Vagrant builds.
 
 ```sh
-git submodule update --init --recursive
-python -m SCons -C addons/wol_engine game_root=../.. platform=linux target=template_release arch=x86_64 precision=single -j8
-dotnet build
-godot-dotnet --headless --editor --import --path . --quit
-godot-dotnet --path .
+python tools/release.py linux-x64 --version development \
+  --engine-package /path/to/wol-engine-<commit>-linux-x64.zip
 ```
+
+Build Windows and universal macOS players on their native CI runners. See
+[the binary release contract](docs/DISTRIBUTION.md) for filenames, pinning and
+CI setup. The `godot-dotnet` commands below refer to the SDK's qualified editor.
+For direct development builds, set `WolEngineSdkRoot` to the extracted SDK path;
+keep its runtime resources at `addons/wol_engine/runtime` and its native manifest
+and library at `addons/wol_engine/native`.
 
 To install headlessly from a disc image: `godot-dotnet --headless --path . -- --install-disc=/path/to/disc.cue`. `--install-root=DIR` selects another installation directory (default `user://vagrant-story`).
 

@@ -11,13 +11,13 @@ config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
 [autoload]
 
+RetailContent="*res://runtime/RetailContent.cs"
 DisplaySettings="*res://addons/wol_engine/runtime/display/DisplaySettings.cs"
 SceneManager="*res://addons/wol_engine/runtime/SceneManager.cs"
 InputBindings="*res://addons/wol_engine/runtime/controls/InputBindings.cs"
 AudioSettings="*res://runtime/AudioSettings.cs"
 CharacterQuality="*res://runtime/CharacterQuality.cs"
 FieldLighting="*res://runtime/FieldLighting.cs"
-RetailContent="*res://runtime/RetailContent.cs"
 
 [display]
 
