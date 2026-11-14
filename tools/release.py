@@ -211,7 +211,7 @@ class DesktopRelease:
                     packed.extractall(work / "sources", filter="data")
                 if not (work / "sources" / name / "configure").is_file():
                     raise RuntimeError("Missing media configure script: " + name)
-            bash = "C:/msys64/usr/bin/bash.exe" if platform.system() == "Windows" else "bash"
+            bash = (Path(os.environ.get("MSYS2_ROOT") or "C:/msys64") / "usr/bin/bash.exe").as_posix() if platform.system() == "Windows" else "bash"
             command = [bash, (self.root / "tools/build_media.sh").as_posix(), self.args.target, work.as_posix(), output.as_posix()]
             print("+", " ".join(command), flush=True)
             subprocess.run(command, check=True, env={**os.environ, "MSYSTEM": "MINGW64"})

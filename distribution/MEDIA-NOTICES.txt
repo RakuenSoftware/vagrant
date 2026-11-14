@@ -21,7 +21,8 @@ build script. No game disc data is part of the media tools or their source bundl
 
 To rebuild from the source archive, extract it and run:
   python tools/release.py linux-x64 --media-only --output /absolute/output/path
-On Windows use windows-x64 with MSYS2 at C:/msys64, installing make, pkgconf,
+On Windows use windows-x64 with MSYS2 at C:/msys64 (or set MSYS2_ROOT), installing
+make, pkgconf,
 diffutils and mingw-w64-x86_64-gcc. Linux needs a C compiler, make and pkg-config.
 macOS needs Xcode command-line tools and pkg-config; macos-universal builds both
 Intel and Apple Silicon executables. Python 3.12 or later is required.

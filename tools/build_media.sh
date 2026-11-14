@@ -13,6 +13,7 @@ if [[ "$target" == windows-x64 ]]; then
 fi
 export PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
 export LC_ALL=C
+"$PKG_CONFIG" --version
 architectures=x86_64
 [[ "$target" != macos-universal ]] || architectures="x86_64 arm64"
 for arch in $architectures; do
@@ -65,8 +66,6 @@ for arch in $architectures; do
         --enable-filter=aresample,aformat,format,scale,anull,null,color,sine || { tail -n 100 ffbuild/config.log; exit 1; }
     make -j4
     make install
-    # Retain the exact configuration used by each architecture in the binary package.
-    cp config.h "$prefix/config.h"
 done
 for tool in ffmpeg ffprobe; do
     if [[ "$target" == macos-universal ]]; then
