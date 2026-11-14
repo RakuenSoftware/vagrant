@@ -26,6 +26,8 @@ public partial class FieldContracts : Node
     private string _campaignSave = "", _campaignLoad = "";
     private (int Zone, int Map)? _campaignCheckpoint;
     private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt, _campaignBagTries;
+    private int _campaignTeleport = -1, _campaignTeleportStep, _campaignTeleportSelection, _campaignTeleportRooms, _campaignTeleportMp, _campaignTeleportCost;
+    private (int Zone, int Map) _campaignTeleportArrival;
     private int _campaignPuzzle, _campaignPuzzleAt, _campaignHallAt;
     private string _campaignTargetText = "";
     private int _campaignCubePicks, _campaignWaitForEnemyUntil, _emptyLimbPicks, _fightCloseUntil;
@@ -163,6 +165,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--capture=", StringComparison.Ordinal)) _capture = argument["--capture=".Length..];
             if (argument == "--near-enemy") _nearEnemy = true;
             if (argument == "--campaign") _campaign = true;
+            if (argument.StartsWith("--campaign-teleport=", StringComparison.Ordinal)) _campaignTeleport = int.Parse(argument["--campaign-teleport=".Length..]) - 1;
             if (argument.StartsWith("--campaign-use=", StringComparison.Ordinal)) _campaignUse.AddRange(argument["--campaign-use=".Length..].Split(',').Select(int.Parse));
             if (argument.StartsWith("--campaign-save=", StringComparison.Ordinal)) _campaignSave = argument["--campaign-save=".Length..];
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
@@ -737,6 +740,58 @@ public partial class FieldContracts : Node
             Steer(Vector2.Zero);
             if (_campaignHealStep > 0) { _campaignHealStart++; _campaignHealAt++; }
             if (_press == 0 && _frame % 8 == 0) Tap("ps_circle");
+            return;
+        }
+
+        if (_campaignTeleport >= 0 && _view.Battle is { Ashley: { } traveller } travelling)
+        {
+            Steer(Vector2.Zero);
+            if (!_view.Controlled || _press > 0 || _frame % 8 != 0) return;
+            if (_campaignTeleportStep == 4)
+            {
+                if (_view.Rooms.Count <= _campaignTeleportRooms) return;
+                if ((_view.Zone, _view.Map) != _campaignTeleportArrival || traveller.Mp < _campaignTeleportMp - _campaignTeleportCost || traveller.Mp > _campaignTeleportMp - _campaignTeleportCost + 1)
+                { Finish($"campaign: teleport arrived in {_view.Zone},{_view.Map}, MP {traveller.Mp}, expected {_campaignTeleportArrival}, cost {_campaignTeleportCost}"); return; }
+                GD.Print($"CAMPAIGN: teleported through MAGIC to circle {_campaignTeleport + 1}, spending {_campaignTeleportCost} earned MP");
+                _campaignTeleport = -1;
+                _campaignTeleportStep = 0;
+                return;
+            }
+            if (_view.SavePoint == 0)
+            { Finish("campaign: the teleport source checkpoint is not standing on a Circle of Magic"); return; }
+            switch (_campaignTeleportStep)
+            {
+                case 0:
+                    if (!_view.CanTeleport(_campaignTeleport)) { Finish("campaign: requested teleport is unavailable with the earned discovery, paling or MP state"); return; }
+                    if (travelling.Drawn) Tap("ps_cross");
+                    else { Tap("ps_triangle"); _campaignTeleportStep = 1; }
+                    break;
+                case 1:
+                    if (_view.MenuPage == 0) { _campaignTeleportStep = 2; _campaignTeleportSelection = 0; }
+                    else if (_view.MenuRow != 0) Tap("ps_up");
+                    else Tap("ps_circle");
+                    break;
+                case 2:
+                    if (_campaignTeleportSelection++ < 4) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignTeleportStep = 3; _campaignTeleportSelection = Math.Max(0, _view.TeleportChoices.IndexOf(_view.SavePoint - 1)); }
+                    break;
+                case 3:
+                    int row = _view.TeleportChoices.IndexOf(_campaignTeleport);
+                    if (_campaignTeleportSelection != row)
+                    { Tap(_campaignTeleportSelection < row ? "ps_down" : "ps_up"); _campaignTeleportSelection += Math.Sign(row - _campaignTeleportSelection); }
+                    else
+                    {
+                        _campaignTeleportRooms = _view.Rooms.Count;
+                        _campaignTeleportMp = traveller.Mp;
+                        _campaignTeleportCost = _view.TeleportCost(_campaignTeleport);
+                        var record = _view.Content.Data("magic_menu")["teleport_destinations"].AsGodotArray()[_campaignTeleport].AsGodotDictionary();
+                        var room = _view.Content.Data("memory_card")["rooms"].AsGodotArray()[record["room"].AsInt32()].AsGodotArray();
+                        _campaignTeleportArrival = (room[0].AsInt32(), room[1].AsInt32());
+                        Capture("earned_teleport_destination");
+                        Tap("ps_circle"); _campaignTeleportStep = 4;
+                    }
+                    break;
+            }
             return;
         }
 

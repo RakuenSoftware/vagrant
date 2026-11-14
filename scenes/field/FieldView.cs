@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Godot;
@@ -5320,6 +5321,48 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private int _scriptBox = -1;
     /// <summary>The save point Ashley stands on (its location id), or 0.</summary>
     public int SavePoint { get; private set; }
+
+    /// <summary>The discovered teleport circles, in MENU0's order; a spirit-paling destination stays listed.</summary>
+    public List<int> TeleportChoices => Enumerable.Range(0, 48).Where(i => Flags[0x156 + i] != 0).ToList();
+
+    /// <summary>MENU0 0x80102a68: 15 MP plus the table's costs between the current room's circle and the destination.</summary>
+    public int TeleportCost(int destination)
+    {
+        var destinations = _content.Data("magic_menu")["teleport_destinations"].AsGodotArray();
+        var rooms = _content.Data("memory_card")["rooms"].AsGodotArray();
+        int current = 48;
+        for (int i = 0; i < destinations.Count; i++)
+        {
+            var pair = rooms[destinations[i].AsGodotDictionary()["room"].AsInt32()].AsGodotArray();
+            if (pair[0].AsInt32() == Zone && pair[1].AsInt32() == Map) { current = i; break; }
+        }
+        int cost = 15;
+        for (int i = Math.Min(current, destination); i < Math.Max(current, destination); i++)
+            cost += destinations[i].AsGodotDictionary()["step_cost"].AsInt32();
+        return cost;
+    }
+
+    /// <summary>MENU0 offers the discovered destination list on a circle, unless the spell is sealed by the paling.</summary>
+    public bool TeleportAvailable => Flags[0xB5] != 0 && Flags[0xB5] != 2 && SavePoint > 0 && TeleportChoices.Count > 0;
+
+    /// <summary>A destination's paling flag, available MP and silence determine whether it can be selected.</summary>
+    public bool CanTeleport(int destination) => destination is >= 0 and < 48 && TeleportAvailable
+        && Flags[0x156 + destination] != 0 && Flags[0x156 + destination] != 2 && Battle?.Ashley is { } ashley && !ashley.Has(FieldBattle.Silence)
+        && ashley.Mp >= TeleportCost(destination);
+
+    /// <summary>Spends the native MP cost and leaves for the chosen circle through the normal faded room transition.</summary>
+    public bool Teleport(int destination)
+    {
+        if (!Controlled || !CanTeleport(destination) || Battle?.Ashley is not { } ashley) return false;
+        var record = _content.Data("magic_menu")["teleport_destinations"].AsGodotArray()[destination].AsGodotDictionary();
+        var room = _content.Data("memory_card")["rooms"].AsGodotArray()[record["room"].AsInt32()].AsGodotArray();
+        ashley.Mp -= TeleportCost(destination);
+        _door = new GDictionary { ["zone"] = room[0], ["map"] = room[1], ["destination"] = record["tile"],
+            ["facing"] = ashley.Actor.Facing, ["half"] = false, ["walk_in"] = false };
+        Controlled = false;
+        FadeScreen(true, 8, false);
+        return true;
+    }
 
     /// <summary>Gives Ashley the New Game inventory, once.</summary>
     private void LoadInventory()

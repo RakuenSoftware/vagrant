@@ -365,7 +365,17 @@ public sealed class InventoryConversion
             for (int i = 0; i < count; i++) list.Add((int)battle[(int)(at - 0x80068800u) + i]);
             classes.Add(list);
         }
-        return new JsonObject { ["strings"] = MenuStrings(menu0, 0x2258), ["classes"] = classes };
+        // MENU0 is loaded at 0x80102800. Its teleport list (0x80103e30) uses 48 destinations at
+        // 0x801067dc, distance costs at 0x8010689c and its own names/help table at 0x80105d94.
+        var destinations = new JsonArray();
+        for (int i = 0; i < 48; i++)
+        {
+            int at = 0x3FDC + i * 4;
+            destinations.Add(new JsonObject { ["room"] = (int)BitConverter.ToUInt16(menu0, at),
+                ["tile"] = new JsonArray { (int)menu0[at + 2], (int)menu0[at + 3] }, ["step_cost"] = (int)menu0[0x409C + i] });
+        }
+        return new JsonObject { ["strings"] = MenuStrings(menu0, 0x2258), ["classes"] = classes,
+            ["teleport_strings"] = MenuStrings(menu0, 0x3594), ["teleport_destinations"] = destinations };
     }
 
     public static JsonObject Spells(byte[] executable)

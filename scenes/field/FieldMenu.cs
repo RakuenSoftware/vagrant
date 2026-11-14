@@ -333,13 +333,32 @@ public sealed partial class FieldMenu : PanelContainer
     {
         if (_magicClass < 0)
         {
-            if (step != 0) { _cursor = (_cursor + step + 4) % 4; _view.MenuSound(FieldView.MenuChange); }
+            int count = _view.Flags[0xB5] != 0 ? 5 : 4;
+            if (step != 0) { _cursor = (_cursor + step + count) % count; _view.MenuSound(FieldView.MenuChange); }
             if (pressed("ps_circle"))
             {
-                if (ClassSpells(_cursor).Count == 0) _view.MenuSound(FieldView.MenuInvalid);
+                if (_cursor == 4)
+                {
+                    if (!_view.TeleportAvailable) _view.MenuSound(FieldView.MenuInvalid);
+                    else { _view.MenuSound(FieldView.MenuSelect); _magicClass = 4; _cursor = Math.Max(0, _view.TeleportChoices.IndexOf(_view.SavePoint - 1)); }
+                }
+                else if (ClassSpells(_cursor).Count == 0) _view.MenuSound(FieldView.MenuInvalid);
                 else { _view.MenuSound(FieldView.MenuSelect); _magicClass = _cursor; _cursor = 0; }
             }
             else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _page = -1; _view.Battle?.CoverHud(true); }
+            Draw();
+            return true;
+        }
+        if (_magicClass == 4)
+        {
+            var destinations = _view.TeleportChoices;
+            if (step != 0 && destinations.Count > 1) { _cursor = (_cursor + step + destinations.Count) % destinations.Count; _view.MenuSound(FieldView.MenuChange); }
+            if (pressed("ps_circle") && destinations.Count > 0)
+            {
+                if (!_view.Teleport(destinations[_cursor])) _view.MenuSound(FieldView.MenuInvalid);
+                else { _view.MenuSound(FieldView.MenuSelect); Show(false); return false; }
+            }
+            else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _magicClass = -1; _cursor = 4; }
             Draw();
             return true;
         }
@@ -855,7 +874,7 @@ public sealed partial class FieldMenu : PanelContainer
         return true;
     }
 
-    private bool Usable(int row) => row is Items or Status or Data or Options or Score || row == Manual && _view.Content.Has("manual") || row == Map && _view.Document.GetValueOrDefault("scene", -1).AsInt32() > 0 || row == Magic && _view.Spells.Count > 0 || row == Arts && _view.Arts.Count > 0 || row == Abilities && _view.Abilities.Count > 0;
+    private bool Usable(int row) => row is Items or Status or Data or Options or Score || row == Manual && _view.Content.Has("manual") || row == Map && _view.Document.GetValueOrDefault("scene", -1).AsInt32() > 0 || row == Magic && (_view.Spells.Count > 0 || _view.Flags[0xB5] != 0) || row == Arts && _view.Arts.Count > 0 || row == Abilities && _view.Abilities.Count > 0;
 
     /// <summary>
     /// The item menu's rows for its category: OPTIONS' EQUIP and SETUP (MENU3.PRG strings 8 to 11), the things Ashley
@@ -2303,7 +2322,23 @@ public sealed partial class FieldMenu : PanelContainer
                 var names = new List<string>();
                 var kinds = new List<int>();
                 for (int c = 0; c < 4; c++) { names.Add(SystemBox.Entry(strings, c * 3)); kinds.Add(ClassSpells(c).Count == 0 ? 1 : 0); }
-                _list.Set(names, _cursor, header, SystemBox.Entry(strings, _cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1)), kinds: kinds, titled: !_shortcut);
+                var teleport = page["teleport_strings"].AsGodotArray();
+                if (_view.Flags[0xB5] != 0) { names.Add(SystemBox.Entry(teleport, 0)); kinds.Add(_view.TeleportAvailable ? 0 : 1); }
+                string help = _cursor == 4 ? SystemBox.Entry(teleport, _view.Flags[0xB5] == 2 ? 2 : 1)
+                    : SystemBox.Entry(strings, _cursor * 3 + (ClassSpells(_cursor).Count == 0 ? 2 : 1));
+                _list.Set(names, _cursor, header, help, kinds: kinds, titled: !_shortcut);
+            }
+            else if (_magicClass == 4)
+            {
+                var teleport = page["teleport_strings"].AsGodotArray();
+                var destinations = _view.TeleportChoices;
+                int top = Math.Clamp(_cursor - 7, 0, Math.Max(0, destinations.Count - 8));
+                var shown = destinations.GetRange(top, Math.Min(8, destinations.Count - top));
+                var names = shown.ConvertAll(i => SystemBox.Entry(teleport, 3 + i * 2));
+                var kinds = shown.ConvertAll(i => _view.CanTeleport(i) ? 0 : 1);
+                int chosen = destinations.Count > 0 ? destinations[_cursor] : 0;
+                _list.Set(names, _cursor - top, header, SystemBox.Entry(teleport, _view.Flags[0x156 + chosen] == 2 ? 2 : 4 + chosen * 2),
+                    sub: (SystemBox.Entry(teleport, 0), -1), kinds: kinds, cost: ("MP", _view.TeleportCost(chosen).ToString()), titled: !_shortcut);
             }
             else
             {

@@ -44,6 +44,8 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # Gadget bag GET/ALL: full categories, existing item stacks, partial collection and freed slots.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
+# Teleportation: discovery/paling flags, MP, menu cancellation and arrival at the native circle (isolated fixture).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/teleport_contracts.tscn -- --install-root=/path/to/installation
 # Container selections: identical pieces, multiple transfers, discard, cancellation and item stacks.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/container_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
@@ -78,6 +80,7 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # --campaign-store uses the workshop container for spare weapons/armour; --campaign-rest waits for native HP/MP recovery.
 # --campaign-retrieve=BLADE removes an owned weapon from storage; --campaign-equip=BLADE equips it through ITEMS.
 # --campaign-use-at=ZONE,MAP delays the requested owned consumables until that room.
+# --campaign-teleport=N uses MAGIC from a checkpoint standing on a circle; N is its native one-based destination.
 # --campaign-repair uses SETUP's Repair at a workshop; --campaign-save-ui uses DATA's SAVE at a magic circle.
 # --campaign-loot=ZONE,MAP approaches its chest, using an owned Unlock if needed; --campaign-loot-item=ID stops after that item.
 # --campaign-item=ID makes the checkpoint require that owned item and allows surviving enemies there.
