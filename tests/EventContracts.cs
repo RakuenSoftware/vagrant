@@ -34,6 +34,24 @@ public partial class EventContracts : Node
             if (disc.Length == 0) throw new InvalidOperationException("pass --disc=");
             using var image = PlayStationDisc.Open(disc, RetailDisc.Catalog);
             byte[] battle = image.ReadFile("BATTLE/BATTLE.PRG");
+            // These distinct native selectors must not collapse: 0x2003 is side 4, not Ashley or allies.
+            foreach (var (reference, expected) in new[] { (0x2003, "side:4"), (0x2001, "all"), (0x0000, "id:0") })
+            {
+                var selector = new byte[0x16];
+                BitConverter.TryWriteBytes(selector.AsSpan(2), (ushort)selector.Length);
+                selector[0x10] = 0x23;
+                selector[0x11] = (byte)reference;
+                selector[0x12] = (byte)(reference >> 8);
+                selector[0x13] = 1;
+                selector[0x14] = 10;
+                selector[0x15] = 0xf6;
+                var converted = new EventConversion("selector_contract", selector, 0, battle).Export();
+                var selectorCommands = converted["events"]!.AsArray()[0]!["nodes"]!.AsObject()
+                    .SelectMany(n => n.Value!["transitions"]!.AsArray())
+                    .SelectMany(t => t!["commands"]?.AsArray() ?? new System.Text.Json.Nodes.JsonArray());
+                if (!selectorCommands.Any(c => c!["type"]!.GetValue<string>() == "actor.flags" && c["args"]!["actor"]!.GetValue<string>() == expected))
+                    throw new InvalidOperationException($"actor selector {reference:x4} did not retain {expected}");
+            }
             // Each zone's rooms by number, as MAP script names, and the zone each room is in, from the zones' MPD lists.
             var rooms = new Dictionary<(int Zone, int Room), string>();
             var zoneOf = new Dictionary<string, int>();

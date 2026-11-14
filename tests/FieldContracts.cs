@@ -57,7 +57,7 @@ public partial class FieldContracts : Node
     private readonly Dictionary<string, int> _campaignHops = new();
     // Optional room-by-room pad route, with cutaways left to the event runtime.
     private readonly List<(int Zone, int Map)> _campaignRoute = new();
-    private int _campaignRouteAt;
+    private int _campaignRouteAt, _campaignMinePerch, _campaignBoardingMisses;
     private readonly Dictionary<(int Zone, int Map), int> _campaignVisits = new();
     private readonly Dictionary<(int Zone, int Map, int Door), int> _campaignAttempts = new();
 
@@ -649,7 +649,7 @@ public partial class FieldContracts : Node
             _campaignDoor = -1;
             _campaignPuzzle = 0;
             _campaignHallAt = 0;
-            _campaignLootAt = _campaignLootStart = 0;
+            _campaignLootAt = _campaignLootStart = _campaignMinePerch = _campaignBoardingMisses = 0;
             _campaignPuzzleAt = _frame;
             var room = (_view.Zone, _view.Map);
             if (_campaignRouteAt + 1 < _campaignRoute.Count && _campaignRoute[_campaignRouteAt + 1] == room) _campaignRouteAt++;
@@ -669,6 +669,15 @@ public partial class FieldContracts : Node
             return;
         }
         _campaignBagTries = 0;
+        // Reclaimed abilities can interrupt a long fight, including a retreat for RISK recovery.
+        if (_view.MenuOpen && _view.MenuPage == 12)
+        {
+            Steer(Vector2.Zero);
+            if (_campaignHealStep > 0) { _campaignHealStart++; _campaignHealAt++; }
+            if (_press == 0 && _frame % 8 == 0) Tap("ps_circle");
+            return;
+        }
+
         if (_view.Controlled && _view.Battle is { Ashley: { } observed } observedBattle)
         {
             // A room script may hide a live enemy (Sackheim during Goodwin's encounter). Its AI must stop too.
@@ -875,6 +884,7 @@ public partial class FieldContracts : Node
         }
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
+            if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
             if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 65 : 50) && restBattle.HostileCount() > 0
@@ -1258,7 +1268,7 @@ public partial class FieldContracts : Node
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             return;
         }
-        bool breakingStack = (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) is (13, 15, 0, 1) or (15, 8, 0, 1);
+        bool breakingStack = (_view.Zone, _view.Map, _campaignDoor, _campaignPuzzle) is (13, 15, 0, 1) or (15, 8, 0, 1) or (50, 18, 1, 6);
         if (battle.Busy && !(battle.Paused && breakingStack))
         { Steer(Vector2.Zero); return; }
         if (battle.Drawn && !breakingStack)
@@ -1424,6 +1434,111 @@ public partial class FieldContracts : Node
             float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Jump via the moving platform over the mine's pit. Break three crates off its four-high stack,
+        // then push the remaining wooden crate east to make a perch below the high exit.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (50, 18, 1) && _campaignPuzzle < 14)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400)
+            { Finish($"campaign: mine terrace step {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
+            bool perch = _view.Crates.Any(c => c.Kind == 4 && c.X == 3 && c.Z == 9);
+            if (!perch)
+            {
+                if (_campaignMinePerch is 2 or 5)
+                {
+                    Steer(Vector2.Zero);
+                    bool done = _campaignMinePerch == 2 ? !_view.Crates.Any(c => c.Id == "51") : perch;
+                    if (done) { _campaignMinePerch++; _campaignPuzzleAt = _frame; }
+                    else if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
+                    return;
+                }
+                var perchPoint = _campaignMinePerch switch
+                {
+                    0 => new Vector3(320, -384, 1472), 1 => new Vector3(192, -384, 1472),
+                    3 => new Vector3(448, -384, 1344), _ => new Vector3(448, -384, 1216),
+                };
+                bool face = _campaignMinePerch is 1 or 4;
+                if (face && _frame - _campaignPuzzleAt >= 24)
+                { _campaignMinePerch++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (face && _frame - _campaignPuzzleAt > 1) { Steer(Vector2.Zero); return; }
+                var perchPath = face ? new List<Vector3>() : _view.Path(ashley.Actor.Position, perchPoint, 256);
+                while (perchPath.Count > 1 && new Vector2(perchPath[0].X - ashley.Actor.Position.X, perchPath[0].Z - ashley.Actor.Position.Z).Length() < 16) perchPath.RemoveAt(0);
+                var perchNext = perchPath.Count > 0 ? perchPath[0] : perchPoint;
+                float perchTurn = (ashley.Actor.FacingToward(perchNext) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(new Vector2(Mathf.Sin(perchTurn), -Mathf.Cos(perchTurn)));
+                Input.ActionPress("ps_r2");
+                if (!face && new Vector2(perchPoint.X - ashley.Actor.Position.X, perchPoint.Z - ashley.Actor.Position.Z).Length() < 16)
+                { _campaignMinePerch++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
+                return;
+            }
+            if (_campaignPuzzle is >= 1 and <= 4 && ashley.Actor.Position.Z > 1400 && _frame - _campaignPuzzleAt > 90)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four mine platform boardings missed"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_campaignPuzzle == 1)
+            {
+                if (_view.PlatformState(0) is not { } platform) { Finish("campaign: the mine has no active platform"); return; }
+                if (_view.PlatformUnder(ashley.Actor.Position) == 0 && new Vector2(ashley.Actor.Position.X - platform.Now.X, ashley.Actor.Position.Z - platform.Now.Z).Length() < 24)
+                { _campaignPuzzle = 2; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                if (!_campaignBoarding)
+                {
+                    if (platform.Now.X < 440 || platform.Waited is < 0 or > 20) { Steer(Vector2.Zero); return; }
+                    _campaignBoarding = true;
+                    Tap("ps_square");
+                }
+                float boardingTurn = (ashley.Actor.FacingToward(platform.Now) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(new Vector2(Mathf.Sin(boardingTurn), -Mathf.Cos(boardingTurn)));
+                Input.ActionRelease("ps_r2");
+                return;
+            }
+            if (_campaignPuzzle == 6)
+            {
+                Steer(Vector2.Zero);
+                if (_view.Crates.Count(c => c.Kind == 2 && c.X == 5 && c.Z == 3) <= 1)
+                { _campaignPuzzle = 7; _campaignPuzzleAt = _frame; return; }
+                if (battle.Paused) { if (_press == 0) Tap("ps_circle"); }
+                else if (!battle.Busy && _frame % 20 == 0) Tap("ps_circle");
+                return;
+            }
+            if (battle.Busy) { Steer(Vector2.Zero); return; }
+            if (battle.Drawn) { Tap("ps_cross"); return; }
+            if (_campaignPuzzle == 8)
+            {
+                Steer(Vector2.Zero);
+                if (_view.Crates.Any(c => c.Kind == 2 && c.X == 8 && c.Z == 3))
+                { _campaignPuzzle = 9; _campaignPuzzleAt = _frame; return; }
+                if ((_frame - _campaignPuzzleAt) % 30 == 20) Tap("ps_cross");
+                return;
+            }
+            if (_campaignPuzzle is 2 or 4 or 10 or 13)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt >= 60) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(448, -512, 1216), 3 => new Vector3(448, -384, 384),
+                5 => new Vector3(576, -384, 448), 7 => new Vector3(704, -384, 448),
+                9 => new Vector3(1088, -512, 448), 11 => new Vector3(1216, -896, 448),
+                _ => new Vector3(1600, -896, 320),
+            };
+            if (_campaignPuzzle == 7 && _frame - _campaignPuzzleAt >= 24)
+            { _campaignPuzzle = 8; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 7 && _frame - _campaignPuzzleAt > 1) { Steer(Vector2.Zero); return; }
+            var steps = _campaignPuzzle is 3 or 7 or 11 ? new List<Vector3>() : _view.Path(ashley.Actor.Position, point, 256);
+            while (steps.Count > 1 && new Vector2(steps[0].X - ashley.Actor.Position.X, steps[0].Z - ashley.Actor.Position.Z).Length() < 16) steps.RemoveAt(0);
+            var next = steps.Count > 0 ? steps[0] : point;
+            float turn = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            if (_campaignPuzzle is 3 or 11)
+            { Input.ActionRelease("ps_r2"); if ((_frame - _campaignPuzzleAt) % 60 == 1) Tap("ps_square"); }
+            else Input.ActionPress("ps_r2");
+            if (_campaignPuzzle != 7 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); }
             return;
         }
         // The Blackmarket's northeast platform is reached by a diagonal running jump from its southwest corner,

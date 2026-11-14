@@ -2512,6 +2512,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private IEnumerable<EventActor> Targets(GDictionary args)
     {
         if (args["actor"].AsString() == "all") return Actors.Values;
+        // Retail's 0x2003 selector keeps only battle side 4, including neither Ashley nor allies
+        // (0x800bb6c4..0x800bb740). Treating it as every actor freezes Ashley in the mine's earthquake.
+        if (args["actor"].AsString() == "side:4")
+            return System.Linq.Enumerable.Where(Actors.Values, actor => Battle != null && Battle.Combatants.TryGetValue(actor.Id, out var fighter) && fighter.Side == 4);
         return Actor(args) is { } actor ? new[] { actor } : Array.Empty<EventActor>();
     }
 
@@ -3824,7 +3828,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // A platform is floor even over the shaft or pit it rides in.
         if (PlatformTop(position) is { } platform) return platform;
         if (Solid(position)) return null;
-        return CrateTop(position) ?? _heights[z * _columns + x];
+        if (CrateTop(position) is { } crate) return crate;
+        // A pit has no landing at its encoded zero plane. Let the body pass retail's Y > 16
+        // fall threshold (0x80074f44..0x80074f58); StepControl returns Ashley to her arrival.
+        return (TileAttributes(x / 4, z / 4) & 1 << 17) != 0 ? 32 : _heights[z * _columns + x];
     }
 
     private bool _jumpPressed;
@@ -4287,10 +4294,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             _tile = tile;
             SavePoint = 0;
             if (Controlled && (attributes & 1 << 16) != 0) StepOnTrap(tile);
-            // A pit under a platform she stands on is crossed on the platform.
-            if (Controlled && (attributes & 1 << 17) != 0 && PlatformTop(player.Position) == null) FallInPit();
             if (Controlled && (attributes & 1 << 14) != 0) EnterDoor(tile);
         }
+        // Retail checks a pit even without a tile change, once the body falls below Y = 16.
+        // Crossing its tile in the air, or on a platform or block, does not fall (0x80074f20..0x80075184).
+        if (Controlled && (attributes & 1 << 17) != 0 && player.Position.Y > 16
+            && PlatformTop(player.Position) == null && CrateTop(player.Position) == null) FallInPit();
     }
 
     /// <summary>Stops or restarts every actor's animation.</summary>

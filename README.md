@@ -42,6 +42,10 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # Gadget bag GET/ALL: full categories, existing item stacks, partial collection and freed slots.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
+# Pit height threshold: crossing above a pit and falling without changing tiles.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/pit_contracts.tscn -- --install-root=/path/to/installation
+# Isolated earthquake scene: enemy-only actor flags must leave Ashley's animation running.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=50,20 --flag=1:1 --flag=130:34 --flag=187:13 --flag=200:20 --play=event_z050_m20_l0
 # SETUP's Repair: YES/NO, Cross cancellation, all carried equipment, PP cost, accessories and storage.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-repair
 # COMBINE's preview/cancellation/confirmation and equipped/nested parts, shields and armour transactions.

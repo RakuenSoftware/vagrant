@@ -161,7 +161,7 @@ public sealed class EventConversion
     private string Actor(int at)
     {
         int reference = Word(at);
-        return (reference >> 12) switch { 1 => $"slot:{reference & 0x1F}", 0 => $"id:{reference}", _ => reference == 0x2000 ? "none" : "all" };
+        return (reference >> 12) switch { 1 => $"slot:{reference & 0x1F}", 0 => $"id:{reference}", _ => reference == 0x2000 ? "none" : reference == 0x2003 ? "side:4" : "all" };
     }
 
     /// <summary>The room's flows (the main event first) and the opcodes translation did not cover.</summary>
