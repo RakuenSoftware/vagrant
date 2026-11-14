@@ -38,7 +38,8 @@ public partial class FieldContracts : Node
     private int _campaignHealSpell = 96;
     private int _campaignAbilityStep, _campaignAbilitySelection, _fightChainLinks;
     private Vector3 _campaignRestPoint;
-    private int _campaignPrepareStep, _campaignPrepareSelection, _campaignSettleFrames;
+    private readonly List<int> _campaignUse = new();
+    private int _campaignPrepareStep, _campaignPrepareSelection, _campaignSettleFrames, _campaignWeaponPrepareAt;
     private (int Zone, int Map)? _campaignLoot;
     private int _campaignLootAt, _campaignLootStart, _campaignLootItem;
 
@@ -158,6 +159,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--capture=", StringComparison.Ordinal)) _capture = argument["--capture=".Length..];
             if (argument == "--near-enemy") _nearEnemy = true;
             if (argument == "--campaign") _campaign = true;
+            if (argument.StartsWith("--campaign-use=", StringComparison.Ordinal)) _campaignUse.AddRange(argument["--campaign-use=".Length..].Split(',').Select(int.Parse));
             if (argument.StartsWith("--campaign-save=", StringComparison.Ordinal)) _campaignSave = argument["--campaign-save=".Length..];
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
             if (argument.StartsWith("--campaign-item=", StringComparison.Ordinal)) _campaignItem = int.Parse(argument["--campaign-item=".Length..]);
@@ -666,7 +668,7 @@ public partial class FieldContracts : Node
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         if (_view.Battle is { AshleyDefenseFrame: >= 1 and <= 2 } defending && _press == 0)
         {
-            int defense = _campaignBypassEnemies || (_view.Zone, _view.Map) == (50, 22) ? 43 : 46;
+            int defense = _campaignBypassEnemies || (_view.Zone, _view.Map) is (50, 22) or (40, 24) ? 43 : 46;
             int slot = Array.IndexOf(defending.DefenseSlots, defense);
             if (slot >= 0)
             {
@@ -900,6 +902,49 @@ public partial class FieldContracts : Node
             if (_frame % 60 == 1) Tap("ps_square");
             return;
         }
+        // Match the carried weapon to each foe through EQUIP: physical for Grissom, air for the Dark Crusader.
+        bool crusaderOnly = (_view.Zone, _view.Map) == (40, 24) && _view.Battle is { } forestBattle
+            && !forestBattle.Combatants.Values.Any(c => c.Name == "Grissom" && c.Targetable);
+        int forestBlade = crusaderOnly ? 14 : 51;
+        if (_view.Controlled && ((_view.Zone, _view.Map) == (40, 20) || crusaderOnly) && _campaignHealStep == 0 && _view.Battle is { } arming
+            && _view.Weapons().FirstOrDefault(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == forestBlade) is { } axe
+            && (_campaignPrepareStep > 0 || !_view.Holds(axe)))
+        {
+            Steer(Vector2.Zero);
+            if (_campaignWeaponPrepareAt == 0) _campaignWeaponPrepareAt = _frame;
+            if (_frame - _campaignWeaponPrepareAt > 1800)
+            { Finish($"campaign: weapon EQUIP step {_campaignPrepareStep} stalled on page {_view.MenuPage}"); return; }
+            if (_press > 0 || _frame % 8 != 0) return;
+            switch (_campaignPrepareStep)
+            {
+                case 0:
+                    if (arming.Paused) Tap("ps_cross");
+                    else if (!arming.Busy && !arming.EnemyActing) { Tap("ps_triangle"); _campaignPrepareStep = 1; }
+                    break;
+                case 1:
+                    if (_view.MenuPage == 3) { Tap("ps_circle"); _campaignPrepareStep = 2; }
+                    else if (_view.MenuRow != 3) Tap("ps_down");
+                    else Tap("ps_circle");
+                    break;
+                case 2: Tap("ps_circle"); _campaignPrepareStep = 3; _campaignPrepareSelection = 0; break;
+                case 3:
+                    var candidates = _view.Weapons().Where(w => !_view.Holds(w)).ToList();
+                    int choice = candidates.FindIndex(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == forestBlade);
+                    if (_campaignPrepareSelection++ <= choice) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignPrepareStep = 4; }
+                    break;
+                case 4:
+                    if (_view.MenuOpen) Tap("ps_cross");
+                    else
+                    {
+                        if (!_view.Holds(axe)) { Finish($"campaign: EQUIP did not select earned blade {forestBlade}"); return; }
+                        _campaignPrepareStep = _campaignWeaponPrepareAt = 0;
+                        GD.Print($"CAMPAIGN: equipped earned blade {forestBlade} through ITEMS");
+                    }
+                    break;
+            }
+            return;
+        }
         // Prepare for the elemental using earned gear through the normal equipment menu.
         if (_view.Controlled && (_view.Zone, _view.Map) == (50, 14) && _campaignRouteAt + 1 < _campaignRoute.Count
             && _campaignRoute[_campaignRouteAt + 1] == (50, 13) && _view.Battle is { Ashley: { } preparing } preparation)
@@ -952,9 +997,10 @@ public partial class FieldContracts : Node
                 return;
             }
         }
-        // Put the reclaimed Raging Ache on Circle through BATTLE ABILITIES, keeping the other earned slots.
+        // Match the earned damage chain to the encounter through BATTLE ABILITIES.
+        int damageChain = (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
-            && (_campaignAbilityStep > 0 || _view.Abilities.Contains(26) && _view.ChainButtons[0] != 26))
+            && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
         {
             Steer(Vector2.Zero);
             if (_press > 0 || _frame % 8 != 0) return;
@@ -971,7 +1017,7 @@ public partial class FieldContracts : Node
                     else Tap("ps_circle");
                     break;
                 case 2:
-                    int row = _view.Abilities.FindAll(id => id is >= 22 and < 40).IndexOf(26);
+                    int row = _view.Abilities.FindAll(id => id is >= 22 and < 40).IndexOf(damageChain);
                     if (_campaignAbilitySelection < row) { Tap("ps_down"); _campaignAbilitySelection++; }
                     else { Tap("ps_circle"); _campaignAbilityStep = 3; }
                     break;
@@ -982,17 +1028,29 @@ public partial class FieldContracts : Node
             }
             return;
         }
-        int recoveryPercent = (_view.Zone, _view.Map) == (40, 22) ? 95 : 75;
+        // Consume requested, already-owned preparation items through the same ITEMS input path as recovery.
+        if (_campaignUse.Count > 0 && _campaignHealStep == 0 && _view.Controlled && !_view.MenuOpen
+            && _view.Battle is { Busy: false, Paused: false, EnemyActing: false, Ashley: { } preparingItems })
+        {
+            int item = _campaignUse[0];
+            if (_view.Items.GetValueOrDefault(item) <= 0) { Finish($"campaign: requested preparation item {item} is not owned"); return; }
+            _campaignUse.RemoveAt(0);
+            _campaignHealMagic = false;
+            (_campaignHealStep, _campaignHealStart, _campaignHealAt, _campaignHealItem, _campaignHealCount, _campaignHealHp, _campaignHealMp)
+                = (1, _frame, _frame, item, _view.Items[item], preparingItems.Hp, preparingItems.Mp);
+            GD.Print($"CAMPAIGN: preparing with earned {_view.ItemName(item)} through ITEMS");
+        }
+        int recoveryPercent = (_view.Zone, _view.Map) is (40, 22) or (40, 24) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) == (40, 24) ? 30 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
-                _campaignRestPoint = restRunner.Actor.Position;
+                _campaignRestPoint = (_view.Zone, _view.Map) == (40, 24) ? new Vector3(960, 0, 832) : restRunner.Actor.Position;
                 if ((_view.Zone, _view.Map) == (50, 17))
                     _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
                         .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
@@ -1003,6 +1061,9 @@ public partial class FieldContracts : Node
                 else
                 {
                     // Keep ahead of the pursuing elemental instead of waiting at a corner for its next cast.
+                    if ((_view.Zone, _view.Map) == (40, 24) && restBattle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3 && c.Actor.Position.DistanceTo(_campaignRestPoint) < 700))
+                        _campaignRestPoint = new[] { new Vector3(960, 0, 832), new Vector3(2240, 0, 832), new Vector3(2240, 0, 2240), new Vector3(960, 0, 2240) }
+                            .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3).Min(c => p.DistanceTo(c.Actor.Position)));
                     if ((_view.Zone, _view.Map) == (50, 17) && restBattle.Combatants.Values.Any(c => c.Targetable && c.Actor.Position.DistanceTo(_campaignRestPoint) < 900))
                         _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
                             .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
@@ -1019,10 +1080,12 @@ public partial class FieldContracts : Node
         }
         // Match the owned fusion to the encounter, through the normal magic and item menus.
         bool earthDragon = (_view.Zone, _view.Map) == (40, 22);
-        bool elementalFight = earthDragon || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
-        int fusionSpell = earthDragon ? 66 : 69, fusionItem = earthDragon ? 449 : 452, fusionStatus = earthDragon ? 19 : 22;
-        int guardSpell = earthDragon ? 72 : 71, guardItemId = earthDragon ? 455 : 454, guardStatus = earthDragon ? 25 : 24;
-        bool mineDebuff = ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+        bool grissomFight = (_view.Zone, _view.Map) == (40, 24);
+        bool elementalFight = earthDragon || grissomFight || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
+        bool airFusion = earthDragon || crusaderOnly;
+        int fusionSpell = airFusion ? 66 : grissomFight ? 67 : 69, fusionItem = airFusion ? 449 : grissomFight ? 450 : 452, fusionStatus = airFusion ? 19 : grissomFight ? 20 : 22;
+        int guardSpell = earthDragon ? 72 : grissomFight ? 70 : 71, guardItemId = earthDragon ? 455 : grissomFight ? 453 : 454, guardStatus = earthDragon ? 25 : grissomFight ? 23 : 24;
+        bool mineDebuff = (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
         if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff
@@ -1301,6 +1364,9 @@ public partial class FieldContracts : Node
             _campaignBypassEnemies = true;
         if (_campaignRoute.Count > 0 && (_campaignItem > 0 || _campaignCheckpoint != (_view.Zone, _view.Map))
             && battle.Combatants.Values.Where(c => c.Targetable).All(c => !c.Marked)) _campaignBypassEnemies = true;
+        // An introduction can arm a marked foe after this room was initially safe to cross.
+        if (battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
+            _campaignBypassEnemies = false;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
@@ -4016,7 +4082,7 @@ public partial class FieldContracts : Node
         else
         {
             if (timing < 0) _fightLinked = false;
-            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0).ToArray();
+            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) || i != 2)).ToArray();
             if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
                 && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
             {
@@ -4050,6 +4116,7 @@ public partial class FieldContracts : Node
             }
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
+            if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
             if (_fightNextPart)
             {
                 if (_press > 0) return;
