@@ -95,8 +95,8 @@ provenance checks, not a bit-for-bit reproducibility claim.
 
 No retail assets, disc images, BIOS, installed files or decoded caches are
 bundled. A verified owned US disc is required. Project Vagrant remains AGPL-3.0-only;
-its game source is publicly downloadable. FFmpeg and ffprobe remain external
-first-install dependencies on PATH. macOS packages are ad-hoc signed and need
+its game source is publicly downloadable. FFmpeg and ffprobe are bundled with
+matching source and notices. macOS packages are ad-hoc signed and need
 Developer ID signing/notarization for public friction-free downloads. Credentials
 stay outside Git. Linux CI builds on Ubuntu 22.04 for host-library compatibility.
 

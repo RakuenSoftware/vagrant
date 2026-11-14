@@ -29,7 +29,7 @@ for arch in $architectures; do
         export CC="clang -arch $arch"
         export CFLAGS="-O2 -arch $arch -mmacosx-version-min=11.0"
         export LDFLAGS="$LDFLAGS -arch $arch -mmacosx-version-min=11.0"
-        host=("--host=$arch-apple-darwin")
+        host=("--host=${arch/arm64/aarch64}-apple-darwin$(uname -r)")
         ffhost=(--enable-cross-compile --target-os=darwin "--arch=$arch" --cc=clang)
     elif [[ "$target" == windows-x64 ]]; then
         export CC=gcc
@@ -42,8 +42,10 @@ for arch in $architectures; do
         options=()
         [[ "$package" != libtheora-* ]] || options=(--disable-examples --disable-doc --disable-asm)
         ./configure "--prefix=$prefix" --disable-shared --enable-static --with-pic "${host[@]}" "${options[@]}"
-        make -j4
-        make install
+        # Older Vorbis configure scripts replace CFLAGS with obsolete Darwin flags.
+        # Keep the explicit target flags without modifying the upstream sources.
+        make -j4 CFLAGS="$CFLAGS"
+        make install CFLAGS="$CFLAGS"
     done
     cd "$work/$arch/src/ffmpeg-9.0.2"
     ./configure "--prefix=$prefix" "${ffhost[@]}" \
