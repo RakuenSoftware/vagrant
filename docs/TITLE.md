@@ -11,6 +11,12 @@ The engine verifies each file against the catalog before handing it over. Stream
 
 `RetailInstallation` keeps one installation: every disc file byte for byte under `disc/` and the disc's sector record in `install.json`. A new install is verified and copied into `staging/` and replaces the old one only when complete, so a rejected disc keeps the previous installation. `FieldContent` re-verifies each disc file against the retail digest the first time a session reads it. The title's pictures, fonts and HUD are decoded from those files when first needed; the opening movie is decoded once with FFmpeg into `cache/`.
 
+The ending's XA music lies outside the ISO filesystem. The installer also preserves raw sectors 270000–303263
+as `disc/ENDING/ENDING.XA`, verified against the US SHA-256 over the same sector bytes as other streams. Four
+consecutive sectors carry each audio packet; the derived decode takes one per group, producing stereo 37.8 kHz
+audio lasting 443.52 seconds. Raw source sectors stay unchanged; the Vorbis decode lives in `cache/`.
+Older file-only installations are asked to reinstall from the owned disc.
+
 `TitleConversion` reproduces the retail VRAM upload of the title overlay (`TITLE/TITLE.PRG`):
 
 - A run-length stream holds a 544×576 block. Its first 512 rows are uploaded at (480,0) and its last 64 rows at (0,448). Each u32 control word has two counts: the low half is zero pixel-pairs, the high half is literal pixel-pairs that follow.
@@ -29,6 +35,7 @@ The opening movie (`MOV/TITLE.STR`, 320×224 MDEC at 15 fps, with XA audio) is s
 
 - `publisher` → `developer` → `intro` → `menu`;
 - from `menu`, the player's choice leads to `new_game` (then `field`), `continue` or `attract` (idle timeout); Continue and the attract mode return to `intro`;
+- after the ending, `clear_save` offers the existing card SAVE screens before `intro` (TITLE.PRG 0x8007136c calls 0x8006edbc). The saved location is 48, **Game Clear Data**. Cancelling preserves the existing card. SAVE and LOAD use the title owner's resident menu sounds;
 - the Sound and Vibration pickers set the title's own options.
 
 It counts 60 Hz display frames as the retail title counts vertical blanks:

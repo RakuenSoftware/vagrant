@@ -46,9 +46,8 @@ namespace Wol.Games.Vagrant.Scenes.Ending;
 /// <item>Start (0x8006A4D8) takes the screen to black over 128 frames by the sine's ease, subtracting, and ends it.</item>
 /// </list>
 /// After the credits ENDING shows its own copy of the CONGRATULATIONS screen (<see cref="ResultsScreen"/>) over the
-/// rank's picture, then the game goes to the title. The ending's music, an XA stream from sector 270000 started as
-/// the credits begin (0x8006B9B4), lies outside every file on the disc, so the installation (the disc's files) does
-/// not hold it.
+/// rank's picture, then the title's clear-save screens. Its XA music starts at sector 270000 as credits begin
+/// (0x8006B9B4); the installer preserves these unlisted sectors as ENDING/ENDING.XA.
 /// </remarks>
 public partial class Ending : RetailScreen
 {
@@ -81,6 +80,8 @@ public partial class Ending : RetailScreen
     private int _shade, _pictureX, _pictureClut;
     private double _time;
     private bool _start;
+    private AudioStreamPlayer _music = null!;
+    public bool MusicPlaying => IsInstanceValid(_music) && _music.Playing;
 
     /// <summary>Whether the ending is over: the credits and the closing screen (the title follows).</summary>
     public bool Finished { get; private set; }
@@ -93,7 +94,9 @@ public partial class Ending : RetailScreen
 
     /// <summary>The game's score by the closing screen's tables (the field's record; none when the ending runs alone), and the map's percentage.</summary>
     public Func<ResultsScreen, long>? Score;
-    public int MapPercent;
+    public int MapPercent, Titles;
+    /// <summary>The field's earned clear record, prepared for the title's save screens.</summary>
+    public Func<Godot.Collections.Dictionary?>? ClearSave;
     /// <summary>Plays one of the closing screen's resident sounds.</summary>
     public Action<int>? Sound;
 
@@ -118,6 +121,9 @@ public partial class Ending : RetailScreen
         for (int i = 0; i < _tasks.Length; i++) _tasks[i] = new Task();
         Spawn(Job.Background);
         _pc = (int)(Script - Base);
+        _music = new AudioStreamPlayer { Stream = content.EndingMusic() };
+        AddChild(_music);
+        _music.Play();
     }
 
     public override void _Process(double delta)
@@ -132,6 +138,11 @@ public partial class Ending : RetailScreen
             Step();
             _start = false;
         }
+    }
+
+    public override void _ExitTree()
+    {
+        if (_music != null) { _music.Stop(); _music.Stream = null; }
     }
 
     /// <summary>One frame of the ending's loop (0x8006A888).</summary>
@@ -163,14 +174,14 @@ public partial class Ending : RetailScreen
     /// </summary>
     private void Conclude()
     {
+        _music.Stop();
         var content = GetNode<RetailContent>("/root/RetailContent");
         Results = new ResultsScreen { Name = "Results", Sound = Sound };
         AddChild(Results);
         Results.Configure(content.Disc("SMALL/END.DIS"), content.Data("ending")["results"].AsGodotDictionary(), null, null);
         long score = Score?.Invoke(Results) ?? 0;
-        // The ranks' titles are not kept, so none count.
-        int rank = Results.Rank(score, 0);
-        Results.OpenEnding(content.Disc($"SMALL/ENDSCR{rank:d2}.DIS"), (int)score, MapPercent, 0);
+        int rank = Results.Rank(score, Titles);
+        Results.OpenEnding(content.Disc($"SMALL/ENDSCR{rank:d2}.DIS"), (int)score, MapPercent, Titles);
         _resultsTime = 0;
     }
 
@@ -186,6 +197,7 @@ public partial class Ending : RetailScreen
             bool pressed = _pressed;
             _pressed = false;
             if (Results!.Step(pressed)) continue;
+            FieldView.PendingClearSave = ClearSave?.Invoke();
             Finished = true;
             if (!KeepScene) _ = GetNode<SceneManager>("/root/SceneManager").ChangeScene(Wol.Games.Vagrant.Scenes.Startup.Startup.TitleScene);
         }

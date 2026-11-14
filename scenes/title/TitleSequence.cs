@@ -44,7 +44,7 @@ public partial class TitleSequence : Control
     private Scenes.Field.FieldView? _demo;
     public Scenes.Field.FieldView? Demo => _demo;
     /// <summary>The title's screens, in the order the sequence first reaches them.</summary>
-    private enum Stage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract }
+    private enum Stage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract, ClearSave }
     private Stage _stage;
     private IEnumerator<int>? _presentation;
     private int _wait;
@@ -86,7 +86,7 @@ public partial class TitleSequence : Control
     public string Screen => _stage switch
     {
         Stage.Publisher => "publisher", Stage.Developer => "developer", Stage.Intro => "intro", Stage.Menu => "menu",
-        Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
+        Stage.ClearSave => "clear_save", Stage.NewGame => "new_game", Stage.Field => "field", Stage.Continue => "continue", _ => "attract",
     };
     public bool MonoSound { get; private set; }
     public bool Vibration { get => VibrationDriver.Enabled; private set => VibrationDriver.Enabled = value; }
@@ -160,9 +160,17 @@ public partial class TitleSequence : Control
         _cards = new Scenes.Field.MemoryCardMenu { Name = "MemoryCard" };
         cardsLayer.AddChild(_cards);
         _cards.Configure(_content, null);
+        _cards.Sound = Sound;
 
         MonoSound = _audio.Mono;
-        Enter(++_visits == 1 ? Stage.Publisher : Stage.Intro);
+        ++_visits;
+        if (Scenes.Field.FieldView.PendingClearSave is { } cleared)
+        {
+            Scenes.Field.FieldView.PendingClearSave = null;
+            _cards.SaveData = cleared;
+            Enter(Stage.ClearSave);
+        }
+        else Enter(_visits == 1 ? Stage.Publisher : Stage.Intro);
     }
 
     public override void _ExitTree()
@@ -196,6 +204,7 @@ public partial class TitleSequence : Control
             Stage.NewGame => Leave("", false),
             Stage.Field => StartField(),
             Stage.Continue => LoadScreens(),
+            Stage.ClearSave => ClearSaveScreens(),
             _ => Leave("", false),
         };
         _wait = 0;
@@ -547,6 +556,23 @@ public partial class TitleSequence : Control
             while (resume.MoveNext()) yield return resume.Current;
             yield break;
         }
+        Finished();
+    }
+
+    /// <summary>TITLE.PRG 0x8007136c / 0x8006edbc: offer SAVE before the post-ending title loop.</summary>
+    private IEnumerator<int> ClearSaveScreens()
+    {
+        _cards.OpenSave(48);
+        TakePressed();
+        int result = 0;
+        while (result == 0)
+        {
+            yield return 1;
+            Poll();
+            var pressed = TakePressed();
+            result = _cards.Step(action => Array.Find(Buttons, b => b.Action == action) is var (_, button) && button != Pad.None && (pressed & button) != 0);
+        }
+        _cards.SaveData = null;
         Finished();
     }
 

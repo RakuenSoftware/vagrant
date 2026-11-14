@@ -343,9 +343,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     public long PlayFrames { get; private set; }
     /// <summary>How many times this game has been saved.</summary>
     public int SaveCount { get; private set; }
+    /// <summary>Saves in this game (0x8006003a), separate from the lifetime card-header count.</summary>
+    public int RunSaveCount { get; private set; }
 
     /// <summary>A saved game the title's Continue asks the next field to resume.</summary>
     public static GDictionary? PendingSave;
+    /// <summary>The ending hands its cleared record to TITLE.PRG's save screens before the title loop.</summary>
+    public static GDictionary? PendingClearSave;
 
     /// <summary>Redraws the characters shown as the Settings now choose.</summary>
     private void RedrawCharacters()
@@ -416,7 +420,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public Error SaveGame(int card, int slot, int location)
     {
-        if (Player is not { } ashley || Battle?.Ashley is not { } fighter) return Error.Unavailable;
+        var save = SaveRecord();
+        if (save == null) return Error.Unavailable;
+        var error = WriteCardFile(card, slot, location, save);
+        if (error == Error.Ok) { SaveCount = save["save_count"].AsInt32(); RunSaveCount = save["run_save_count"].AsInt32(); }
+        return error;
+    }
+
+    /// <summary>The current field record, without writing a card or incrementing the live save count.</summary>
+    private GDictionary? SaveRecord()
+    {
+        if (Player is not { } ashley || Battle?.Ashley is not { } fighter) return null;
         var flags = new GArray();
         for (int i = 0; i < 1024; i++) flags.Add(FlagValue(i));
         var items = new GDictionary();
@@ -433,30 +447,57 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             {
                 ["kills"] = new GArray(Array.ConvertAll(EnemyKills, a => (Variant)a)), ["attacks"] = new GArray(Array.ConvertAll(WeaponAttacks, a => (Variant)a)),
                 ["max_chain"] = MaxChain, ["heals"] = HealCount, ["streak"] = StreakScore, ["other"] = OtherScore, ["ability_kills"] = AbilityPoints, ["abilities_reclaimed"] = AbilitiesReclaimed,
-                ["clears"] = Clears, ["time_trials"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(TimeTrials, a => (Variant)a))),
+                ["clears"] = Clears, ["titles"] = (long)Titles, ["best_minutes"] = BestClearMinutes, ["best_map_percent"] = BestMapPercent, ["time_trials"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(TimeTrials, a => (Variant)a))),
             },
             ["mastered"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(Mastered, a => (Variant)a))),
             ["weapon"] = EquippedWeapon ?? new GDictionary(), ["unarmed"] = Unarmed,
             ["armour"] = new GArray(System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(EquippedArmour, a => (Variant)new GDictionary { ["limb"] = a.Key, ["record"] = a.Value }))), ["gains"] = new GArray(Array.ConvertAll(Gains, a => (Variant)a)), ["art_kills"] = new GArray(Array.ConvertAll(ArtKills, a => (Variant)a)), ["drawn"] = Battle.Drawn, ["hud"] = HudShown, ["options"] = (long)Options, ["yaw"] = Gameplay.Yaw, ["distance"] = Gameplay.TargetDistance,
         };
+        save["clear_use_tracked"] = _clearUseTracked;
+        save["map_percent"] = MapPercent();
+        save["save_count"] = Math.Min(9999, SaveCount + 1);
+        save["run_save_count"] = Math.Min(9999, RunSaveCount + 1);
+        save["clear_count"] = FlagValue(0);
+        save["frames"] = PlayFrames;
+        save["max_hp"] = fighter.MaxHp;
+        save["max_mp"] = fighter.MaxMp;
+        return save;
+    }
+
+    /// <summary>Writes the same record for field SAVE and the title's cleared-game SAVE screens.</summary>
+    public static Error WriteCardFile(int card, int slot, int location, GDictionary save)
+    {
         int generation = 0;
         for (int c = 1; c <= 2; c++)
             for (int f = 1; f <= 5; f++)
                 if (ReadCardFile(c, f) is { } other) generation = Math.Max(generation, other.GetValueOrDefault("generation", 0).AsInt32());
         save["generation"] = generation + 1;
         save["location"] = location;
-        save["map_percent"] = MapPercent();
-        save["save_count"] = Math.Min(9999, SaveCount + 1);
-        save["clear_count"] = 0;
-        save["frames"] = PlayFrames;
-        save["max_hp"] = fighter.MaxHp;
-        save["max_mp"] = fighter.MaxMp;
         DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath($"{SavesRoot}/card{card}"));
         using var file = FileAccess.Open(CardFile(card, slot), FileAccess.ModeFlags.Write);
         if (file == null) return FileAccess.GetOpenError();
         file.StoreString(Json.Stringify(save));
-        SaveCount = save["save_count"].AsInt32();
         return Error.Ok;
+    }
+
+    /// <summary>ENDING 0x8006b760: keep the carried state, reset story/room state and start the next game.</summary>
+    public GDictionary? ClearedSave()
+    {
+        var save = SaveRecord();
+        if (save == null) return null;
+        var flags = save["flags"].AsGodotArray();
+        for (int i = 0x10; i < flags.Count; i++) flags[i] = 0;
+        if (flags[1].AsInt32() != 0) flags[2] = 1;
+        else flags[1] = 1;
+        flags[0] = Math.Min(99, flags[0].AsInt32() + 1);
+        save["clear_count"] = flags[0];
+        save["zone"] = 1; save["map"] = 0;
+        save["tile"] = new GArray { 0, 0 }; save["facing"] = 0;
+        save["hud"] = false; save["drawn"] = false;
+        save["visited"] = new GArray();
+        save["clear_use_tracked"] = true; // The next game's usage flags start at zero with a complete history.
+        save["run_save_count"] = 0; // TITLE 0x80069c34 clears 0x8006003a; the lifetime SAVE count is retained.
+        return save;
     }
 
     /// <summary>A memory card's file, or null when it holds no save that can be read.</summary>
@@ -503,7 +544,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         int count = 0;
         foreach (int room in seen)
             if (room < 512 && (counted[room >> 5].AsInt64() >> (room & 31) & 1) != 0) count++;
-        return count * 100 / 361;
+        return Math.Max(BestMapPercent, count * 100 / 361);
     }
 
     /// <summary>
@@ -523,8 +564,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Resumes a saved game in its room, with Ashley where she was saved.</summary>
     private void Resume(GDictionary save)
     {
+        _clearUseTracked = save.GetValueOrDefault("clear_use_tracked", false).AsBool();
         PlayFrames = save.GetValueOrDefault("frames", 0).AsInt64();
         SaveCount = save.GetValueOrDefault("save_count", 0).AsInt32();
+        RunSaveCount = save.GetValueOrDefault("run_save_count", SaveCount).AsInt32();
         var flags = save["flags"].AsGodotArray();
         for (int i = 0; i < flags.Count && i < EventWorld.FlagCount; i++) Flags[i] = flags[i].AsInt32();
         _inventoryLoaded = true;
@@ -554,6 +597,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         StreakScore = score.GetValueOrDefault("streak", 0).AsInt64();
         OtherScore = score.GetValueOrDefault("other", 0).AsInt64();
         Clears = score.GetValueOrDefault("clears", 0).AsInt32();
+        Titles = (uint)score.GetValueOrDefault("titles", 0).AsInt64();
+        BestClearMinutes = score.GetValueOrDefault("best_minutes", Clears > 0 ? PlayFrames / 3600 : 0).AsInt64();
+        BestMapPercent = score.GetValueOrDefault("best_map_percent", Clears > 0 ? save.GetValueOrDefault("map_percent", 0) : 0).AsInt32();
         TimeTrials.Clear();
         foreach (var room in score.GetValueOrDefault("time_trials", new GArray()).AsGodotArray()) TimeTrials.Add(room.AsInt32());
         AbilityPoints = score.GetValueOrDefault("ability_kills", 0).AsInt32();
@@ -1868,12 +1914,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 // rank's picture, reckoning the field's record as MENUF does), then the title. The clear counts
                 // toward the score for good.
                 GameEnded = true;
-                Clears++;
+                Clears = Math.Min(99, FlagValue(0) + 1);
+                RecordClear();
+                _driver.Stop();
+                _driver.StopSounds(-1);
                 var ending = GD.Load<PackedScene>(Wol.Games.Vagrant.Scenes.Ending.Ending.Scene).Instantiate<Wol.Games.Vagrant.Scenes.Ending.Ending>();
                 ending.KeepScene = KeepScene;
+                ending.ClearSave = ClearedSave;
                 ending.Sound = MenuSound;
                 ending.MapPercent = MapPercent();
-                ending.Score = screen => screen.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, PlayFrames / 3600, StreakScore, OtherScore);
+                ending.Titles = TitleCount;
+                ending.Score = screen => screen.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, Clears > 0 ? BestClearMinutes : PlayFrames / 3600, StreakScore, OtherScore);
                 // ENDING.PRG takes BATTLE.PRG's place: the field stops under it.
                 ending.ProcessMode = ProcessModeEnum.Always;
                 ProcessMode = ProcessModeEnum.Disabled;
@@ -5076,7 +5127,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     /// <summary>
     /// Opens the CONGRATULATIONS screen: the heal bonus joins the other score first (a hundred thousand less a hundred
-    /// for each heal since the last), then the score, the map's percentage, the rank (no titles are kept yet) and the
+    /// for each heal since the last), then the score, the map's percentage, the rank by earned titles and the
     /// bonus reel by Ashley's stats with her elixirs' and bonuses' gains. False when it cannot open.
     /// </summary>
     private bool OpenResults()
@@ -5092,13 +5143,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         }
         OtherScore = Math.Min(999999999L, OtherScore + Math.Max(0, 100000 - 100 * HealCount));
         HealCount = 0;
-        long score = _results.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, PlayFrames / 3600, StreakScore, OtherScore);
+        long score = _results.Reckon(EnemyKills, WeaponAttacks, MaxChain, Clears, TimeTrials.Count, Clears > 0 ? BestClearMinutes : PlayFrames / 3600, StreakScore, OtherScore);
         // The screen's music (MENUF 0x80103748): the piece playing when it opens, 31 to 39 and 45 to 49 as their
         // results themes 100 on, anything else as 128; loaded into slot 2 and played at full volume.
         int playing = _musicAsset.StartsWith("music_", StringComparison.Ordinal) && int.TryParse(_musicAsset[6..], out int piece) ? piece : 0;
         _musicSlots["2"] = $"music_{(playing is >= 31 and <= 39 or >= 45 and <= 49 ? playing + 100 : 128):d3}";
         PlayMusic(_musicSlots["2"], 1);
-        _results.Open((int)score, MapPercent(), 0, ashley.Strength, ashley.Intelligence, ashley.Agility);
+        _results.Open((int)score, MapPercent(), TitleCount, ashley.Strength, ashley.Intelligence, ashley.Agility);
         GD.Print($"FIELD: CONGRATULATIONS: score {score}, map {MapPercent()}%");
         return true;
     }
@@ -5157,6 +5208,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>A link or a defense in time: one point towards the next reclaim, up to its requirement.</summary>
     public void CountAbilityPoint(bool chain)
     {
+        Flags[0xb8] = 1; // BATTLE.PRG 0x800702c4: a successful chain/defense ability was used this game.
         if (chain && FlagValue(0x82) < 10) return;
         if (!_content.Has("battle_abilities")) return;
         var needed = _content.Data("battle_abilities")["requirements"].AsGodotArray();
@@ -5193,6 +5245,31 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>How many times the game has been cleared, and the rooms whose boss time trials are recorded.</summary>
     public int Clears;
     public readonly HashSet<int> TimeTrials = new();
+    /// <summary>The persistent title bitfield (0x8005fea0), best clear time and map record.</summary>
+    public uint Titles;
+    // Older saves predate the native per-game usage flags; their missing history cannot earn no-use titles.
+    private bool _clearUseTracked = true;
+    public long BestClearMinutes;
+    public int BestMapPercent;
+    public int TitleCount => System.Numerics.BitOperations.PopCount(Titles & 0xffff);
+
+    /// <summary>ENDING 0x8006b760/0x8006b9fc records clear achievements before resetting the story.</summary>
+    private void RecordClear()
+    {
+        long minutes = PlayFrames / 3600;
+        if (Clears == 1 || minutes < BestClearMinutes) BestClearMinutes = minutes;
+        BestMapPercent = MapPercent();
+        if (BestClearMinutes < 600) Titles |= 2;
+        if (Enumerable.Range(184, 40).All(Arts.Contains)) Titles |= 0x4000;
+        if (Enumerable.Range(22, 32).Where(i => i is not (33 or 36 or 38 or 39)).All(Abilities.Contains)) Titles |= 0x8000;
+        if (RunSaveCount == 0) Titles |= 0x10000;
+        if (_clearUseTracked)
+            for (int i = 0; i < 3; i++) if (Flags[0xb7 + i] == 0) Titles |= 0x20000u << i;
+        for (int i = 0; i < 6; i++) if (Flags[0xcc + i] != 0) Titles |= 0x10u << i;
+        if (Flags[0x383] != 0) Titles |= 0x1000;
+        if (Flags[0x387] != 0) Titles |= 0x2000;
+    }
+
     private int _streakClass = -1, _streakKills, _streakCategory = -1, _weaponStreak;
 
     /// <summary>An attack or Break Art of Ashley's at an enemy: its weapon kind's count rises.</summary>
@@ -5209,6 +5286,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public void Acted(int action)
     {
+        // BATTLE.PRG 0x800714ec/0x80071568: magic and Break Art use, for the clear's no-use titles.
+        if (action is >= 54 and < 141) Flags[0xb7] = 1;
+        if (action is >= 184 and < 224) Flags[0xb9] = 1;
         if (action < 55) return;
         _weaponStreak = 0;
         if (action is 0x4D or 0x60 or >= 0xE0 and <= 0xE3 or >= 0xE8 and <= 0xEB) HealCount = Math.Min(1000, HealCount + 1);

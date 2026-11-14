@@ -16,7 +16,7 @@ verify each against the current owner before treating that historical list as a 
 | Campaign route checks | A corrected normal New Game continues through earned checkpoints, with gear, consumables, spells and story state carried by the real serializer. Pad input solves the Wine Cellar and Catacombs stacks, timed mine corridors, moving platforms, Snowfly Forest and both Undercities; defeats include Minotaur, Dullahan, Lizardmen, Golem, Dragon, Duane, the mine bosses, Giant Crab, Earth Dragon, Grissom/Dark Crusader, Rosencrantz, the later mine elementals, Sky Dragon, Harpy, Lich, Nightstalker, Neesa/Tieger, Water Elemental, Ogre Lord, Snow Dragon, Last Crusader and Minotaur Lord. The earned state collects Clematis and Aster, follows the post-battle scenes and enters the Limestone Quarry at story 65, then defeats Water Elemental with earned Spark Fusion and repaired gear, solves both Quarry magnetic puzzles, consumes Eulelia and Melissa, crosses the final Cloudstone, defeats Snow Dragon, solves Tunnel of the Heartless and crosses The Dark Coast, defeats Last Crusader and Minotaur Lord, obtains the Silver Key, solves both Kiltia puzzle rooms, defeats Kali and completes the Cathedral, both Guildenstern forms and the ending-to-title sequence. Historical checkpoints using the wrong mode flag remain retired as campaign evidence. | A fully rendered run from fresh New Game without checkpoint segments; exact workshop layout/timing parity |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change. An earned Work of Art state also walks onto its circle, saves through DATA and the card screens, and resumes into another room in a fresh process | Every equipment combination, every save location and full save/load UI coverage |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
-| Earned final battles through title return | The earned Atrium save defeats both Guildenstern forms through pad combat, follows the native epilogue, runs the credits and closing results, and observes the actual SceneManager replacement and title menu; headless and rendered pass | Post-credits cleared-game save UI, New Game+ and full retail audio/visual parity |
+| Earned final battles through title return | The earned Atrium save defeats both Guildenstern forms through pad combat, follows the native epilogue, runs the credits and closing results, and observes the actual SceneManager replacement and title menu; headless and rendered pass | A second complete New Game+ campaign and full retail visual comparison |
 | Title attract demonstrations | Both retail demo starts run to completion without input, alternate by title visit, accept L1 interruption and return to the title flow; headless and rendered checks pass | Full screenshot-by-screenshot comparison against a retail title loop |
 | Retail-screen pixel contract in LDR/HDR | Five-bit blend arithmetic against a known background | Screenshot and timing parity for every 3D scene, camera and effect |
 
@@ -153,10 +153,35 @@ card-screen save confirmations at circles 33 and 34.
 From that earned Atrium save, both final runs defeat Guildenstern's two forms (540 and 666 HP), follow the
 native epilogue through rooms 60–68, and reach story 83 with one recorded score clear. The ending runs 27,431
 frames of credits and closing results before returning through SceneManager to the actual title scene.
-The observer checks its menu after the fade-in. The diagnostic ending export uses the real serializer but is
-not evidence of a post-credits SAVE interaction: its top-level `clear_count` remains zero. Most intermediate
-checkpoint exports also bypass the save-point menu; actual circle and DATA coverage is limited to the named
-checked locations.
+The observer checks its menu after the fade-in. The post-credits card screens now write location 48,
+**Game Clear Data**, with CLEAR 01, and the actual title Continue loads New Game+ with the carried state.
+A separate headless and rendered continuation from the earned clear record also completes the prologue and
+reaches Wine Cellar room 9,0, retaining CLEAR 01, 337 maximum HP, 61 maximum MP, all permanent gains,
+36 equipment records, learned spells and storage. This verifies progression beyond the initial New Game+ frame.
+The driver exports that UI-written record separately as `.clear.json`; the earlier ending-handoff diagnostic
+is not a cleared-game SAVE. Most intermediate checkpoint exports bypass the save-point menu; actual circle
+and DATA coverage is limited to the named checked locations.
+
+- **Cleared-game SAVE and New Game+, fixed.** The ending previously returned directly to the title and normal
+  saves hardcoded CLEAR 00. The native flow is ENDING 0x8006b760/0x8006b9fc followed by TITLE 0x8007136c /
+  0x8006edbc. The field creates the clear snapshot through its existing serializer; the title offers its existing
+  card screens. Story reset, persistent mode flags, CLEAR 99 cap, equipment/storage/stats, title thresholds and
+  best time/map persistence pass isolated headless and rendered checks. Cancellation preserves the existing
+  card and returns to the menu. The existing full title/attract/New Game contract also passes. Native per-game
+  saves (0x8006003a) are separate from lifetime SAVE counts: normal saves increment both; Game Clear Data resets
+  the per-game count so a later unsaved game can earn its record.
+- **Rank-title records, fixed.** The ending and field results now count persistent low-sixteen title flags,
+  rather than always supplying zero. The clear records the native under-ten-hours, complete art/ability,
+  trial and optional-boss achievements. Magic, chain/defense and Break Art use mark the native per-game flags
+  used by the no-use achievements. Boundary fixtures cover the ten-hour threshold, incomplete collections,
+  score chain bands, a slower subsequent clear and disk persistence. Older saves without usage tracking do not
+  earn no-use titles from their missing history; the next cleared game starts complete tracking.
+- **Ending XA music, fixed.** The file-only installation omitted the stream outside the ISO filesystem.
+  The installer now copies and hashes sectors 270000–303263 without modifying them. Each packet has four
+  sector copies; decoding one per group produces stereo 37.8 kHz audio lasting 443.52 seconds. Playback starts
+  with the credits, after stopping field sequence audio, and stops before results. Owned-disc installation,
+  decode shape, corruption/truncation/missing-source rejection with an existing cache, and installer rollback
+  after a changed XA byte pass. Older installations require the owned disc again to add these sectors.
 
 ## Reproducing the final check
 
@@ -168,20 +193,27 @@ remain local and ignored. With the current build and compatible installation cac
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- \
   --install-root=/path/to/installation --save-root=/path/to/isolated/test-cards \
   --campaign-load=/tmp/vagrant-resume-20261113/earned_normal_cathedral_atrium_412.json \
-  --campaign-route=25,4/27,0/27,1/60,0 --campaign-rest --title-return
+  --campaign-route=25,4/27,0/27,1/60,0 --campaign-rest --clear-resume
 ```
 
 For rendered verification, omit `--headless`, run under `gamescope --backend headless` and supply
 `--capture=/path/to/captures`. The final log must contain both `the actual title scene reached its menu`
 and `FIELD_CONTRACTS_OK`; inspect `title_return.png` after the menu fade-in. The earned final runs are
-`campaign414.log` and `campaign414_rendered.log`; the latest 385-room regression results are
+`campaign434.log` and `campaign434_rendered.log`; the latest 385-room regression results are
 `battle_count_sweep.json` and `battle_count_sweep_parallel.log`, all in that local audit directory.
+Focused records include `clear_record_434.log`, `clear_record_rendered_434.log`,
+`ending_audio_422.log`, `installer_423.log`, `title_clear_cancel_425.log`,
+`title_clear_cancel_rendered_430.log`, `title_clear_regression_425.log` and `save_resume_clear_431.log`.
+`ngplus433.log` and `ngplus433_rendered.log` cover the prologue-to-cellar continuation;
+`legacy_clear434.log` covers an older earned ending checkpoint through cleared SAVE and actual Continue.
+The earlier observer errors during root attachment/audio teardown remain in the failed run logs;
+the final observer waits for gameplay readiness and leaves the running scene in place.
 
 ## Remaining verification work
 
-Compare the corresponding retail scenes, interfaces, animation and timing, including workshop previews and
-the ending's audio. Exercise the post-credits cleared-game save and New Game+ paths, every save location and
-additional equipment/menu combinations. A fully rendered run from fresh New Game remains separate work:
+Compare the corresponding retail scenes, interfaces, animation and timing, including workshop previews.
+Expand beyond the checked save locations, equipment/menu combinations and New Game+ prologue; a second complete
+New Game+ campaign and exhaustive optional-content coverage are not established by these checks. A fully rendered run from fresh New Game remains separate work:
 the earned Snow Dragon and Last Crusader victories above are headless. Keep direct room starts and injected
 combat fixtures as focused tests with their narrower claims. The completed main-campaign lineage does not
 establish exhaustive encounter, optional-content or pixel-for-pixel retail parity.

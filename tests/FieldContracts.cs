@@ -241,7 +241,9 @@ public partial class FieldContracts : Node
             if (argument == "--cube") _cube = true;
             if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
+            if (argument == "--skip-credits") _skipCredits = true;
             if (argument == "--title-return") _titleReturn = true;
+            if (argument == "--clear-resume") { _titleReturn = true; _clearResume = true; }
             if (argument == "--event-roundtrip") _eventRoundTrip = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -256,7 +258,8 @@ public partial class FieldContracts : Node
             if (!installed.Installed || !installed.Has("ending")) { Finish("the ending is not installed"); return; }
             _ending = GD.Load<PackedScene>(Wol.Games.Vagrant.Scenes.Ending.Ending.Scene).Instantiate<Wol.Games.Vagrant.Scenes.Ending.Ending>();
             _ending.KeepScene = true;
-            AddChild(_ending);
+            if (_titleReturn) GetTree().Root.CallDeferred(Node.MethodName.AddChild, _ending);
+            else AddChild(_ending);
             return;
         }
         if (_room is { } room)
@@ -298,7 +301,8 @@ public partial class FieldContracts : Node
             }
             foreach (var (flag, value) in _startFlags) _view.Flags[flag] = value;
             _view.Options = _options;
-            AddChild(_view);
+            if (_titleReturn) GetTree().Root.CallDeferred(Node.MethodName.AddChild, _view);
+            else AddChild(_view);
             return;
         }
         var content = GetNode<RetailContent>("/root/RetailContent");
@@ -310,6 +314,7 @@ public partial class FieldContracts : Node
             FieldView.PendingSave = Json.ParseString(File.ReadAllText(_campaignLoad)).AsGodotDictionary();
             GD.Print($"CAMPAIGN: resuming earned checkpoint {_campaignLoad}");
         }
+        if (_titleReturn) { GetTree().Root.CallDeferred(Node.MethodName.AddChild, _view); return; }
         AddChild(_view);
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
         if (_campaignLoad.Length != 0) return;
@@ -341,9 +346,10 @@ public partial class FieldContracts : Node
     /// <summary>Frames the event may take, pressing Circle whenever text waits.</summary>
     private const int EventFrames = 60 * 600;
 
-    private bool _endingCheck;
-    private bool _titleReturn, _titleOwnerConfigured, _awaitingTitle;
-    private int _titleFrames, _titleMenuFrames;
+    private bool _endingCheck, _skipCredits;
+    private bool _titleReturn, _titleOwnerConfigured, _awaitingTitle, _clearResume, _clearSaved, _clearOverwrite;
+    private Godot.Collections.Dictionary? _clearExpected;
+    private int _titleFrames, _titleMenuFrames, _newGameFrames;
     private Wol.Games.Vagrant.Scenes.Ending.Ending? _ending;
 
     public override void _PhysicsProcess(double delta)
@@ -351,25 +357,76 @@ public partial class FieldContracts : Node
         if (_awaitingTitle)
         {
             _titleFrames++;
-            if (_titleFrames % 60 == 1) Input.ActionRelease("ps_start");
+            if (_titleFrames % 30 == 1)
+                foreach (string action in new[] { "ps_start", "ps_circle", "ps_up", "ps_down" }) Input.ActionRelease(action);
             if (GetTree().CurrentScene is Wol.Games.Vagrant.Scenes.Title.TitleSequence title)
             {
                 if (title.Failure.Length != 0) { Finish(title.Failure); return; }
+                if (title.Screen == "clear_save")
+                {
+                    string stage = title.CardStage;
+                    if (stage == "Saved" && !_clearSaved)
+                    {
+                        var saved = FieldView.ReadCardFile(1, 1);
+                        if (saved == null || saved["clear_count"].AsInt32() != 1 || saved["zone"].AsInt32() != 1 || saved["map"].AsInt32() != 0
+                            || saved["flags"].AsGodotArray()[2].AsInt32() != 1 || saved["flags"].AsGodotArray()[130].AsInt32() != 0)
+                        { Finish("the title SAVE screens did not write the earned clear and reset story"); return; }
+                        if (_clearExpected != null)
+                            foreach (string key in new[] { "equipment", "items", "stored", "stored_items", "gains", "abilities", "arts", "spells", "weapon", "armour", "score" })
+                                if (Json.Stringify(saved[key]) != Json.Stringify(_clearExpected[key]))
+                                { Finish("the cleared SAVE changed the earned " + key); return; }
+                        _clearSaved = true;
+                        if (_campaignSave.Length != 0) File.WriteAllText(_campaignSave + ".clear.json", Json.Stringify(saved));
+                        Capture(this, _capture, "cleared_save_ui_saved");
+                        GD.Print("FIELD: the post-credits SAVE screens wrote CLEAR 01 with earned equipment, stats and inventory");
+                    }
+                    if (_titleFrames % 30 == 0)
+                    {
+                        if (stage == "Overwrite" && !_clearOverwrite) { Input.ActionPress("ps_up"); _clearOverwrite = true; }
+                        else if (stage is "Slots" or "Files" or "Overwrite" or "Saved") Input.ActionPress("ps_circle");
+                    }
+                    if (_titleFrames > 10000) Finish("the post-credits SAVE screens stalled at " + stage);
+                    return;
+                }
                 if (title.Screen == "menu" && !GetNode<Wol.Engine.SceneManager>("/root/SceneManager").IsTransitioning)
                 {
                     Input.ActionRelease("ps_start");
                     // The menu stage begins before its panel fades in. Observe the settled screen too.
                     if (++_titleMenuFrames < 120) return;
-                    Capture(this, _capture, "title_return");
-                    GD.Print("FIELD: the actual title scene reached its menu after the closing screen");
-                    Finish(""); return;
+                    if (_titleMenuFrames == 120)
+                    {
+                        Capture(this, _capture, "title_return");
+                        GD.Print("FIELD: the actual title scene reached its menu after the closing screen");
+                    }
+                    if (!_clearResume) { Finish(""); return; }
+                    if (!_clearSaved) { Finish("the earned ending skipped its cleared-game SAVE screens"); return; }
+                    if (_titleFrames % 30 == 0) Input.ActionPress(title.SelectedItem == Wol.Games.Vagrant.Scenes.Title.TitleMenu.Continue ? "ps_circle" : "ps_down");
+                    return;
+                }
+                if (_clearResume && title.Screen == "continue")
+                {
+                    if (_titleFrames % 30 == 0 && title.CardStage is "Slots" or "Files" or "Saved") Input.ActionPress("ps_circle");
+                    return;
                 }
                 _titleMenuFrames = 0;
                 if (_titleFrames % 60 == 0) Input.ActionPress("ps_start");
             }
-            if (_titleFrames > 1800) Finish("the closing screen did not return to the actual title menu");
+            if (_clearResume && GetTree().CurrentScene is FieldView resumed && resumed.Battle?.Ashley is { } runner)
+            {
+                var saved = FieldView.ReadCardFile(1, 1)!;
+                if (resumed.Flags[0] != 1 || resumed.Flags[1] != 1 || resumed.Flags[2] != 1 || resumed.Zone != 1 || resumed.Map != 0
+                    || runner.MaxHp != saved["max_hp"].AsInt32() || runner.MaxMp != saved["max_mp"].AsInt32()
+                    || resumed.Equipment.Count != saved["equipment"].AsGodotArray().Count || resumed.Clears != 1)
+                { Finish("Continue did not start New Game+ with the earned state"); return; }
+                if (++_newGameFrames < 750 || GetNode<Wol.Engine.SceneManager>("/root/SceneManager").IsTransitioning || resumed.Fade > 0.01f) return;
+                Capture(this, _capture, "new_game_plus_opening");
+                GD.Print("FIELD: actual title Continue loaded New Game+ opening with CLEAR 01 and carried equipment/stats");
+                Finish(""); return;
+            }
+            if (_titleFrames > 10000) Finish("the closing screen did not return to the actual title menu");
             return;
         }
+        if (_ending == null && _view != null && !_view.IsNodeReady()) return; // Root-owned gameplay is attached after this observer's Ready.
         if (_yaw is { } yaw && _view != null) _view.Gameplay.Yaw = yaw;
         if (_ending == null && _view is { GameEnded: true })
             foreach (var child in _view.Screen.GetChildren())
@@ -383,6 +440,7 @@ public partial class FieldContracts : Node
                         {
                             if (_view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
                             { Finish("campaign: earned clear state could not be exported"); return; }
+                            _clearExpected = saved;
                             File.WriteAllText(_campaignSave, Json.Stringify(saved));
                             GD.Print($"CAMPAIGN: wrote earned clear state {_campaignSave}; this diagnostic export does not check a post-credits save menu");
                         }
@@ -395,15 +453,19 @@ public partial class FieldContracts : Node
         {
             if (_titleReturn && !_titleOwnerConfigured)
             {
-                // Keep the observer alive while the ending's own SceneManager call replaces the real scene.
-                // This changes only test ownership after gameplay has handed off to the ending.
+                // The observer remains the root sibling while SceneManager retires the actual gameplay child.
+                // Do not reparent a running scene: ExitTree would stop its audio before the real transition.
                 Node owner = _view != null ? _view : _ending;
-                owner.Reparent(GetTree().Root);
+                if (owner.GetParent() != GetTree().Root) return; // Deferred root attachment may still be pending.
                 GetTree().CurrentScene = owner;
                 _ending.KeepScene = false;
                 _titleOwnerConfigured = true;
             }
             _frame++;
+            if (_frame == 300 && _ending.Results == null && !_ending.MusicPlaying) { Finish("the ending XA music did not start with the credits"); return; }
+            if (_ending.Results != null && _ending.MusicPlaying) { Finish("the ending XA music continued over the closing results"); return; }
+            if (_skipCredits && _ending.Results == null && _frame == 300) Input.ActionPress("ps_start");
+            if (_skipCredits && _frame == 304) Input.ActionRelease("ps_start");
             if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && (_frame % _storyEvery == 0 || _frame is 300)) Capture($"ending_{_ending.Frames:d5}");
             // The closing screen waits for a button: Circle once its parts are all in.
             if (_ending.Results != null && _frame % 600 == 0) Input.ActionPress("ps_circle");

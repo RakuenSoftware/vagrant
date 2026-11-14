@@ -2,7 +2,7 @@
 
 Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), consumed at `addons/wol_engine`.
 
-**You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files as the disc holds them; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
+**You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files and the ending's unlisted XA sectors byte for byte; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
 
 ## Current state
 
@@ -10,11 +10,18 @@ The title presents the publisher and developer logos, opening movie, title scree
 
 The field runtime decodes the player's disc at runtime: rooms, characters, event scripts, dialogue, music, sound effects, battle effects, menus, results and ending credits. Combat and enemy planning share one action resolver. Enemy movement includes steering, jumping, flight, moving platforms and scripted walks. Installation, title, event, effect and field contracts exercise these paths; visual fidelity still requires comparison with retail footage.
 
+The earned normal New Game checkpoint lineage completes the main campaign, both final bosses, epilogue and credits.
+The post-credits SAVE writes Game Clear Data, and Continue starts New Game+ with carried state. See
+[docs/COMPLETION.md](docs/COMPLETION.md) for the checked routes and the limits of retail comparison.
+
+Older file-only installations need reinstalling from the owned US disc to include the ending music. No disc image
+is needed during play once installed.
+
 See [docs/TITLE.md](docs/TITLE.md) for the title and [docs/FIELD.md](docs/FIELD.md) for the field runtime.
 
 ## Build
 
-Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the game decodes the opening movie with them, once, into its cache).
+Godot 4.7.2 .NET (`godot-dotnet`), the .NET 10 SDK, SCons 4.11.1, a C++17 toolchain, and FFmpeg/ffprobe on `PATH` (the game decodes the opening movie and ending XA music with them into its cache).
 
 ```sh
 git submodule update --init --recursive
@@ -42,6 +49,12 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
 # Disk resume and room/zone loads: gear, stats, inventory, progression and native variable lifetimes.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
+# Native cleared-game record: story reset, clear cap, titles, best time/map and carried state.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/clear_record_contracts.tscn -- --install-root=/path/to/installation
+# Owned-disc ending XA installation/decode and corruption rejection (use disposable scratch).
+godot-dotnet --headless --path . res://tests/ending_audio_contracts.tscn -- --install-root=/path/to/installation --disc=/path/disc.cue --scratch=/tmp/vs-ending-audio
+# Cancelling the post-credits SAVE preserves the existing card (isolated fixture using an earned record).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/title_clear_save_contracts.tscn -- --install-root=/path/to/installation --source=/path/to/earned-save.json
 # Gadget bag GET/ALL: capacity, partial collection, key possession flags and sigil consumption.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
 # Teleportation: discovery/paling flags, MP, menu cancellation and arrival at the native circle (isolated fixture).

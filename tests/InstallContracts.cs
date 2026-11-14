@@ -69,6 +69,9 @@ public partial class InstallContracts : Node
 
         installation.Install(disc, _ => { });
         string before = File.ReadAllText(installation.RecordPath);
+        if (new FileInfo(Path.Combine(installation.DiscPath, RetailInstallation.EndingStream)).Length != (long)RetailInstallation.EndingSectors * Wol.Engine.Install.PlayStationDisc.RawSectorSize)
+            throw new InvalidOperationException("the installer omitted the unlisted XA sectors");
+        installation.EndingMusic();
         foreach (string path in RetailDisc.Catalog.FileDigests.Keys)
             if (Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(installation.DiscPath, path)))) != RetailDisc.Catalog.FileDigests[path])
                 throw new InvalidOperationException($"the installed {path} is not the disc's file byte for byte");
@@ -91,6 +94,13 @@ public partial class InstallContracts : Node
         try
         {
             Rejects(installation, modified, "differs from the retail disc");
+            File.Copy(image, modified, true);
+            using (var stream = new FileStream(modified, FileMode.Open, System.IO.FileAccess.ReadWrite))
+            {
+                stream.Position = (long)RetailInstallation.EndingSector * Wol.Engine.Install.PlayStationDisc.RawSectorSize + 24;
+                int value = stream.ReadByte(); stream.Position--; stream.WriteByte((byte)(value ^ 1));
+            }
+            Rejects(installation, modified, "ending music does not match");
         }
         finally
         {
