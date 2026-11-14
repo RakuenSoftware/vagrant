@@ -3460,7 +3460,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return points;
     }
 
-    /// <summary>The top of a platform under a position (y down), if one is there and no more than 160 above it.</summary>
+    /// <summary>The top of a platform under a position (y down), at most 256 above it (BATTLE.PRG 0x800a93c8, 0x800a9460).</summary>
     private float? PlatformTop(Vector3 position)
     {
         float? top = null;
@@ -3470,7 +3470,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             float x = position.X - platform.Position.X, z = position.Z - platform.Position.Z;
             if (x < platform.MinX || x > platform.MaxX || z < platform.MinZ || z > platform.MaxZ) continue;
             float y = platform.Position.Y + platform.Top + PlatformDip[platform.Dip];
-            if (y < position.Y - 160) continue;
+            if (y < position.Y - 256) continue;
             if (top == null || y < top) top = y;
         }
         return top;
