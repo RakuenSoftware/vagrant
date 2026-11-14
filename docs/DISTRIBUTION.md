@@ -63,8 +63,9 @@ native hosted runners; these CI artifacts are the reviewable distribution builds
 It uploads only audited player archives
 and checksums, never the engine checkout, staging project or SDK cache. Automatic
 reviews remain enabled. Configure a read-only `WOL_ENGINE_READ_TOKEN` with access
-to the private engine; the default repository token usually cannot fetch a
-separate private repository. No token value belongs in Git or an archive.
+to the private engine (Contents: read). The game uses its normal repository
+token; the engine token is used only for the separate pinned engine checkout.
+A missing engine token fails with a setup message before engine checkout. No token value belongs in Git or an archive.
 
 The workflow creates downloadable CI artifacts. It does not publish a GitHub
 Release automatically. Promote the three verified archives/checksums to the

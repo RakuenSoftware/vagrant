@@ -35,9 +35,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
+      - name: Resolve the pinned private engine
+        id: engine
+        shell: bash
+        env:
+          ENGINE_TOKEN: ${{ secrets.WOL_ENGINE_READ_TOKEN }}
+        run: |
+          if [ -z "$ENGINE_TOKEN" ]; then
+            echo '::error::Set WOL_ENGINE_READ_TOKEN with read-only Contents access to RakuenSoftware/wol-engine.'
+            exit 1
+          fi
+          revision=$(git rev-parse HEAD:addons/wol_engine)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: RakuenSoftware/wol-engine
+          ref: ${{ steps.engine.outputs.revision }}
+          path: addons/wol_engine
           submodules: recursive
           persist-credentials: false
-          token: ${{ secrets.WOL_ENGINE_READ_TOKEN || github.token }}
+          token: ${{ secrets.WOL_ENGINE_READ_TOKEN }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
