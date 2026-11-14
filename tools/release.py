@@ -307,7 +307,9 @@ class DesktopRelease:
             for file in sorted(output.rglob("*")):
                 if file.is_file():
                     packed.write(file, Path("Vagrant") / file.relative_to(output))
-        archive.with_suffix(".zip.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n")
+        archive.with_suffix(".zip.sha256").write_text(
+            hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n",
+            encoding="utf-8", newline="\n")
         print("PLAYER_ARCHIVE:", archive, flush=True)
 
 
