@@ -42,12 +42,14 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
 # Disk resume and room/zone loads: gear, stats, inventory, progression and native variable lifetimes.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
-# Gadget bag GET/ALL: full categories, existing item stacks, partial collection and freed slots.
+# Gadget bag GET/ALL: capacity, partial collection, key possession flags and sigil consumption.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
 # Teleportation: discovery/paling flags, MP, menu cancellation and arrival at the native circle (isolated fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/teleport_contracts.tscn -- --install-root=/path/to/installation
 # Container selections: identical pieces, multiple transfers, discard, cancellation and item stacks.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/container_contracts.tscn -- --install-root=/path/to/installation
+# Native body collision bounds, vertical separation, contact, escape and exclusions (isolated fixture).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/body_collision_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/pit_contracts.tscn -- --install-root=/path/to/installation
 # Cloudstone height limit and a running ledge grab across Revelation Shaft.

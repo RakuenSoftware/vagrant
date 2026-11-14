@@ -187,6 +187,8 @@ public sealed partial class FieldBattle
         public int Side;
         /// <summary>Its model's girth and height (the header's 0x54 and 0x56, its actor's +0x63c and +0x63e).</summary>
         public int Girth = 63, Height = 128;
+        /// <summary>SHP body contact bounds (actor +0x640/+0x642), separate from line-of-fire bounds.</summary>
+        public int CollisionRadius, CollisionHeight;
         /// <summary>Whether Ashley's kill tally has counted it (its actor's +0x29, 0x8008554c).</summary>
         public bool Tallied;
         /// <summary>Whether Analyze has been cast on it (its data's +0x954 bit 17, 0x80083d7c).</summary>
@@ -530,6 +532,8 @@ public sealed partial class FieldBattle
         // Its girth and height from its model (actor +0x63c and +0x63e), which size it in a line of fire.
         combatant.Girth = _view.Content.Character(actor.Character).GetValueOrDefault("girth", 63).AsInt32();
         combatant.Height = _view.Content.Character(actor.Character).GetValueOrDefault("height", 128).AsInt32();
+        combatant.CollisionRadius = _view.Content.Character(actor.Character)["collision_radius"].AsInt32();
+        combatant.CollisionHeight = _view.Content.Character(actor.Character)["collision_height"].AsInt32();
         combatant.Reaching(range);
         // Ashley fights by the set for her weapon's category; others by their one battle set.
         if (actor.Id == "slot:0" && actor.HasClip($"bt{combatant.Category:X}_1")) combatant.BattleSet = $"bt{combatant.Category:X}";
@@ -777,21 +781,24 @@ public sealed partial class FieldBattle
 
     private readonly HashSet<Combatant> _walking = new();
 
-    /// <summary>How near two fighters' centres may come: their bodies' radii (FieldPlayer.Radius) together, about.</summary>
-    private const float Spacing = 96;
-
-    /// <summary>Whether moving an actor to a position would bring it within <see cref="Spacing"/> of a living fighter it is not already closer to.</summary>
+    /// <summary>Native body boxes must already overlap and the proposed move must bring their centres closer (BATTLE.PRG 0x800a8fd4).</summary>
     public bool Crowded(EventActor mover, Vector3 next)
     {
-        foreach (var other in Combatants.Values) if (other.Actor == mover && other.PassingThrough) return false;
+        if (!Combatants.TryGetValue(mover.Id, out var moving) || moving.PassingThrough) return false;
+        var from = mover.Position;
+        float top = from.Y - moving.CollisionHeight - (mover == Ashley?.Actor && _view.Carrying ? 128 : 0);
         foreach (var other in Combatants.Values)
         {
             if (other.Actor == mover || other.Dead || !other.Actor.Visible) continue;
             // An enemy's body is never stopped by bodies 0 and 1 (BATTLE.PRG 0x800a8fd4 tests bodies 2 to 16 only).
             if (mover != Ashley?.Actor && other.Index is 0 or 1) continue;
             var at = other.Actor.Position;
-            float after = new Vector2(next.X - at.X, next.Z - at.Z).Length(), before = new Vector2(mover.Position.X - at.X, mover.Position.Z - at.Z).Length();
-            if (after < Spacing && after < before) return true;
+            int radius = moving.CollisionRadius + other.CollisionRadius;
+            if (Math.Abs(from.X - at.X) > radius || Math.Abs(from.Z - at.Z) > radius
+                || at.Y < top || from.Y < at.Y - other.CollisionHeight) continue;
+            var after = new Vector2(next.X - at.X, next.Z - at.Z);
+            var before = new Vector2(from.X - at.X, from.Z - at.Z);
+            if (after.LengthSquared() < before.LengthSquared()) return true;
         }
         return false;
     }

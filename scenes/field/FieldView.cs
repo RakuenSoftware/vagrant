@@ -3617,6 +3617,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         get { foreach (var crate in _crates) if (!crate.Carried && !crate.Broken && !crate.Gone) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, crate.Orientation); }
     }
     private Crate? _carried;
+    /// <summary>Holding a block extends Ashley's body contact above her head by 128 native units.</summary>
+    public bool Carrying => _carried != null;
 
     /// <summary>
     /// Every crate the room still holds, as BATTLE.PRG keeps them among its objects (0x800f45e0, until 0x80099d6c

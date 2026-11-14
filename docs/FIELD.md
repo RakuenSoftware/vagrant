@@ -260,6 +260,7 @@ When an event ends, the camera returns to the gameplay view around Ashley (`scen
   - Take-off, apex, fall and landing play 44, 49, 45 and 46 standing; 48, 49, 50 and 51 walking; 53, 54, 55 and 56 running.
 - **Blocking classes.** A tile's blocking class (attribute bits 10 to 12) is solid over the whole tile at 5. At 1 to 4 it is solid over the half beyond a diagonal or an edge: where fx + fz > 128, fx > fz, fx + fz < 128 or fx < fz, by the position within the tile.
 - **Floor and walls.** The collision map is her floor.
+- **Body contact.** BATTLE.PRG 0x800A8FD4 tests overlapping boxes at the actors' current positions, using SHP header 0x58/0x5A for radius and height. These differ from the AI girth and eye height at 0x54/0x56. Vertical spans run from feet minus height to feet; touching counts, and carrying a block extends Ashley's top by 128. Only a proposed move that reduces squared horizontal distance is blocked, allowing escape from overlap. Enemy movement ignores bodies 0 and 1; dead, hidden and passing-through bodies keep their native exclusions.
   - The floor is sampled at eight points on her 53-unit radius around where she is going. Ground more than 96 units above her feet is a wall, and motion into it is dropped on that axis, so she slides along it.
   - She steps onto anything lower, and falls when the floor drops 64 units or more.
 - **Animations.** Base idle 1, walk 13, run 19, and 6 when stopping from a walk.
