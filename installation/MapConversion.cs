@@ -951,7 +951,8 @@ public sealed class MapConversion
     /// 4096ths of a map unit, y up, then the frames it waits there), from 0x48 up to six legs of 16 bytes (a velocity a frame
     /// and the frames it takes, in the order it travels: out to the last waypoint and back), and at 0xA8 where it
     /// starts (BATTLE.PRG's update near 0x8008c9a8). Positions here are map units, y down; the footprint is its group's
-    /// extent about that point.
+    /// extent about that point. Byte 5's low two bits designate the door stop; the word at 0xB4 holds the platform's
+    /// tile attributes (0x8008b764). Reaching that stop sets its door bit until departure (0x8008cc3c..0x8008ccfc).
     /// </summary>
     private JsonArray Platforms(int room)
     {
@@ -984,6 +985,7 @@ public sealed class MapConversion
             {
                 ["group"] = group, ["off"] = (flags & 0x200) != 0, ["lift"] = (flags & 0x100) != 0, ["start"] = Point(p + 0xA8, 1 / 4096f),
                 ["target"] = (int)(flags >> 27) & 3, ["forward"] = (flags & 1u << 26) != 0, ["leg"] = (int)(flags >> 29) & 7,
+                ["door_stop"] = (_map[p + 5] & 3), ["attributes"] = (long)BitConverter.ToUInt32(_map, p + 0xB4),
                 ["waypoints"] = waypoints, ["legs"] = legs, ["footprint"] = footprint,
             });
         }

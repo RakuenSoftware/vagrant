@@ -29,6 +29,8 @@ verify each against the current owner before treating that historical list as a 
 
 - **Six-leg Cloudstone paths, fixed.** Four-waypoint platforms decoded only four of their six movement legs. The Quarry platform consequently jumped 472 units on its return. The decoder now preserves all native legs and the initial leg index (BATTLE.PRG 0x8008c9a8/0x8008ca54); no model geometry changes. The focused path test fails before the fix and passes headless and rendered afterward, covering two complete cycles and a nonzero initial leg. All 30 platform-room entry checks and the focused magnet, carrying, platform, path and body-contact checks pass. The pit check also verifies a stable return while permitting normal HP regeneration. Both earned Quarry runs board, ride and jump off the platform into the Snow Dragon approach.
 
+- **Platform-stop exits, fixed.** The Temple exit lift reached its upper stop without dispatching its door. The decoder now preserves its door stop and platform attributes; the existing field owner sets and clears the door bit on arrival and departure and looks up platform-level doors even without horizontal movement (BATTLE.PRG 0x8008b764, 0x8008bb50, 0x8008cc3c). The focused ride test fails before the fix and passes headless and rendered afterward, checking against an early exit. Both earned campaign runs ride the lift and complete the following town scene.
+
 - **Starting weapon continuity, fixed in this audit.** Without explicitly equipping a weapon, battle used the
   INITBTL player weapon while the inventory and save kept a separate carried blade. A disk resume reset a worn
   starting weapon from DP 12593 / PP 11 to DP 12600 / PP 0. FieldView now resolves the starting weapon from its
@@ -131,11 +133,11 @@ verify each against the current owner before treating that historical list as a 
 - **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
   establish the prerequisites, persistent state or routing of a complete playthrough.
 
-The earned Snow Dragon and Last Crusader victories are headless; failed rendered fight attempts remain in the audit record. Minotaur Lord and Silver Key collection pass both headless and rendered. Tunnel of the Heartless and The Dark Coast then pass both headless and rendered using the actual block, jump and ledge controls. The Silver Key branch uses 39 pushes and breaks through normal controls; the return and both Resentful Ones puzzles also pass headless and rendered. A diagnostic reload inside the repeatable Minotaur encounter respawned it, so its victory, chest collection and exit are checked in one continuous segment. No inventory, HP, position or story-state grants are used in those campaign checks.
+The earned Snow Dragon and Last Crusader victories are headless; failed rendered fight attempts remain in the audit record. Minotaur Lord and Silver Key collection pass both headless and rendered. Tunnel of the Heartless and The Dark Coast then pass both headless and rendered using the actual block, jump and ledge controls. The Silver Key branch uses 39 pushes and breaks through normal controls; the return and both Resentful Ones puzzles also pass headless and rendered. A diagnostic reload inside the repeatable Minotaur encounter respawned it, so its victory, chest collection and exit are checked in one continuous segment. Both runs then complete the Kali introduction, defeat Kali and ride the Temple exit lift to Plateia Lumitar. The combat driver gives critical healing priority over optional preparation and continues attacking a nearly defeated boss; recovery uses actual consumables and native regeneration. No inventory, HP, position or story-state grants are used in those campaign checks.
 
 ## Next verification work
 
-Continue the normal New Game lineage through the remaining Kiltia and Cathedral route, keeping
+Continue the normal New Game lineage through the Cathedral route, keeping
 only its actual inventory and story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
 fixtures. Most checkpoint files use the real disk serializer while bypassing the save-point menu. Earned checks at Work of
 Art and later town, Undercity and mine circles also use the actual circle and DATA screens. Those establish the

@@ -3372,7 +3372,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     private sealed class Platform
     {
-        public int Group, Last, Target, Leg, Elapsed, Dip = 7;
+        public int Group, Last, Target, Leg, Elapsed, DoorStop, Dip = 7;
+        public long Attributes;
         public bool Off, Lift, Forward, Dwelling, Ridden;
         public Vector3 Position;
         public readonly List<(Vector3 Point, int Wait)> Waypoints = new();
@@ -3401,6 +3402,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 Group = record["group"].AsInt32(), Off = record["off"].AsBool(), Lift = record.GetValueOrDefault("lift", false).AsBool(),
                 Target = record.GetValueOrDefault("target", 0).AsInt32(), Forward = record.GetValueOrDefault("forward", true).AsBool(),
                 Leg = record.GetValueOrDefault("leg", 0).AsInt32(),
+                DoorStop = record.GetValueOrDefault("door_stop", 0).AsInt32(), Attributes = record.GetValueOrDefault("attributes", 0).AsInt64(),
                 Position = record.ContainsKey("start") ? Retail(record["start"].AsGodotArray()) : Vector3.Zero,
             };
             foreach (var point in record.GetValueOrDefault("waypoints", new GArray()).AsGodotArray())
@@ -3523,6 +3525,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                     platform.Position = platform.Waypoints[Math.Clamp(platform.Target, 0, platform.Last)].Point;
                     platform.Elapsed = 0;
                     platform.Dwelling = true;
+                    if (platform.Target == platform.DoorStop) platform.Attributes |= 1 << 14;
                 }
             }
             else if (++platform.Elapsed >= platform.Waypoints[Math.Clamp(platform.Target, 0, platform.Last)].Wait)
@@ -3530,6 +3533,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 int reached = platform.Target;
                 platform.Elapsed = 0;
                 platform.Dwelling = false;
+                platform.Attributes &= ~(1 << 14);
                 if (reached <= 0) platform.Forward = true;
                 else if (reached >= platform.Last) platform.Forward = false;
                 platform.Target = reached + (platform.Forward ? 1 : -1);
@@ -4343,16 +4347,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         CheckConditions(0x20);
         // Stepping onto a tile tests what the tile holds: its conditions (bit 13), then a door (bit 14).
         var tile = ((int)Mathf.Floor(player.Position.X / 128), (int)Mathf.Floor(player.Position.Z / 128));
-        long attributes = TileAttributes(tile.Item1, tile.Item2);
+        int platformLevel = PlatformUnder(player.Position) + 2;
+        long attributes = TileAttributes(tile.Item1, tile.Item2, platformLevel >= 2 ? platformLevel : 0);
         // A tile event can require standing still (condition 9); it must still be tested after movement stops
         // on the tile, as in room 9,11's timed lever exit.
         if ((attributes & 1 << 13) != 0) CheckConditions(0x02);
-        if (tile != _tile && Controlled)
+        if ((tile != _tile || platformLevel >= 2) && Controlled)
         {
             _tile = tile;
             SavePoint = 0;
             if (Controlled && (attributes & 1 << 16) != 0) StepOnTrap(tile);
-            if (Controlled && (attributes & 1 << 14) != 0) EnterDoor(tile);
+            if (Controlled && (attributes & 1 << 14) != 0) EnterDoor(tile, platformLevel >= 2 ? platformLevel : 0);
         }
         // Retail checks a pit even without a tile change, once the body falls below Y = 16.
         // Crossing its tile in the air, or on a platform or block, does not fall (0x80074f20..0x80075184).
@@ -5932,8 +5937,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>A collision tile's attribute word, or 0 outside the room.</summary>
-    public long TileAttributes(int x, int z)
+    public long TileAttributes(int x, int z, int level = 0)
     {
+        if (level >= 2) return level - 2 < _platforms.Count ? _platforms[level - 2].Attributes : 0;
         int width = _columns / 4, depth = _rows / 4;
         if (x < 0 || z < 0 || x >= width || z >= depth || z * width + x >= _attributes.Length) return 0;
         return _attributes[z * width + x];
@@ -5944,13 +5950,17 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// is below it) and starts leaving by it: the screen fades out at 8 levels a frame, and she walks on if the door
     /// asks her to.
     /// </summary>
-    private void EnterDoor((int X, int Z) tile)
+    private void EnterDoor((int X, int Z) tile, int level = 0)
     {
         foreach (var value in Document.GetValueOrDefault("doors", new GArray()).AsGodotArray())
         {
             var door = value.AsGodotDictionary();
+            int doorLevel = door.GetValueOrDefault("level", 0).AsInt32();
+            // Platform floors are numbered from 2 and identify the platform, independently of its current tile
+            // (BATTLE.PRG 0x8008bb50). Ground doors retain their collision tile lookup.
+            if (level >= 2 ? doorLevel != level : doorLevel >= 2) continue;
             var at = door["tile"].AsGodotArray();
-            if (at[0].AsInt32() != tile.X || at[1].AsInt32() != tile.Z) continue;
+            if (level < 2 && (at[0].AsInt32() != tile.X || at[1].AsInt32() != tile.Z)) continue;
             if (Flags[door["flag"].AsInt32()] < door["flag_value"].AsInt32()) continue;
             _door = door;
             Controlled = false;

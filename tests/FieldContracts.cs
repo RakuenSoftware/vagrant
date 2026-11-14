@@ -1235,6 +1235,8 @@ public partial class FieldContracts : Node
         var lateBoss = !(_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             && ((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23) && _view.Battle is { Ashley: { } bossRunner } bossBattle
             ? bossBattle.Combatants.Values.FirstOrDefault(c => c.Targetable && (c.Marked || c.Name == "Kali" || c.Name == "Last Crusader" && !_view.Spells.Contains(91) && _view.Items.GetValueOrDefault(429) == 0 || c.Name == "Minotaur Lord" && _view.Items.GetValueOrDefault(460) == 0) && c.MaxHp >= 300 && FieldBattle.Relation(c, bossRunner) == 3) : null;
+        bool finishingLateBoss = lateBoss is { Hp: <= 150 };
+        if (finishingLateBoss && _campaignResting) { _campaignResting=false; _fightProgressAt=_frame; }
         var lateLimb = lateBoss?.Limbs.Where(l => l.MaxHp > 0).MinBy(l => l.ChainEvasion);
         int lateAffinity = lateLimb == null ? 0 : Enumerable.Range(0, 5).MinBy(i => lateLimb.Affinities[i]);
         bool quarryTreasure = _view.Zone == 53 && _campaignLoot == (_view.Zone, _view.Map);
@@ -1312,14 +1314,14 @@ public partial class FieldContracts : Node
                 = (1, _frame, _frame, item, _view.Items[item], preparingItems.Hp, preparingItems.Mp);
             GD.Print($"CAMPAIGN: preparing with earned {_view.ItemName(item)} through ITEMS");
         }
-        bool wardNeeded = !_campaignWesternRetreat && (!sparkSupply || supplyCombat)
+        bool wardNeeded = !finishingLateBoss && !_campaignWesternRetreat && (!sparkSupply || supplyCombat)
             && ((_view.Zone, _view.Map) is (48, 5) or (48, 7) or (49, 10) or (49, 11) or (49, 12) or (53, 1) or (51, 4) || lateBoss != null)
             && _view.Spells.Contains(76) && _view.Battle is { Ashley: { } warding } wardBattle
             && !warding.Has(12) && !warding.Has(FieldBattle.Silence)
             && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && (c.Name is "Lich" or "Zombie Mage" or "Harpy" or "Neesa" or "Tieger" or "Water Elemental" or "Imp"
-                || c == lateBoss && c.Limbs.Any(l => l.Actions.Any(id => id is >= 58 and <= 130))))
+                || c == lateBoss && c.Limbs.Any(l => l.Actions.Any(id => id is >= 54 and <= 130))))
             && (warding.Mp >= 21 || new[] { 327, 328, 329, 330 }.Any(id => _view.Items.GetValueOrDefault(id) > 0));
-        bool heraklesNeeded = (clearWesternPassage || supplyCombat || quarryTreasure || lateBoss != null || (_view.Zone, _view.Map) == (49, 10) || quarryWater) && _view.Spells.Contains(60)
+        bool heraklesNeeded = !finishingLateBoss && (clearWesternPassage || supplyCombat || quarryTreasure || lateBoss != null || (_view.Zone, _view.Map) == (49, 10) || quarryWater) && _view.Spells.Contains(60)
             && _view.Battle is { Ashley: { } strengthening } strengthBattle && !strengthening.Has(FieldBattle.Herakles)
             && !strengthening.Has(12) && !strengthening.Has(FieldBattle.Silence) && strengthening.Mp >= 12 && strengthBattle.HostileCount() > 0;
         FieldBattle.Combatant? westernTarget = null;
@@ -1330,13 +1332,13 @@ public partial class FieldContracts : Node
         bool westernDebuff = westernTarget != null && _view.Spells.Contains(54) && _view.Battle!.Ashley!.Mp >= 7
             && !westernTarget.Has(FieldBattle.Degenerate) && (westernTarget.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0
             && westernTarget.Actor.Position.DistanceTo(_view.Player!.Position) < 400;
-        int recoveryPercent = (_view.Zone, _view.Map) is (40, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 95 : 75;
+        int recoveryPercent = finishingLateBoss ? 60 : (_view.Zone, _view.Map) is (40, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) or (53, 23) or (53, 29) ? 30 : 50)) && restBattle.HostileCount() > 0
+            if (!_campaignResting && !finishingLateBoss && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) or (53, 23) or (53, 29) ? 30 : 50)) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334, 337, 338 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -1407,29 +1409,31 @@ public partial class FieldContracts : Node
         bool rosencrantzFight = (_view.Zone, _view.Map) == (29, 0);
         bool mineElemental = (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) or (53, 5);
         bool mineEarth = mineElemental && _view.Map != 14;
-        bool elementalFight = lateBoss != null && lateAffinity != 0 || earthDragon || grissomFight || rosencrantzFight || mineElemental || quarryWater || supplyCombat || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
+        bool elementalFight = lateBoss != null && !finishingLateBoss && lateAffinity != 0 || earthDragon || grissomFight || rosencrantzFight || mineElemental || quarryWater || supplyCombat || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
         bool airFusion = earthDragon || crusaderOnly || rosencrantzFight || sparkSupply || mineElemental && !mineEarth;
         int fusionSpell = lateBoss != null ? 65 + lateAffinity : quarryWater ? 67 : airFusion ? 66 : mineEarth ? 68 : grissomFight ? 67 : 69, fusionItem = lateBoss != null ? 448 + lateAffinity : quarryWater ? 450 : airFusion ? 449 : mineEarth ? 451 : grissomFight ? 450 : 452, fusionStatus = lateBoss != null ? 18 + lateAffinity : quarryWater ? 20 : airFusion ? 19 : mineEarth ? 21 : grissomFight ? 20 : 22;
         int guardSpell = earthDragon || mineElemental && !mineEarth ? 72 : grissomFight || mineEarth ? 70 : 71, guardItemId = guardSpell == 72 ? 455 : guardSpell == 70 ? 453 : 454, guardStatus = guardSpell == 72 ? 25 : guardSpell == 70 ? 23 : 24;
         bool fusionAvailable = (lateBoss == null || lateAffinity != 0) && (_view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0);
-        bool mineDebuff = (!_campaignBypassEnemies || lateBoss != null) && (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+        bool mineDebuff = !finishingLateBoss && (!_campaignBypassEnemies || lateBoss != null) && (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
-        if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff
+        if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || !finishingLateBoss && patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
-                || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
-                || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
+                || !finishingLateBoss && patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
+                || !finishingLateBoss && patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
                 || (elementalFight && recovery.HostileCount() > 0 && (fusionAvailable ? !patient.Has(fusionStatus)
                         : !patient.Has(guardStatus) && (_view.Spells.Contains(guardSpell) || _view.Items.GetValueOrDefault(guardItemId) > 0)))))
         {
             bool life = patient.Hp * 100 < patient.MaxHp * recoveryPercent;
+            int urgentPotion = life && patient.Hp*5 < patient.MaxHp*3
+                ? new[] { 326,325,324,323,335,336,337,338 }.FirstOrDefault(id => _view.Items.GetValueOrDefault(id)>0) : 0;
             bool frost = fusionAvailable;
             bool guard = !life && (wardNeeded || heraklesNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
             bool weakening = !life && (westernDebuff || mineDebuff);
             _campaignHealSpell = guard && heraklesNeeded ? 60 : guard && elementalFight && frost && !patient.Has(fusionStatus) ? fusionSpell : guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
             _campaignHealEnemy = westernDebuff && weakening && !guard ? westernTarget?.Actor.Id ?? "" : "";
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
-            _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
+            _campaignHealMagic = urgentPotion == 0 && (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
             // The native ward blocks even Ashley's own healing magic; use her owned HP items while it lasts.
             if (_campaignHealSpell == 96 && patient.Has(12) && new[] { 323, 324, 325, 326, 335, 336, 337, 338 }.Any(id => _view.Items.GetValueOrDefault(id) > 0)) _campaignHealMagic = false;
             if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
@@ -1451,7 +1455,8 @@ public partial class FieldContracts : Node
             {
                 int guardItem = heraklesNeeded ? 431 : wardNeeded ? 440 : frost ? fusionItem : guardItemId;
                 int cure = patient.Has(FieldBattle.Paralysis) ? 339 : !life && patient.Has(FieldBattle.Poison) ? 340 : !life && patient.Has(FieldBattle.Numbness) ? 341 : 0;
-                int[] choices = cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
+                int[] choices = urgentPotion != 0 ? new[] { urgentPotion }
+                    : cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
                     : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
                     : guard && _view.Items.GetValueOrDefault(guardItem) > 0 ? new[] { guardItem }
                     : guard && patient.Mp < cost ? new[] { 327, 328, 329, 330, 335, 336 }
