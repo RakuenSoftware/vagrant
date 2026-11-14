@@ -8,9 +8,9 @@ verify each against the current owner before treating that historical list as a 
 
 | Check | What it establishes | What remains unverified |
 |---|---|---|
-| 385 normal-mode individual room checks, repeated after the state-reset and continuing-transition fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
+| 385 normal-mode individual room checks, repeated after the state-reset, continuing-transition and body-contact fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | Pad-only runs solve the Wine Cellar stack, Hall of Struggle barrier and the two high-exit block puzzles, including breaking a block and carrying the survivors; a later run also carries and stacks the Catacombs stones to climb its east exit. Historical saved checkpoints used the wrong mode flag and are retired as normal-campaign evidence. A corrected fresh New Game reaches the Hall of Struggle; its earned state continues through the lever gate, first Minotaur, defeat scene and a saved post-boss checkpoint, then leaves the Wine Cellar, defeats Dullahan, the optional Catacombs ghost and the Lizardmen, and saves after their defeat events. That earned state then solves the Catacombs south return puzzle, follows the gate cutaway and enters the Sanctum. It solves the entrance stack, defeats Golem and saves after the victory cutaway returns to its arena. It returns to Work of Art, repairs through SETUP with the earned PP cost, then crosses the annex on its moving platform, defeats Dragon and saves after its reward event, then follows the Town Center West scenes to an earned checkpoint, defeats Duane and both companions, then reaches the mines and defeats their Wyvern | The remaining normal-mode campaign, exact workshop layout/timing parity and save-point menu coverage |
+| Campaign route checks | A corrected normal New Game continues through earned checkpoints, with gear, consumables, spells and story state carried by the real serializer. Pad input solves the Wine Cellar and Catacombs stacks, timed mine corridors, moving platforms, Snowfly Forest and both Undercities; defeats include Minotaur, Dullahan, Lizardmen, Golem, Dragon, Duane, the mine bosses, Giant Crab, Earth Dragon, Grissom/Dark Crusader, Rosencrantz, the later mine elementals, Sky Dragon, Harpy, Lich, Nightstalker, Neesa/Tieger and Water Elemental. The earned state collects Clematis and Aster, follows the post-battle scenes and enters the Limestone Quarry at story 65, then defeats Water Elemental with earned Spark Fusion and repaired gear. Historical checkpoints using the wrong mode flag remain retired as campaign evidence. | The remaining Quarry, Kiltia and Cathedral campaign and an earned ending; exact workshop layout/timing parity |
 | Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change. An earned Work of Art state also walks onto its circle, saves through DATA and the card screens, and resumes into another room in a fresh process | A complete campaign resumed across application launches, every equipment combination and every save location |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
 | Final story event through ending | The event hands off to credits, the closing screen accepts input and the game returns to title | Reaching that event through a continuous campaign |
@@ -18,6 +18,12 @@ verify each against the current owner before treating that historical list as a 
 | Retail-screen pixel contract in LDR/HDR | Five-bit blend arithmetic against a known background | Screenshot and timing parity for every 3D scene, camera and effect |
 
 ## Confirmed defects and remaining gaps
+
+- **Key and sigil story flags, fixed.** Successful gadget-bag collection now sets the native possession flag; a full bag leaves it unset. Gates inspect owned items before the recorded flag so a collected sigil is consumed and advances to its used state. The focused bag test fails before the change and passes headless and rendered afterward. The earned Aster return now triggers Neesa/Tieger's introduction and victory sequence.
+- **Body contact, fixed.** Contact uses the SHP collision radius/height rather than a constant horizontal circle, with native vertical contact, square bounds and movement away from overlap. Separate-floor, boundary, corner and exclusion fixtures pass headless and rendered; pit and Cloudstone checks pass, followed by 385 room checks. One cold-cache room timed out initially and passed on retry.
+- **Awaited system-message input, fixed.** A single display-frame Circle/Cross edge could be missed by a 30 Hz event wait. The field now consumes its existing buffered input, clearing earlier edges when the message opens. The missed-phase fixture fails before the change; both display phases and a rendered check pass afterward.
+
+- **Magnetic block repulsion, fixed.** Matching magnetic blocks previously stacked in contact. The crate owner now reads and runs the native fourteen-step repulsion motion, preserving its 128-unit gap on initial placement as well. Opposite colours remain in contact. The focused placement test fails before the fix and passes headless and rendered afterward; seven magnetic-room entry checks and pit, platform and body-contact regressions pass. The earned route stacks the matching blocks, crosses the pit, consumes Eulelia and saves through DATA at The Auction Block in headless and rendered runs.
 
 - **Starting weapon continuity, fixed in this audit.** Without explicitly equipping a weapon, battle used the
   INITBTL player weapon while the inventory and save kept a separate carried blade. A disk resume reset a worn
@@ -123,10 +129,10 @@ verify each against the current owner before treating that historical list as a 
 
 ## Next verification work
 
-Continue the normal New Game lineage from its earned mines Wyvern checkpoint, keeping only its actual inventory and
-story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
-fixtures. Most checkpoint files use the real disk serializer while bypassing the save-point menu; the separate
-earned Work of Art check uses the actual circle and DATA screens. That establishes this location's positive save
-path, while other save points and full save UI coverage remain open. Record the continuing route and checkpoints, exercise saves and
+Continue the normal New Game lineage through the remaining Limestone Quarry, Kiltia and Cathedral route, keeping
+only its actual inventory and story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
+fixtures. Most checkpoint files use the real disk serializer while bypassing the save-point menu. Earned checks at Work of
+Art and later town, Undercity and mine circles also use the actual circle and DATA screens. Those establish the
+checked locations' positive save paths; every save point and full save UI coverage remain open. Record the continuing route and checkpoints, exercise saves and
 reloads along it, and solve the intervening puzzles through their player controls. Compare the corresponding
 retail scenes and interfaces at those checkpoints. Keep direct room starts and injected combat fixtures as focused tests, with their narrower claims.

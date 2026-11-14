@@ -43,6 +43,7 @@ public partial class FieldContracts : Node
     private readonly List<int> _campaignUse = new();
     private (int Zone, int Map)? _campaignUseAt;
     private int _campaignRetrieveBlade, _campaignRetrieveRow, _campaignEquipBlade;
+    private int _campaignShield, _campaignShieldStep, _campaignShieldSelection, _campaignShieldAt;
     private bool _campaignStore, _campaignStored, _campaignRest;
     private int _campaignStoreStep, _campaignStoreAt, _campaignStoreRemaining, _campaignStoreArmour, _campaignStoreCursor, _campaignStoredBefore, _campaignStoreShown = -1;
     private int _campaignPrepareStep, _campaignPrepareSelection, _campaignSettleFrames, _campaignWeaponPrepareAt;
@@ -127,7 +128,8 @@ public partial class FieldContracts : Node
     /// <summary>With <c>--shortcuts</c>, once Ashley is the player's L2 holds the shortcut menu open and CHAIN and ITEMS are taken from it, in place of the room's other steps: each must open its page, and leaving the page must close the menu.</summary>
     private bool _shortcuts;
     /// <summary>With <c>--carry</c>, Ashley lifts the nearest block (kinds 4 to 6), turns about with it and sets it down.</summary>
-    private bool _carry;
+    private bool _carry, _magnet;
+    private int _magnetStep;
     private int _carryStep, _carryCrates;
     private string _carryTiles = "";
     /// <summary>With <c>--cube</c>, Ashley draws her weapon facing the nearest crate, opens the attack sphere on it ("Cube") and strikes it: no crate moves, and only a kind 2 or 4 crate may break.</summary>
@@ -183,6 +185,7 @@ public partial class FieldContracts : Node
             if (argument == "--campaign-repair") _campaignRepair = true;
             if (argument.StartsWith("--campaign-retrieve=", StringComparison.Ordinal)) _campaignRetrieveBlade = int.Parse(argument["--campaign-retrieve=".Length..]);
             if (argument.StartsWith("--campaign-equip=", StringComparison.Ordinal)) _campaignEquipBlade = int.Parse(argument["--campaign-equip=".Length..]);
+            if (argument.StartsWith("--campaign-shield=", StringComparison.Ordinal)) _campaignShield = int.Parse(argument["--campaign-shield=".Length..]);
             if (argument.StartsWith("--campaign-use-at=", StringComparison.Ordinal) && argument["--campaign-use-at=".Length..].Split(',') is [var useZone, var useMap]) _campaignUseAt = (int.Parse(useZone), int.Parse(useMap));
             if (argument == "--campaign-store") _campaignStore = true;
             if (argument == "--campaign-rest") _campaignRest = true;
@@ -233,6 +236,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--art=", StringComparison.Ordinal)) _art = int.Parse(argument["--art=".Length..]);
             if (argument == "--shortcuts") _shortcuts = true;
             if (argument == "--carry") _carry = true;
+            if (argument == "--magnet") _magnet = true;
             if (argument == "--cube") _cube = true;
             if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
@@ -746,7 +750,13 @@ public partial class FieldContracts : Node
         if (_campaignTeleport >= 0 && _view.Battle is { Ashley: { } traveller } travelling)
         {
             Steer(Vector2.Zero);
-            if (!_view.Controlled || _press > 0 || _frame % 8 != 0) return;
+            // Entry text at either circle can need acknowledgement before control returns.
+            if (!_view.Controlled)
+            {
+                if (_press == 0 && _frame % 30 == 0) Tap("ps_circle");
+                return;
+            }
+            if (_press > 0 || _frame % 8 != 0) return;
             if (_campaignTeleportStep == 4)
             {
                 if (_view.Rooms.Count <= _campaignTeleportRooms) return;
@@ -881,7 +891,7 @@ public partial class FieldContracts : Node
         if (_campaignSaveUi && !_campaignUiSaved && _campaignCheckpoint == (_view.Zone, _view.Map)
             && (_campaignItem == 0 || _view.Items.GetValueOrDefault(_campaignItem) > 0)
             && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue
-            && (!_campaignRepair || _campaignRepaired) && _view.Controlled && _view.Battle is { Ashley: { } saving } savingBattle && savingBattle.HostileCount() == 0)
+            && (!_campaignRepair || _campaignRepaired) && _view.Controlled && _view.Battle is { Ashley: { } saving } savingBattle && (savingBattle.HostileCount() == 0 || _campaignItem > 0))
         {
             // DATA must save the requested recovered state, after the checkpoint's earned prerequisites hold.
             if (_campaignUiStep == 0 && _campaignRest && (saving.Hp < saving.MaxHp || saving.Mp < saving.MaxMp))
@@ -1125,6 +1135,51 @@ public partial class FieldContracts : Node
             }
             return;
         }
+        if (_view.Controlled && _campaignShield > 0 && _campaignHealStep == 0 && _view.Battle is { } shielding
+            && (_campaignShieldStep > 0 || _view.EquippedArmour.GetValueOrDefault(-3)?.GetValueOrDefault("id", 0).AsInt32() != _campaignShield))
+        {
+            var shields = _view.Equipment.Select(v => v.AsGodotDictionary()).Where(e => e["kind"].AsString() is "armour" or "shield")
+                .Select(e => e["record"].AsGodotDictionary()).Where(e => e["id"].AsInt32() is >= 127 and <= 142
+                    && !_view.EquippedArmour.Values.Any(w => w.RecursiveEqual(e))).ToList();
+            int choice = shields.FindIndex(e => e["id"].AsInt32() == _campaignShield);
+            if (choice < 0 && _campaignShieldStep < 4)
+            { Finish($"campaign: shield {_campaignShield} is not available for the held weapon"); return; }
+            Steer(Vector2.Zero);
+            if (_campaignShieldAt == 0) _campaignShieldAt = _frame;
+            if (_frame - _campaignShieldAt > 1800) { Finish($"campaign: shield EQUIP step {_campaignShieldStep} stalled"); return; }
+            if (_press > 0 || _frame % 8 != 0) return;
+            switch (_campaignShieldStep)
+            {
+                case 0:
+                    if (shielding.Paused) Tap("ps_cross");
+                    else if (!shielding.Busy && !shielding.EnemyActing) { Tap("ps_triangle"); _campaignShieldStep = 1; }
+                    break;
+                case 1:
+                    if (_view.MenuPage == 3) { Tap("ps_circle"); _campaignShieldStep = 2; _campaignShieldSelection = 0; }
+                    else if (_view.MenuRow != 3) Tap("ps_down");
+                    else Tap("ps_circle");
+                    break;
+                case 2:
+                    if (_campaignShieldSelection++ < 1) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignShieldStep = 3; _campaignShieldSelection = 0; }
+                    break;
+                case 3:
+                    if (_campaignShieldSelection++ <= choice) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignShieldStep = 4; }
+                    break;
+                case 4:
+                    if (_view.MenuOpen) Tap("ps_cross");
+                    else
+                    {
+                        if (_view.EquippedArmour.GetValueOrDefault(-3)?.GetValueOrDefault("id", 0).AsInt32() != _campaignShield)
+                        { Finish($"campaign: EQUIP did not select earned shield {_campaignShield}"); return; }
+                        _campaignShieldStep = _campaignShieldAt = 0;
+                        GD.Print($"CAMPAIGN: equipped earned shield {_campaignShield} through ITEMS");
+                    }
+                    break;
+            }
+            return;
+        }
         // Prepare for the elemental using earned gear through the normal equipment menu.
         if (_view.Controlled && (_view.Zone, _view.Map) == (50, 14) && _campaignRouteAt + 1 < _campaignRoute.Count
             && _campaignRoute[_campaignRouteAt + 1] == (50, 13) && _view.Battle is { Ashley: { } preparing } preparation)
@@ -1177,6 +1232,10 @@ public partial class FieldContracts : Node
                 return;
             }
         }
+        bool quarryTreasure = _view.Zone == 53 && _campaignLoot == (_view.Zone, _view.Map);
+        bool quarryWater = (_view.Zone, _view.Map) == (53, 1);
+        bool sparkSupply = _campaignLoot == (51, 5) && _campaignLootItem == 450 && (_view.Zone, _view.Map) is (51, 4) or (51, 5);
+        bool supplyCombat = sparkSupply && !((_view.Zone, _view.Map) == (51, 4) && _view.Flags[1011] == 0);
         bool clearWesternPassage = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469;
         if (_view.Controlled && _view.Battle is { Ashley: { } recuperating } retreatBattle)
         {
@@ -1203,7 +1262,7 @@ public partial class FieldContracts : Node
         }
 
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
-        int damageChain = clearWesternPassage ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
+        int damageChain = clearWesternPassage || sparkSupply || quarryTreasure ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
             && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
         {
@@ -1233,6 +1292,9 @@ public partial class FieldContracts : Node
             }
             return;
         }
+        // Read the Spark Fusion grimoire actually collected on the requested supply route.
+        if (sparkSupply && _view.Items.GetValueOrDefault(450) > 0 && !_view.Spells.Contains(67) && _campaignUse.Count == 0 && _campaignHealStep == 0)
+            _campaignUse.Add(450);
         // Consume requested, already-owned preparation items through the same ITEMS input path as recovery.
         if ((_campaignUseAt == null || _campaignUseAt == (_view.Zone, _view.Map)) && _campaignUse.Count > 0 && _campaignHealStep == 0 && _view.Controlled && !_view.MenuOpen
             && _view.Battle is { Busy: false, Paused: false, EnemyActing: false, Ashley: { } preparingItems })
@@ -1245,11 +1307,11 @@ public partial class FieldContracts : Node
                 = (1, _frame, _frame, item, _view.Items[item], preparingItems.Hp, preparingItems.Mp);
             GD.Print($"CAMPAIGN: preparing with earned {_view.ItemName(item)} through ITEMS");
         }
-        bool wardNeeded = !_campaignWesternRetreat && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _view.Spells.Contains(76)
+        bool wardNeeded = !_campaignWesternRetreat && (!sparkSupply || supplyCombat) && (_view.Zone, _view.Map) is (48, 5) or (48, 7) or (49, 10) or (49, 11) or (49, 12) or (53, 1) or (51, 4) && _view.Spells.Contains(76)
             && _view.Battle is { Ashley: { } warding } wardBattle && !warding.Has(12) && !warding.Has(FieldBattle.Silence)
-            && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && c.Name is "Lich" or "Zombie Mage")
+            && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && c.Name is "Lich" or "Zombie Mage" or "Harpy" or "Neesa" or "Tieger" or "Water Elemental" or "Imp")
             && (warding.Mp >= 21 || new[] { 327, 328, 329, 330 }.Any(id => _view.Items.GetValueOrDefault(id) > 0));
-        bool heraklesNeeded = clearWesternPassage && _view.Spells.Contains(60)
+        bool heraklesNeeded = (clearWesternPassage || supplyCombat || quarryTreasure || (_view.Zone, _view.Map) == (49, 10) || quarryWater) && _view.Spells.Contains(60)
             && _view.Battle is { Ashley: { } strengthening } strengthBattle && !strengthening.Has(FieldBattle.Herakles)
             && !strengthening.Has(12) && !strengthening.Has(FieldBattle.Silence) && strengthening.Mp >= 12 && strengthBattle.HostileCount() > 0;
         FieldBattle.Combatant? westernTarget = null;
@@ -1266,7 +1328,7 @@ public partial class FieldContracts : Node
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && !clearWesternPassage && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) ? 30 : 50)) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -1284,7 +1346,7 @@ public partial class FieldContracts : Node
                     if ((_view.Zone, _view.Map) == (51, 6) && restBattle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3 && c.Actor.Position.DistanceTo(_campaignRestPoint) < 800))
                         _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(1344, 0, 448), new Vector3(1344, 0, 1984), new Vector3(320, 0, 1984) }
                             .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3).Min(c => p.DistanceTo(c.Actor.Position)));
-                    if ((_view.Zone, _view.Map) is (51, 2) or (51, 14) && restBattle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3 && c.Actor.Position.DistanceTo(_campaignRestPoint) < 700))
+                    if ((_view.Zone, _view.Map) is (51, 2) or (51, 14) or (53, 1) && restBattle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3 && c.Actor.Position.DistanceTo(_campaignRestPoint) < 700))
                         _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(1088, 0, 448), new Vector3(1088, 0, 1600), new Vector3(320, 0, 1600) }
                             .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3).Min(c => p.DistanceTo(c.Actor.Position)));
                     if ((_view.Zone, _view.Map) == (29, 0) && restBattle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, restRunner) == 3 && c.Actor.Position.DistanceTo(_campaignRestPoint) < 700))
@@ -1311,11 +1373,11 @@ public partial class FieldContracts : Node
         bool earthDragon = (_view.Zone, _view.Map) == (40, 22);
         bool grissomFight = (_view.Zone, _view.Map) == (40, 24);
         bool rosencrantzFight = (_view.Zone, _view.Map) == (29, 0);
-        bool mineElemental = (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14);
+        bool mineElemental = (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) or (53, 5);
         bool mineEarth = mineElemental && _view.Map != 14;
-        bool elementalFight = earthDragon || grissomFight || rosencrantzFight || mineElemental || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
-        bool airFusion = earthDragon || crusaderOnly || rosencrantzFight || mineElemental && !mineEarth;
-        int fusionSpell = airFusion ? 66 : mineEarth ? 68 : grissomFight ? 67 : 69, fusionItem = airFusion ? 449 : mineEarth ? 451 : grissomFight ? 450 : 452, fusionStatus = airFusion ? 19 : mineEarth ? 21 : grissomFight ? 20 : 22;
+        bool elementalFight = earthDragon || grissomFight || rosencrantzFight || mineElemental || quarryWater || supplyCombat || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
+        bool airFusion = earthDragon || crusaderOnly || rosencrantzFight || sparkSupply || mineElemental && !mineEarth;
+        int fusionSpell = quarryWater ? 67 : airFusion ? 66 : mineEarth ? 68 : grissomFight ? 67 : 69, fusionItem = quarryWater ? 450 : airFusion ? 449 : mineEarth ? 451 : grissomFight ? 450 : 452, fusionStatus = quarryWater ? 20 : airFusion ? 19 : mineEarth ? 21 : grissomFight ? 20 : 22;
         int guardSpell = earthDragon || mineElemental && !mineEarth ? 72 : grissomFight || mineEarth ? 70 : 71, guardItemId = guardSpell == 72 ? 455 : guardSpell == 70 ? 453 : 454, guardStatus = guardSpell == 72 ? 25 : guardSpell == 70 ? 23 : 24;
         bool fusionAvailable = _view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0;
         bool mineDebuff = (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
@@ -1332,7 +1394,7 @@ public partial class FieldContracts : Node
             bool frost = fusionAvailable;
             bool guard = !life && (wardNeeded || heraklesNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
             bool weakening = !life && (westernDebuff || mineDebuff);
-            _campaignHealSpell = guard && heraklesNeeded ? 60 : guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
+            _campaignHealSpell = guard && heraklesNeeded ? 60 : guard && elementalFight && frost && !patient.Has(fusionStatus) ? fusionSpell : guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
             _campaignHealEnemy = westernDebuff && weakening && !guard ? westernTarget?.Actor.Id ?? "" : "";
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
             _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
@@ -1414,7 +1476,7 @@ public partial class FieldContracts : Node
                 case 5:
                     if (healing.Paused)
                     {
-                        if (_campaignHealMagic && _campaignHealSpell is 54 or 55 or 56 or 57 && healing.SphereTarget is { } target
+                        if (_campaignHealMagic && _campaignHealSpell is 54 or 55 or 56 or 57 or 114 && healing.SphereTarget is { } target
                             && (FieldBattle.Relation(target, recovering) != 3 || _campaignHealEnemy.Length > 0 && target.Actor.Id != _campaignHealEnemy
                                 || _campaignHealSpell == 54 && target.Has(FieldBattle.Degenerate)))
                         {
@@ -1460,7 +1522,7 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
-        if (_campaignLoot == (_view.Zone, _view.Map) && (!clearWesternPassage || battle.HostileCount() == 0) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
+        if (_campaignLoot == (_view.Zone, _view.Map) && (!(clearWesternPassage || quarryTreasure) || battle.HostileCount() == 0) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
             .Select(v => v.AsGodotDictionary()).FirstOrDefault(c => (c["lock"].AsInt32() == 0 || c["lock"].AsInt32() == 2 && (_view.Spells.Contains(92) || _view.Items.GetValueOrDefault(446) > 0)) && _view.ChestContents(c).Count > 0) is { } treasure)
         {
             if (_campaignLootStart == 0) _campaignLootStart = _frame;
@@ -1472,13 +1534,14 @@ public partial class FieldContracts : Node
             var (dx, dz) = (facing / 1024) switch { 0 => (0, 1), 1 => (1, 0), 2 => (0, -1), _ => (-1, 0) };
             var point = new Vector3((chestTile[0].AsInt32() + dx) * 128 + 64, 0, (chestTile[1].AsInt32() + dz) * 128 + 64);
             point.Y = _view.FloorAt(point) ?? ashley.Actor.Position.Y;
-            if ((_view.Zone, _view.Map) is (50, 10) or (50, 14) && _campaignPuzzle == 0)
+            int chestStages = (_view.Zone, _view.Map) is (51, 5) or (53, 5) ? 2 : 1;
+            if ((_view.Zone, _view.Map) is (50, 10) or (50, 14) or (51, 5) or (53, 5) && _campaignPuzzle < chestStages)
             {
-                point = new Vector3(832, 0, 960);
+                point = new Vector3(832, 0, chestStages == 2 && _campaignPuzzle == 0 ? 832 : 960);
                 if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16)
-                { _campaignPuzzle = 1; Steer(Vector2.Zero); return; }
+                { _campaignPuzzle++; Steer(Vector2.Zero); return; }
             }
-            if (((_view.Zone, _view.Map) is not ((50, 10) or (50, 14)) || _campaignPuzzle > 0) && (_campaignLootAt > 0 || new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16))
+            if (((_view.Zone, _view.Map) is not ((50, 10) or (50, 14) or (51, 5) or (53, 5)) || _campaignPuzzle >= chestStages) && (_campaignLootAt > 0 || new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16))
             {
                 if (_campaignLootAt == 0) _campaignLootAt = _frame;
                 float turn = (facing - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
@@ -1616,6 +1679,8 @@ public partial class FieldContracts : Node
             _campaignBypassEnemies = true;
         else if (battle.Combatants.Values.Any(c => c.Targetable && c.Marked && FieldBattle.Relation(c, ashley) == 3))
             _campaignBypassEnemies = false;
+        if (sparkSupply && (_view.Zone, _view.Map) == (51, 4) && _view.Flags[1011] == 0) _campaignBypassEnemies = true;
+        if (sparkSupply && (_view.Zone, _view.Map) == (51, 5) && _view.Flags[1011] != 0) _campaignBypassEnemies = false;
         if (battle.HostileCount() > 0 && !_campaignBypassEnemies)
         {
             // Hall of Struggle's bowman is behind a 448-unit barrier. The three crates at (4,4) provide the
@@ -1993,6 +2058,62 @@ public partial class FieldContracts : Node
             { Tap("ps_square"); _campaignBoarding = true; }
             return;
         }
+        // Repel the southern blue block above the northern one, then use the floating stack
+        // to jump from the centre island to the Eulelia terrace. The surrounding zero plane is a pit.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (53, 12, 0) && _view.Flags[287] == 0 && _campaignPuzzle < 8)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800)
+            { Finish($"campaign: Quarry magnetic step {_campaignPuzzle} stalled at {ashley.Actor.Position}, carrying {_view.Carrying}, blocks {string.Join(';', _view.Crates)}"); return; }
+            int since = _frame - _campaignPuzzleAt;
+            if (_campaignPuzzle is 3 or 4)
+            {
+                bool lifting = _campaignPuzzle == 3;
+                if (_view.Carrying == lifting && since > 45)
+                {
+                    GD.Print($"CAMPAIGN: Quarry magnetic step {_campaignPuzzle} handled its block");
+                    _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return;
+                }
+                var face = lifting ? new Vector3(1088, -128, 960) : new Vector3(1216, -128, 832);
+                float turn = (ashley.Actor.FacingToward(face) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(since < 4 ? new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)) : Vector2.Zero);
+                if (since >= 24 && _press == 0 && since % 30 == 24) Tap("ps_cross");
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1472, -384, 832), 1 => new Vector3(1216, -256, 832),
+                2 => new Vector3(1088, -128, 832), 5 => new Vector3(1216, -512, 832),
+                6 => new Vector3(1216, -512, 888),
+                _ => new Vector3(1216, -896, 1216),
+            };
+            bool jumping = _campaignPuzzle is 1 or 5 or 7;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            float across = new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length();
+            if (across < (_campaignPuzzle == 6 ? 3 : 12) && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Quarry magnetic step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (jumping && since < 45 || across < 12 && !landed) { Steer(Vector2.Zero); return; }
+            // Begin the standing jump before steering off the narrow magnetic block.
+            if (_campaignPuzzle == 7 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == 7 && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (jumping)
+            {
+                Input.ActionRelease("ps_r2");
+                if ((!_campaignBoarding || since % 120 == 45) && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; }
+            }
+            else Input.ActionPress("ps_r2");
+            return;
+        }
         // Bandits' Hollow rises in shelves too high to walk directly. Its western block
         // starts the climb; cross the middle gap to the eastern block for the last jump.
         if ((_view.Zone, _view.Map, _campaignDoor) == (51, 4, 2) && _campaignPuzzle < 11)
@@ -2028,6 +2149,17 @@ public partial class FieldContracts : Node
             Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
             if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
             if (jumping && (!_campaignBoarding || (_frame - _campaignPuzzleAt) % 120 == 1) && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; }
+            return;
+        }
+        // Leave the chest shelf to the west before routing north; the diagonal from its northwest corner
+        // cuts into the raised platform instead of following the open floor alongside it.
+        if ((_view.Zone, _view.Map) is (51, 5) or (53, 5) && _campaignDoor == 0 && _campaignPuzzle < 3 && ashley.Actor.Position.Z > 800)
+        {
+            if (ashley.Actor.Position.X < 848) { _campaignPuzzle = 3; Steer(Vector2.Zero); return; }
+            var point = new Vector3(832, ashley.Actor.Position.Y, ashley.Actor.Position.Z);
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
             return;
         }
         // Fool's Gold, Fool's Loss has a southern shelf that turns east before descending. The diagonal
@@ -3094,6 +3226,61 @@ public partial class FieldContracts : Node
                     Capture("shortcut_after");
                     Finish(_view.MenuOpen ? "leaving the ITEMS shortcut's page left the menu open" : "");
                     return;
+            }
+            return;
+        }
+        if (_magnet && _view.Controlled && _view.Player is { } magnetCarrier)
+        {
+            switch (++_magnetStep)
+            {
+                case 1:
+                    magnetCarrier.Position = new Vector3(1088, -128, 832);
+                    magnetCarrier.Facing = 2048;
+                    _view.Interact(magnetCarrier);
+                    if (!_view.Carrying) { Finish("magnet: the native blue block was not lifted"); return; }
+                    break;
+                case 50:
+                    magnetCarrier.Position = new Vector3(1088, -128, 832);
+                    magnetCarrier.Facing = 3072;
+                    _view.Interact(magnetCarrier);
+                    if (_view.Carrying) { Finish("magnet: the blue block was not placed on its matching block"); return; }
+                    break;
+                case 100:
+                    if (_view.Crates.First(c => c.Id == "61").Bottom != -384 || _view.FloorAt(new Vector3(1216, 0, 832)) != -512)
+                    { Finish($"magnet: matching blue blocks did not repel by 128 units: {string.Join(';', _view.Crates)}"); return; }
+                    Capture("magnet_matching_blue");
+                    typeof(FieldView).GetMethod("PlaceCrates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(_view, null);
+                    magnetCarrier.Position = new Vector3(1088, -128, 960);
+                    magnetCarrier.Facing = 3072;
+                    _view.Interact(magnetCarrier);
+                    if (!_view.Carrying) { Finish("magnet: the native red block was not lifted"); return; }
+                    break;
+                case 150:
+                    magnetCarrier.Position = new Vector3(1088, -128, 832);
+                    magnetCarrier.Facing = 3072;
+                    _view.Interact(magnetCarrier);
+                    if (_view.Carrying) { Finish("magnet: the red block was not placed on the blue block"); return; }
+                    break;
+                case 200:
+                    if (_view.Crates.First(c => c.Id == "63").Bottom != -256 || _view.FloorAt(new Vector3(1216, 0, 832)) != -384)
+                    { Finish("magnet: opposite blocks did not remain in contact"); return; }
+                    Capture("magnet_opposite_colours");
+                    var originals = _view.Document["crates"].AsGodotArray();
+                    var lower = originals.Select(v => v.AsGodotDictionary()).First(c => c["id"].AsInt32() == 62).Duplicate(true);
+                    var upper = originals.Select(v => v.AsGodotDictionary()).First(c => c["id"].AsInt32() == 61).Duplicate(true);
+                    lower["kind"] = 6; upper["kind"] = 6;
+                    upper["tile"] = new Godot.Collections.Array { 9, 6 }; upper["stack"] = 1;
+                    _view.Document["crates"] = new Godot.Collections.Array { lower, upper };
+                    typeof(FieldView).GetMethod("PlaceCrates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(_view, null);
+                    if (_view.Crates.First(c => c.Id == "61").Bottom != -384)
+                    { Finish("magnet: an initial matching red stack did not retain its native gap"); return; }
+                    upper["kind"] = 5;
+                    typeof(FieldView).GetMethod("PlaceCrates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(_view, null);
+                    if (_view.Crates.First(c => c.Id == "61").Bottom != -256)
+                    { Finish("magnet: an initial opposite-colour stack acquired a gap"); return; }
+                    GD.Print("FIELD: native matching magnetic blocks repel one block height; opposite colours remain in contact");
+                    Finish("");
+                    break;
             }
             return;
         }
@@ -4686,7 +4873,7 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        bool extendedChain = _campaign && ((_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5)
+        bool extendedChain = _campaign && ((_campaignLoot == (51, 5) && _campaignLootItem == 450 && (_view.Zone, _view.Map) is (51, 4) or (51, 5)) || (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10)
             || (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469);
         // Alternate Heavy Shot and Gain Life on a low-evasion part when the passage or caster needs a sustained chain.
         // The native "in time" window starts after the hit; zero is still the "fast" grade.
@@ -4727,14 +4914,25 @@ public partial class FieldContracts : Node
                 }
                 return;
             }
+            if (_campaign && (_view.Zone, _view.Map) == (49, 10) && battle.SphereTarget?.Name != "Neesa"
+                && battle.Combatants.Values.Any(c => c.Targetable && c.Name == "Neesa"))
+            {
+                if (_press == 0)
+                    if (++_campaignCubePicks <= 4) Tap("ps_right");
+                    else { Tap("ps_cross"); _campaignCubePicks = 0; _fightCloseUntil = _frame + 120; }
+                return;
+            }
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
+            if (_campaign && _campaignLoot == (51, 5) && _campaignLootItem == 450 && opened && _fightPreferredPart.Length == 0
+                && (_view.Zone, _view.Map) is (51, 4) or (51, 5)) _fightPreferredPart = "BODY";
+            if (_campaign && _view.Zone == 53 && _campaignLoot == (_view.Zone, _view.Map) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
             if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "NECK";
             if (_campaign && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469 && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
-            if (_campaign && (_view.Zone, _view.Map) == (49, 2) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
+            if (_campaign && (_view.Zone, _view.Map) is (49, 2) or (49, 10) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 5) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "ABDOMEN";
-            if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
+            if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) or (53, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
             if (_fightNextPart)
             {
                 if (_press > 0) return;
@@ -4772,6 +4970,8 @@ public partial class FieldContracts : Node
         FieldBattle.Combatant? nearest = null;
         foreach (var c in battle.Combatants.Values)
             if (c.Targetable && FieldBattle.Relation(c, ashley) == 3 && ((_view.Zone, _view.Map, _campaignPuzzle) != (51, 4, 3) || c.Name == "Blood Lizard") && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
+        if (_campaign && (_view.Zone, _view.Map) == (49, 10))
+            nearest = battle.Combatants.Values.FirstOrDefault(c => c.Targetable && c.Name == "Neesa") ?? nearest;
         if (nearest == null) { Steer(Vector2.Zero); return; }
         if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;

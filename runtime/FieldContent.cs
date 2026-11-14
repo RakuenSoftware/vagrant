@@ -26,6 +26,7 @@ public sealed class FieldContent
     private const int ScriptLengthsAt = 0x80A98, SwingSounds = 0x80ADC;    // BATTLE.PRG 0x800E9298 and 0x800E92DC
     private const int TrailColours = 0x83AE8;    // BATTLE.PRG 0x800EC2E8
     private const int CrateCollapse = 0x80A38;   // BATTLE.PRG 0x800E9238
+    private const int CrateRepulsion = 0x809AC; // BATTLE.PRG 0x800E91AC
     private const int StatusWeights = 0x13D0;    // BATTLE.PRG 0x80069BD0
     private const int StatusRules = 0x3F6CC;     // SLUS_010.40 0x8004EECC
     private const int SineTable = 0x30A10;       // SLUS_010.40 0x80040210
@@ -545,6 +546,17 @@ public sealed class FieldContent
         var steps = new (int, int, int, int)[15];
         for (int i = 0; i < 15; i++)
             steps[i] = ((sbyte)_battle[CrateCollapse + i], (sbyte)_battle[CrateCollapse + 16 + i], (sbyte)_battle[CrateCollapse + 32 + i], (sbyte)_battle[CrateCollapse + 48 + i]);
+        return steps;
+    }
+
+    /// <summary>Magnetic repulsion, motion 253 (0x800b101c): steps 1 through 14 of the signed Y and
+    /// three rotation increments at 0x800E91AC..0x800E91DC. Rotation uses 4096 units per turn.</summary>
+    public (int Down, int X, int Y, int Z)[] CrateRepulsionSteps()
+    {
+        var steps = new (int, int, int, int)[14];
+        for (int i = 0; i < steps.Length; i++)
+            steps[i] = ((sbyte)_battle[CrateRepulsion + i + 1], (sbyte)_battle[CrateRepulsion + 17 + i],
+                (sbyte)_battle[CrateRepulsion + 33 + i], (sbyte)_battle[CrateRepulsion + 49 + i]);
         return steps;
     }
 

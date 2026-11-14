@@ -3550,6 +3550,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         public bool Carried, Broken, Gone;
         /// <summary>A broken crate's collapse step (BATTLE.PRG motion 247), -1 when not collapsing.</summary>
         public int Collapse = -1;
+        /// <summary>A matching magnetic block repels over native motion 253's fourteen steps.</summary>
+        public int Repel = -1;
+        public Vector3 Twist;
         public Vector3 Rest;
         /// <summary>A crate falling after the one under it broke (motion 252): its speed, the base it lands at, and whether its landing sounds.</summary>
         public float FallSpeed, FallTo = float.NaN;
@@ -3576,6 +3579,19 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Steps the crates collapsing.</summary>
     private void StepCollapses()
     {
+        foreach (var crate in _crates)
+        {
+            if (crate.Repel < 0) continue;
+            var steps = _content.Field.CrateRepulsionSteps();
+            var (down, x, y, z) = steps[crate.Repel];
+            crate.Bottom += down;
+            crate.Twist += new Vector3(x, y, z) * (Mathf.Tau / 4096);
+            ShowCrate(crate);
+            var flip = new Basis(Vector3.Right, new Vector3(0, -1, 0), new Vector3(0, 0, -1));
+            crate.Node.Basis = flip * (new Basis(Vector3.Up, crate.Twist.Y) * new Basis(Vector3.Right, crate.Twist.X)
+                * new Basis(Vector3.Back, crate.Twist.Z)) * flip;
+            if (++crate.Repel == steps.Length) { crate.Repel = -1; crate.Twist = Vector3.Zero; crate.Node.Basis = Basis.Identity; }
+        }
         foreach (var crate in _crates)
         {
             if (crate.Collapse < 0) continue;
@@ -3632,7 +3648,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// </summary>
     public IEnumerable<(string Id, int Kind, int X, int Z, float Bottom, bool Resting)> CrateObjects
     {
-        get { foreach (var crate in _crates) if (!crate.Gone) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, !crate.Carried && !crate.Broken && float.IsNaN(crate.FallTo)); }
+        get { foreach (var crate in _crates) if (!crate.Gone) yield return (crate.Id, crate.Kind, crate.X, crate.Z, crate.Bottom, !crate.Carried && !crate.Broken && crate.Repel < 0 && float.IsNaN(crate.FallTo)); }
     }
 
     /// <summary>The tile of the room's crate <paramref name="index"/> (in the room's order), or null while carried or past the last.</summary>
@@ -3669,6 +3685,9 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             int x = tile[0].AsInt32(), z = tile[1].AsInt32();
             float ground = _heights.Length == 0 ? 0 : _heights[Math.Clamp(z * 4 + 2, 0, _rows - 1) * _columns + Math.Clamp(x * 4 + 2, 0, _columns - 1)];
             crate.Bottom = ground - record["stack"].AsInt32() * 128;
+            // 0x80099c78: an initial matching magnetic support raises this block by another cube.
+            if (crate.Kind >= 5 && _crates.Exists(lower => lower.Kind == crate.Kind && lower.X == x && lower.Z == z && lower.Bottom == crate.Bottom + 128))
+                crate.Bottom -= 128;
             _crates.Add(crate);
             ShowCrate(crate);
         }
@@ -3708,13 +3727,20 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             held.Z = front.Z;
             held.Bottom = floor;
             ShowCrate(held);
+            // 0x800b0cbc..0x800b0d78: matching polarities repel; opposite magnetic colours touch.
+            var support = _crates.Find(c => c != held && !c.Carried && !c.Gone && c.X == front.X && c.Z == front.Z && c.Bottom - 128 == floor);
+            if (held.Kind >= 5 && support is { Kind: >= 5 })
+            {
+                if (held.Kind == support.Kind) { held.Repel = 0; held.Twist = Vector3.Zero; }
+                PlaySound(held.Kind == support.Kind ? "effect_48_p128" : "effect_49_p128", 127, PlacedPan(held.Node.GlobalPosition));
+            }
             _carried = null;
             ashley.Animate("base_76", 4, once: true);
             return true;
         }
         Crate? target = null;
         foreach (var crate in _crates)
-            if (!crate.Carried && !crate.Broken && !crate.Gone && float.IsNaN(crate.FallTo)
+            if (!crate.Carried && !crate.Broken && !crate.Gone && crate.Repel < 0 && float.IsNaN(crate.FallTo)
                 && crate.X == front.X && crate.Z == front.Z && (target == null || crate.Bottom < target.Bottom)) target = crate;
         if (target == null || target.Bottom < ashley.Position.Y - 128 || target.Bottom > ashley.Position.Y + 64) return false;
         int lift = (int)((ashley.Position.Y - target.Bottom) / 64) + 1;
