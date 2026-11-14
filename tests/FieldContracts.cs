@@ -4637,7 +4637,7 @@ public partial class FieldContracts : Node
                     else { Tap("ps_cross"); _campaignCubePicks = 0; _campaignWaitForEnemyUntil = _frame + 120; }
                 }
             }
-            else if (_view.SystemBox.Text.Contains(" HP 0/", StringComparison.Ordinal))
+            else if (!easternCaster && _view.SystemBox.Text.Contains(" HP 0/", StringComparison.Ordinal))
             {
                 if (_press == 0)
                     if (++_emptyLimbPicks < 6) { Tap("ps_down"); _fightNextPart = true; }
