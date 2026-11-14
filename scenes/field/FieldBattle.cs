@@ -2141,7 +2141,12 @@ public sealed partial class FieldBattle
         int visual = ability.GetValueOrDefault("visual", 0).AsInt32();
         if (visual > 0) _view.PlayResident(visual, chain ? Ashley.Actor : _lastStruck.Actor, chain ? _lastStruck.Actor : Ashley.Actor);
         // A chain link counts a link and an action, a defense an action (0x8006fe38, 0x8006ff28), before it is resolved.
-        if (chain) _links++;
+        if (chain)
+        {
+            _links++;
+            // BATTLE.PRG 0x8006fe98 keeps the largest link count in the saved score.
+            _view.MaxChain = Math.Max(_view.MaxChain, _links);
+        }
         _exchanges++;
         var result = Resolve(id, Ashley, new List<(Combatant, int)> { (other, chain ? _victimLimb : other.Struck) }, live: true);
         if (result.Self != null) Apply(result.Self);

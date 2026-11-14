@@ -2585,7 +2585,12 @@ public partial class FieldContracts : Node
                 return;
             }
             if (brawl.AshleyStrikeFrame is >= 0 and <= 2) Tap("ps_circle");
-            if (brawl.Grades > _gradesSeen) { _gradesSeen = brawl.Grades; GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}"); }
+            if (brawl.Grades > _gradesSeen)
+            {
+                _gradesSeen = brawl.Grades;
+                if (brawl.LastGrade == 2 && _view.MaxChain < 1) { Finish("an in-time chain did not update the saved maximum chain"); return; }
+                GD.Print($"FIELD: a chain press graded {brawl.LastGrade} at frame {_frame}, saved maximum {_view.MaxChain}");
+            }
             Fight(brawl, brawler, _frame);
             return;
         }
