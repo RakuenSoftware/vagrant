@@ -61,7 +61,7 @@ Geometry is a group count, a 64-byte header per group, and then each group's tri
 - Switching off: as the room loads, and whenever `60 p s` sets bit 9 (to `(s - 1) & 1`), the bit is copied to the group's 0x0100, so a platform switched off is not drawn (BATTLE.PRG 0x8008e224, list at 0x800f1ca0).
 - Movement (BATTLE.PRG's update near 0x8008c9a8, a step a frame): a platform moves along its leg, snaps to the waypoint, waits its frames, and goes on to the next, turning back at either end. A platform without bit 8 moves whenever it is switched on; a lift moves only while someone rides it (word 4's bits 1 to 7 name the rider, 0x7f none), and dips by 8, 14, 16, 11, 7, 3, 1 and 0 units as it sets off (0x80068bec).
 - `b7 0e n` stops every platform while n is set (0x800f1d6e) and `b7 0c n` holds them for n frames (0x800f1d68).
-- The field moves each platform's group, carries Ashley while she stands on its top, and takes its top (from its group's extent) as floor under her.
+- The field moves each platform's group, carries Ashley while she stands on its top, and takes its top (from its group's extent) as floor under her. A platform up to 256 units above the feet remains a possible ledge (BATTLE.PRG 0x800A93C8, 0x800A9460), so a running jump can grab Revelation Shaft's Cloudstone from its two-block perch.
 
 **Texture detail**
 - The GPU blends a semi-transparent polygon's texels only where their mask bit is set and draws the rest opaque. Half-and-half polygons carry that in alpha (masked texels at half); an additive or subtractive polygon is drawn twice, its unmasked texels opaque and its masked ones blended.
