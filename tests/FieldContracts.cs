@@ -39,6 +39,8 @@ public partial class FieldContracts : Node
     private int _campaignAbilityStep, _campaignAbilitySelection, _fightChainLinks;
     private Vector3 _campaignRestPoint;
     private readonly List<int> _campaignUse = new();
+    private (int Zone, int Map)? _campaignUseAt;
+    private int _campaignRetrieveBlade, _campaignRetrieveRow, _campaignEquipBlade;
     private bool _campaignStore, _campaignStored, _campaignRest;
     private int _campaignStoreStep, _campaignStoreAt, _campaignStoreRemaining, _campaignStoreArmour, _campaignStoreCursor, _campaignStoredBefore, _campaignStoreShown = -1;
     private int _campaignPrepareStep, _campaignPrepareSelection, _campaignSettleFrames, _campaignWeaponPrepareAt;
@@ -176,6 +178,9 @@ public partial class FieldContracts : Node
                     _campaignRoute.Add((int.Parse(pair[0]), int.Parse(pair[1])));
                 }
             if (argument == "--campaign-repair") _campaignRepair = true;
+            if (argument.StartsWith("--campaign-retrieve=", StringComparison.Ordinal)) _campaignRetrieveBlade = int.Parse(argument["--campaign-retrieve=".Length..]);
+            if (argument.StartsWith("--campaign-equip=", StringComparison.Ordinal)) _campaignEquipBlade = int.Parse(argument["--campaign-equip=".Length..]);
+            if (argument.StartsWith("--campaign-use-at=", StringComparison.Ordinal) && argument["--campaign-use-at=".Length..].Split(',') is [var useZone, var useMap]) _campaignUseAt = (int.Parse(useZone), int.Parse(useMap));
             if (argument == "--campaign-store") _campaignStore = true;
             if (argument == "--campaign-rest") _campaignRest = true;
             if (argument == "--campaign-save-ui") _campaignSaveUi = true;
@@ -893,16 +898,23 @@ public partial class FieldContracts : Node
             }
             return;
         }
-        if (_campaignStore && !_campaignStored && _view.Workshop && _view.Controlled && _view.Battle is { Ashley: { } storing } storeBattle)
+        if ((_campaignStore || _campaignRetrieveBlade > 0) && !_campaignStored && _view.Workshop && _view.Controlled && _view.Battle is { Ashley: { } storing } storeBattle)
         {
             if (_campaignStoreAt == 0)
             {
                 _campaignStoreAt = _frame;
                 _campaignStoredBefore = _view.Stored.Count;
+                if (_campaignRetrieveBlade > 0)
+                {
+                    var choices = _view.Stored.Select(v => v.AsGodotDictionary()).Where(e => FieldView.BagCategory(e["kind"].AsString()) == 0).ToList();
+                    _campaignRetrieveRow = Enumerable.Range(0, choices.Count).Where(i => choices[i]["record"].AsGodotDictionary()["blade"].AsGodotDictionary()["id"].AsInt32() == _campaignRetrieveBlade)
+                        .OrderByDescending(i => choices[i]["record"].AsGodotDictionary()["blade"].AsGodotDictionary()["strength"].AsInt32()).DefaultIfEmpty(-1).First();
+                    if (_campaignRetrieveRow < 0) { Finish($"campaign: blade {_campaignRetrieveBlade} is not in the earned container"); return; }
+                }
                 _campaignStoreRemaining = _view.BagCounts()[0] - 1;
                 _campaignStoreArmour = _view.Equipment.Select(v => v.AsGodotDictionary()).Count(e => e["kind"].AsString() == "armour" && !_view.IsWorn(e));
             }
-            if (_frame - _campaignStoreAt > 3600) { Finish($"campaign: container STORE step {_campaignStoreStep} stalled"); return; }
+            if (_frame - _campaignStoreAt > 3600) { Finish($"campaign: container transfer step {_campaignStoreStep} stalled"); return; }
             if (_campaignStoreStep is 0 or 15)
             {
                 if (storeBattle.Paused || !storeBattle.Busy && storeBattle.Drawn) { Tap("ps_cross"); return; }
@@ -947,10 +959,17 @@ public partial class FieldContracts : Node
                 case 1: Tap("ps_circle"); _campaignStoreStep = 2; break;
                 case 2:
                     if (_view.ContainerAccessing) break;
-                    Tap("ps_down"); _campaignStoreStep = 3; break;
+                    if (_campaignRetrieveBlade == 0) Tap("ps_down");
+                    _campaignStoreStep = 3; break;
                 case 3: Tap("ps_circle"); _campaignStoreStep = 4; break;
                 case 4: Tap("ps_right"); _campaignStoreStep = 5; _campaignStoreCursor = 0; break;
-                case 5: _campaignStoreStep = 6; break;
+                case 5: _campaignStoreStep = _campaignRetrieveBlade > 0 ? 16 : 6; break;
+                case 16:
+                    if (_campaignStoreCursor++ < _campaignRetrieveRow) Tap("ps_down");
+                    else { Tap("ps_circle"); _campaignStoreStep = 17; }
+                    break;
+                case 17: Tap("ps_circle"); _campaignStoreStep = 18; break;
+                case 18: Tap("ps_cross"); _campaignStoreStep = 12; break;
                 case 6:
                     if (_campaignStoreRemaining == 0) { _campaignStoreStep = 8; _campaignStoreCursor = 0; break; }
                     Tap("ps_circle"); _campaignStoreStep = 7; break;
@@ -968,13 +987,15 @@ public partial class FieldContracts : Node
                 case 11: Tap("ps_circle"); _campaignStoreRemaining--; _campaignStoreStep = 10; break;
                 case 12: Tap("ps_circle"); _campaignStoreStep = 13; break;
                 case 13:
-                    if (_view.Stored.Count <= _campaignStoredBefore || _view.Storable().Any(e => FieldView.BagCategory(e["kind"].AsString()) is 0 or 4))
-                    { Finish($"campaign: container did not store the spare weapons; stored {_view.Stored.Count}, bag {string.Join(',', _view.BagCounts())}"); return; }
-                    Capture("campaign_container_stored");
+                    bool transferred = _campaignRetrieveBlade > 0
+                        ? _view.Stored.Count == _campaignStoredBefore - 1 && _view.Weapons().Any(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == _campaignRetrieveBlade)
+                        : _view.Stored.Count > _campaignStoredBefore && !_view.Storable().Any(e => FieldView.BagCategory(e["kind"].AsString()) is 0 or 4);
+                    if (!transferred) { Finish($"campaign: container transfer failed; stored {_view.Stored.Count}, bag {string.Join(',', _view.BagCounts())}"); return; }
+                    Capture(_campaignRetrieveBlade > 0 ? "campaign_container_retrieved" : "campaign_container_stored");
                     Tap("ps_cross"); _campaignStoreStep = 14; break;
                 case 14:
                     if (_view.MenuOpen) Tap("ps_cross");
-                    else { _campaignStored = true; GD.Print($"CAMPAIGN: stored spare weapons and armour through the container; {_view.Stored.Count} stored entries"); }
+                    else { _campaignStored = true; GD.Print($"CAMPAIGN: completed {(_campaignRetrieveBlade > 0 ? "REMOVE" : "STORE")} through the container; {_view.Stored.Count} stored entries"); }
                     break;
             }
             return;
@@ -997,9 +1018,11 @@ public partial class FieldContracts : Node
         // Match the carried weapon to each foe through EQUIP: physical for Grissom, air for the Dark Crusader.
         bool crusaderOnly = (_view.Zone, _view.Map) == (40, 24) && _view.Battle is { } forestBattle
             && !forestBattle.Combatants.Values.Any(c => c.Name == "Grissom" && c.Targetable);
-        int forestBlade = crusaderOnly ? 14 : 51;
-        if (_view.Controlled && ((_view.Zone, _view.Map) == (40, 20) || crusaderOnly) && _campaignHealStep == 0 && _view.Battle is { } arming
-            && _view.Weapons().FirstOrDefault(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == forestBlade) is { } axe
+        int prepareBlade = _campaignEquipBlade > 0 ? _campaignEquipBlade : crusaderOnly ? 14 : 51;
+        if (_view.Controlled && _campaignEquipBlade > 0 && !_view.Weapons().Any(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == _campaignEquipBlade))
+        { Finish($"campaign: requested blade {_campaignEquipBlade} is not carried"); return; }
+        if (_view.Controlled && (_campaignEquipBlade > 0 || (_view.Zone, _view.Map) == (40, 20) || crusaderOnly) && _campaignHealStep == 0 && _view.Battle is { } arming
+            && _view.Weapons().FirstOrDefault(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == prepareBlade) is { } axe
             && (_campaignPrepareStep > 0 || !_view.Holds(axe)))
         {
             Steer(Vector2.Zero);
@@ -1021,7 +1044,7 @@ public partial class FieldContracts : Node
                 case 2: Tap("ps_circle"); _campaignPrepareStep = 3; _campaignPrepareSelection = 0; break;
                 case 3:
                     var candidates = _view.Weapons().Where(w => !_view.Holds(w)).ToList();
-                    int choice = candidates.FindIndex(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == forestBlade);
+                    int choice = candidates.FindIndex(w => w["blade"].AsGodotDictionary()["id"].AsInt32() == prepareBlade);
                     if (_campaignPrepareSelection++ <= choice) Tap("ps_down");
                     else { Tap("ps_circle"); _campaignPrepareStep = 4; }
                     break;
@@ -1029,9 +1052,9 @@ public partial class FieldContracts : Node
                     if (_view.MenuOpen) Tap("ps_cross");
                     else
                     {
-                        if (!_view.Holds(axe)) { Finish($"campaign: EQUIP did not select earned blade {forestBlade}"); return; }
+                        if (!_view.Holds(axe)) { Finish($"campaign: EQUIP did not select earned blade {prepareBlade}"); return; }
                         _campaignPrepareStep = _campaignWeaponPrepareAt = 0;
-                        GD.Print($"CAMPAIGN: equipped earned blade {forestBlade} through ITEMS");
+                        GD.Print($"CAMPAIGN: equipped earned blade {prepareBlade} through ITEMS");
                     }
                     break;
             }
@@ -1090,7 +1113,7 @@ public partial class FieldContracts : Node
             }
         }
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
-        int damageChain = (_view.Zone, _view.Map) is (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
+        int damageChain = (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
             && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
         {
@@ -1121,7 +1144,7 @@ public partial class FieldContracts : Node
             return;
         }
         // Consume requested, already-owned preparation items through the same ITEMS input path as recovery.
-        if (_campaignUse.Count > 0 && _campaignHealStep == 0 && _view.Controlled && !_view.MenuOpen
+        if ((_campaignUseAt == null || _campaignUseAt == (_view.Zone, _view.Map)) && _campaignUse.Count > 0 && _campaignHealStep == 0 && _view.Controlled && !_view.MenuOpen
             && _view.Battle is { Busy: false, Paused: false, EnemyActing: false, Ashley: { } preparingItems })
         {
             int item = _campaignUse[0];
@@ -1714,6 +1737,30 @@ public partial class FieldContracts : Node
             _campaignDoorAt = _frame;
             if (_campaignPuzzle == 0) _campaignPuzzleAt = _frame;
             GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
+        }
+        // Rue Fisserano's western street is 384 units above the workshop approach.
+        // Run north along the lower street, then jump west to grab its broad upper ledge.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (32, 18, 1) && _campaignPuzzle < 3)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Rue Fisserano ledge {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_campaignPuzzle == 2)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt > 45) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle == 0 ? new Vector3(2496, -384, 960) : new Vector3(2368, -768, 960);
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 1 && !_campaignBoarding && _frame - _campaignPuzzleAt < 45) { Steer(Vector2.Zero); return; }
+            float turn = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+            Input.ActionRelease("ps_r2");
+            if (_campaignPuzzle == 1 && (!_campaignBoarding || (_frame - _campaignPuzzleAt) % 120 == 1) && landed && _press == 0)
+            { Tap("ps_square"); _campaignBoarding = true; }
+            return;
         }
         // Kesch Bridge crosses the river by two isolated stones. Approach down the
         // northern bank, jump each gap, and land before walking onto the southern road.
@@ -4547,6 +4594,8 @@ public partial class FieldContracts : Node
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
+            if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
+            if (_campaign && (_view.Zone, _view.Map) == (49, 5) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "ABDOMEN";
             if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
             if (_fightNextPart)
             {
