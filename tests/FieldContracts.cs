@@ -1168,8 +1168,9 @@ public partial class FieldContracts : Node
                 return;
             }
         }
+        bool clearWesternPassage = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7);
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
-        int damageChain = (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
+        int damageChain = clearWesternPassage ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
             && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
         {
@@ -1211,17 +1212,22 @@ public partial class FieldContracts : Node
                 = (1, _frame, _frame, item, _view.Items[item], preparingItems.Hp, preparingItems.Mp);
             GD.Print($"CAMPAIGN: preparing with earned {_view.ItemName(item)} through ITEMS");
         }
+        bool wardNeeded = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _view.Spells.Contains(76)
+            && _view.Battle is { Ashley: { } warding } wardBattle && !warding.Has(12) && !warding.Has(FieldBattle.Silence)
+            && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && c.Name is "Lich" or "Zombie Mage")
+            && (warding.Mp >= 21 || new[] { 327, 328, 329, 330 }.Any(id => _view.Items.GetValueOrDefault(id) > 0));
         int recoveryPercent = (_view.Zone, _view.Map) is (40, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
                 _campaignRestPoint = (_view.Zone, _view.Map) == (40, 24) ? new Vector3(960, 0, 832) : restRunner.Actor.Position;
+                if ((_view.Zone, _view.Map) == (48, 5)) _campaignRestPoint = new Vector3(1984, 0, 1088);
                 if ((_view.Zone, _view.Map) == (50, 17))
                     _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
                         .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
@@ -1254,7 +1260,7 @@ public partial class FieldContracts : Node
                     Steer(restRunner.Actor.Position.DistanceTo(_campaignRestPoint) < 24 ? Vector2.Zero : new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
                     _fightProgressAt++;
                     if (restBattle.Paused || !restBattle.Busy && restBattle.Drawn) Tap("ps_cross");
-                    if (!(restRunner.Hp * 100 < restRunner.MaxHp * recoveryPercent)) return;
+                    if (!(restRunner.Hp * 100 < restRunner.MaxHp * recoveryPercent) && !wardNeeded) return;
                 }
             }
         }
@@ -1272,7 +1278,7 @@ public partial class FieldContracts : Node
         bool mineDebuff = (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
-        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff
+        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff || wardNeeded
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
                 || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
@@ -1281,11 +1287,13 @@ public partial class FieldContracts : Node
         {
             bool life = patient.Hp * 100 < patient.MaxHp * recoveryPercent;
             bool frost = fusionAvailable;
-            bool guard = !life && elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus));
+            bool guard = !life && (wardNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
             bool weakening = !life && mineDebuff;
-            _campaignHealSpell = weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
+            _campaignHealSpell = guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
             _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
+            // The native ward blocks even Ashley's own healing magic; use her owned HP items while it lasts.
+            if (_campaignHealSpell == 96 && patient.Has(12)) _campaignHealMagic = false;
             if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
                 || (!life && patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0)
                 || (!life && patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0)) _campaignHealMagic = false;
@@ -1303,7 +1311,7 @@ public partial class FieldContracts : Node
             }
             else
             {
-                int guardItem = frost ? fusionItem : guardItemId;
+                int guardItem = wardNeeded ? 440 : frost ? fusionItem : guardItemId;
                 int cure = patient.Has(FieldBattle.Paralysis) ? 339 : !life && patient.Has(FieldBattle.Poison) ? 340 : !life && patient.Has(FieldBattle.Numbness) ? 341 : 0;
                 int[] choices = cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
                     : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
@@ -1402,7 +1410,7 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
-        if (_campaignLoot == (_view.Zone, _view.Map) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
+        if (_campaignLoot == (_view.Zone, _view.Map) && (!clearWesternPassage || battle.HostileCount() == 0) && (_campaignLootItem == 0 || _view.Items.GetValueOrDefault(_campaignLootItem) == 0) && _view.Document["chests"].AsGodotArray()
             .Select(v => v.AsGodotDictionary()).FirstOrDefault(c => (c["lock"].AsInt32() == 0 || c["lock"].AsInt32() == 2 && (_view.Spells.Contains(92) || _view.Items.GetValueOrDefault(446) > 0)) && _view.ChestContents(c).Count > 0) is { } treasure)
         {
             if (_campaignLootStart == 0) _campaignLootStart = _frame;
@@ -1551,6 +1559,8 @@ public partial class FieldContracts : Node
         // Clear the Blood Lizard before passing its narrow shelf; its body can obstruct the western block.
         if ((_view.Zone, _view.Map, _campaignPuzzle) == (51, 4, 3)
             && battle.Combatants.Values.Any(c => c.Targetable && c.Name == "Blood Lizard")) _campaignBypassEnemies = false;
+        // The undead occupy the one-tile western passage to the Clematis chest; clear them through real combat.
+        if (clearWesternPassage) _campaignBypassEnemies = false;
         // An introduction can arm a marked foe after this room was initially safe to cross.
         if (_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             _campaignBypassEnemies = true;
@@ -1637,6 +1647,10 @@ public partial class FieldContracts : Node
         { Steer(Vector2.Zero); return; }
         if (battle.Drawn && !breakingStack)
         { Steer(Vector2.Zero); Tap("ps_cross"); return; }
+        // Recover in the cleared passage before entering the chest room's Banish caster.
+        if (clearWesternPassage && (_view.Zone, _view.Map) == (48, 5) && battle.HostileCount() == 0
+            && (ashley.Risk > 15 || ashley.Hp < ashley.MaxHp || ashley.Mp < ashley.MaxMp))
+        { Steer(Vector2.Zero); return; }
         if (_campaignRest && (_view.Workshop || !battle.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, ashley) == 3)) && (ashley.Hp < ashley.MaxHp || ashley.Mp < ashley.MaxMp))
         {
             Steer(Vector2.Zero);
@@ -4622,17 +4636,18 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        bool easternCaster = _campaign && (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5);
-        // These casters punish recovery pauses. Alternate Heavy Shot and Gain Life on a part with low chain evasion.
+        bool extendedChain = _campaign && ((_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5)
+            || (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7));
+        // Alternate Heavy Shot and Gain Life on a low-evasion part when the passage or caster needs a sustained chain.
         // The native "in time" window starts after the hit; zero is still the "fast" grade.
         // Alternate the earned buttons over a short chain, releasing each before the next cue.
         if (battle.AshleyStrikeFrame is not { } timing) { _fightLinked = false; _fightChainLinks = 0; }
         else
         {
             if (timing < 0) _fightLinked = false;
-            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) && !easternCaster || i != 2)).ToArray();
-            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && (ashley.Risk < 65 || easternCaster)
-                && slots.Length > 0 && _fightChainLinks < (easternCaster ? 32 : slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
+            var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) && !extendedChain || i != 2)).ToArray();
+            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && (ashley.Risk < 65 || extendedChain)
+                && slots.Length > 0 && _fightChainLinks < (extendedChain ? 32 : slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
             {
                 Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
                 _fightLinked = true; _fightChainLinks++;
@@ -4666,6 +4681,7 @@ public partial class FieldContracts : Node
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
             if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "NECK";
+            if (_campaign && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 2) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 5) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "ABDOMEN";
             if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
@@ -4692,7 +4708,7 @@ public partial class FieldContracts : Node
                     else { Tap("ps_cross"); _campaignCubePicks = 0; _campaignWaitForEnemyUntil = _frame + 120; }
                 }
             }
-            else if (!easternCaster && _view.SystemBox.Text.Contains(" HP 0/", StringComparison.Ordinal))
+            else if (!extendedChain && _view.SystemBox.Text.Contains(" HP 0/", StringComparison.Ordinal))
             {
                 if (_press == 0)
                     if (++_emptyLimbPicks < 6) { Tap("ps_down"); _fightNextPart = true; }
