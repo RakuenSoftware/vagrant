@@ -1,7 +1,10 @@
 # Completion and retail comparison audit
 
-The runtime is not yet certified as a complete retail-equivalent playthrough. This audit distinguishes the checks
-that have run from the work they do not establish. The older omissions in FIELD.md include implemented features;
+The earned normal New Game checkpoint lineage now reaches both final bosses, the epilogue, credits, closing
+results and the actual title menu. The final sequence passes headless and rendered. This establishes main-campaign
+completion through earned saves/checkpoints, not an uninterrupted single-process or fully rendered playthrough,
+and does not certify complete retail equivalence. This audit distinguishes the checks that have run from the
+work they do not establish. The older omissions in FIELD.md include implemented features;
 verify each against the current owner before treating that historical list as a backlog.
 
 ## Coverage and limits
@@ -10,10 +13,10 @@ verify each against the current owner before treating that historical list as a 
 |---|---|---|
 | 385 normal-mode individual room checks, repeated after the state-reset, continuing-transition and body-contact fixes; all pass | Room loading and entry events with normal-play actors, plus each room contract's focused checks | Every encounter, condition and puzzle reached through a continuous campaign; full visual comparison |
 | Default field contract | Prologue, initial combat, mastery checks, a door traversal and jump | It grants a chain ability and uses mastery fixtures, then stops after that traversal; it is not an unmodified campaign playthrough |
-| Campaign route checks | A corrected normal New Game continues through earned checkpoints, with gear, consumables, spells and story state carried by the real serializer. Pad input solves the Wine Cellar and Catacombs stacks, timed mine corridors, moving platforms, Snowfly Forest and both Undercities; defeats include Minotaur, Dullahan, Lizardmen, Golem, Dragon, Duane, the mine bosses, Giant Crab, Earth Dragon, Grissom/Dark Crusader, Rosencrantz, the later mine elementals, Sky Dragon, Harpy, Lich, Nightstalker, Neesa/Tieger, Water Elemental, Ogre Lord, Snow Dragon, Last Crusader and Minotaur Lord. The earned state collects Clematis and Aster, follows the post-battle scenes and enters the Limestone Quarry at story 65, then defeats Water Elemental with earned Spark Fusion and repaired gear, solves both Quarry magnetic puzzles, consumes Eulelia and Melissa, crosses the final Cloudstone, defeats Snow Dragon, solves Tunnel of the Heartless and crosses The Dark Coast, defeats Last Crusader and Minotaur Lord, obtains the Silver Key, solves both Kiltia puzzle rooms, defeats Kali and reaches the Cathedral. Historical checkpoints using the wrong mode flag remain retired as campaign evidence. | The remaining Cathedral campaign and an earned ending; exact workshop layout/timing parity |
-| Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change. An earned Work of Art state also walks onto its circle, saves through DATA and the card screens, and resumes into another room in a fresh process | A complete campaign resumed across application launches, every equipment combination and every save location |
+| Campaign route checks | A corrected normal New Game continues through earned checkpoints, with gear, consumables, spells and story state carried by the real serializer. Pad input solves the Wine Cellar and Catacombs stacks, timed mine corridors, moving platforms, Snowfly Forest and both Undercities; defeats include Minotaur, Dullahan, Lizardmen, Golem, Dragon, Duane, the mine bosses, Giant Crab, Earth Dragon, Grissom/Dark Crusader, Rosencrantz, the later mine elementals, Sky Dragon, Harpy, Lich, Nightstalker, Neesa/Tieger, Water Elemental, Ogre Lord, Snow Dragon, Last Crusader and Minotaur Lord. The earned state collects Clematis and Aster, follows the post-battle scenes and enters the Limestone Quarry at story 65, then defeats Water Elemental with earned Spark Fusion and repaired gear, solves both Quarry magnetic puzzles, consumes Eulelia and Melissa, crosses the final Cloudstone, defeats Snow Dragon, solves Tunnel of the Heartless and crosses The Dark Coast, defeats Last Crusader and Minotaur Lord, obtains the Silver Key, solves both Kiltia puzzle rooms, defeats Kali and completes the Cathedral, both Guildenstern forms and the ending-to-title sequence. Historical checkpoints using the wrong mode flag remain retired as campaign evidence. | A fully rendered run from fresh New Game without checkpoint segments; exact workshop layout/timing parity |
+| Save/resume contract | A real disk save resumes in a fresh field; starting weapon DP/PP, permanent stats, HP/MP, inventory, storage, story flags, map visits and options survive, followed by another room change. An earned Work of Art state also walks onto its circle, saves through DATA and the card screens, and resumes into another room in a fresh process | Every equipment combination, every save location and full save/load UI coverage |
 | Focused combat, menus, traps, movement, effects and options checks | Those named paths execute and satisfy their assertions | Exhaustive combat outcomes, every enemy encounter and every menu layout |
-| Final story event through ending | The event hands off to credits and the closing screen accepts input. A separate ending check now observes the actual SceneManager replacement and title menu, headless and rendered | Reaching that event through a continuous campaign |
+| Earned final battles through title return | The earned Atrium save defeats both Guildenstern forms through pad combat, follows the native epilogue, runs the credits and closing results, and observes the actual SceneManager replacement and title menu; headless and rendered pass | Post-credits cleared-game save UI, New Game+ and full retail audio/visual parity |
 | Title attract demonstrations | Both retail demo starts run to completion without input, alternate by title visit, accept L1 interruption and return to the title flow; headless and rendered checks pass | Full screenshot-by-screenshot comparison against a retail title loop |
 | Retail-screen pixel contract in LDR/HDR | Five-bit blend arithmetic against a known background | Screenshot and timing parity for every 3D scene, camera and effect |
 
@@ -134,17 +137,51 @@ verify each against the current owner before treating that historical list as a 
   both companions (story flag 33), and defeats the mines' Wyvern with flag 187=12. The Duane run also passes
   rendered. When its actual RISK roots are exhausted, the driver sheathes and waits for native recovery before
   attacking again; enemy regeneration no longer counts as progress in its combat-stall check.
-- **Full campaign verification remains open.** Individual room entry and a directly started final event cannot
-  establish the prerequisites, persistent state or routing of a complete playthrough.
+- **Earned main-campaign completion, verified.** The normal New Game lineage carries its actual inventory,
+  equipment and story state through saved checkpoint segments to the ending. This is separate from direct room
+  starts and injected combat fixtures. The final battles and ending-to-title sequence pass headless and rendered.
 
 The earned Snow Dragon and Last Crusader victories are headless; failed rendered fight attempts remain in the audit record. Minotaur Lord and Silver Key collection pass both headless and rendered. Tunnel of the Heartless and The Dark Coast then pass both headless and rendered using the actual block, jump and ledge controls. The Silver Key branch uses 39 pushes and breaks through normal controls; the return and both Resentful Ones puzzles also pass headless and rendered. A diagnostic reload inside the repeatable Minotaur encounter respawned it, so its victory, chest collection and exit are checked in one continuous segment. Both runs then complete the Kali introduction, defeat Kali and ride the Temple exit lift to Plateia Lumitar, continuing into the Cathedral to defeat Ifrit, Iron Crab, Marid, Djinn, Flame Dragon, Dao and Lich Lord, collect Calla and Palm, advance story 77, activate the Cathedral upper bridge, collect Laurel and save through DATA at Sin and Punishment’s magic circle 33. The combat driver gives critical healing priority over optional preparation. Against the resistant Cathedral guardians it assigns the already learned Phantom Pain and Instill through BATTLE ABILITIES and finishes with Temper to preserve the blade's actual PP. Recovery uses actual consumables and native regeneration. No inventory, HP, position or story-state grants are used in those campaign checks.
 
-## Next verification work
+The Cathedral continuation defeats Arch Dragon and collects Acacia, returns to Light and Dark Wage War and
+pulls its actual lever to unlock the upper Heretics gate, solves The Melodics of Madness through seven block
+pushes and the ledge jump, consumes Palm and defeats Nightmare. The native reward event enables its lift.
+The route then rides the upper Cloudstones and both final lifts, opens the lever-controlled gate and saves
+through DATA at The Atrium's magic circle 34. These segments pass headless and rendered, including the actual
+card-screen save confirmations at circles 33 and 34.
 
-Continue the normal New Game lineage through the Cathedral route, keeping
-only its actual inventory and story state. The campaign driver uses pad input and does not apply the default field contract's ability or mastery
-fixtures. Most checkpoint files use the real disk serializer while bypassing the save-point menu. Earned checks at Work of
-Art and later town, Undercity and mine circles also use the actual circle and DATA screens. Those establish the
-checked locations' positive save paths; every save point and full save UI coverage remain open. Record the continuing route and checkpoints, exercise saves and
-reloads along it, and solve the intervening puzzles through their player controls. Compare the corresponding
-retail scenes and interfaces at those checkpoints. Keep direct room starts and injected combat fixtures as focused tests, with their narrower claims.
+From that earned Atrium save, both final runs defeat Guildenstern's two forms (540 and 666 HP), follow the
+native epilogue through rooms 60–68, and reach story 83 with one recorded score clear. The ending runs 27,431
+frames of credits and closing results before returning through SceneManager to the actual title scene.
+The observer checks its menu after the fade-in. The diagnostic ending export uses the real serializer but is
+not evidence of a post-credits SAVE interaction: its top-level `clear_count` remains zero. Most intermediate
+checkpoint exports also bypass the save-point menu; actual circle and DATA coverage is limited to the named
+checked locations.
+
+## Reproducing the final check
+
+Use a verified owned-disc installation and the earned `earned_normal_cathedral_atrium_412.json` checkpoint
+from the local audit directory `/tmp/vagrant-resume-20261113`. Disc files, checkpoints, logs and screenshots
+remain local and ignored. With the current build and compatible installation cache:
+
+```sh
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- \
+  --install-root=/path/to/installation --save-root=/path/to/isolated/test-cards \
+  --campaign-load=/tmp/vagrant-resume-20261113/earned_normal_cathedral_atrium_412.json \
+  --campaign-route=25,4/27,0/27,1/60,0 --campaign-rest --title-return
+```
+
+For rendered verification, omit `--headless`, run under `gamescope --backend headless` and supply
+`--capture=/path/to/captures`. The final log must contain both `the actual title scene reached its menu`
+and `FIELD_CONTRACTS_OK`; inspect `title_return.png` after the menu fade-in. The earned final runs are
+`campaign414.log` and `campaign414_rendered.log`; the latest 385-room regression results are
+`battle_count_sweep.json` and `battle_count_sweep_parallel.log`, all in that local audit directory.
+
+## Remaining verification work
+
+Compare the corresponding retail scenes, interfaces, animation and timing, including workshop previews and
+the ending's audio. Exercise the post-credits cleared-game save and New Game+ paths, every save location and
+additional equipment/menu combinations. A fully rendered run from fresh New Game remains separate work:
+the earned Snow Dragon and Last Crusader victories above are headless. Keep direct room starts and injected
+combat fixtures as focused tests with their narrower claims. The completed main-campaign lineage does not
+establish exhaustive encounter, optional-content or pixel-for-pixel retail parity.

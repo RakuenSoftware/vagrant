@@ -170,6 +170,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-teleport=", StringComparison.Ordinal)) _campaignTeleport = int.Parse(argument["--campaign-teleport=".Length..]) - 1;
             if (argument.StartsWith("--campaign-use=", StringComparison.Ordinal)) _campaignUse.AddRange(argument["--campaign-use=".Length..].Split(',').Select(int.Parse));
             if (argument.StartsWith("--campaign-save=", StringComparison.Ordinal)) _campaignSave = argument["--campaign-save=".Length..];
+            if (argument.StartsWith("--save-root=", StringComparison.Ordinal)) FieldView.SavesRoot = argument["--save-root=".Length..];
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
             if (argument.StartsWith("--campaign-item=", StringComparison.Ordinal)) _campaignItem = int.Parse(argument["--campaign-item=".Length..]);
             if (argument.StartsWith("--campaign-loot-item=", StringComparison.Ordinal)) _campaignLootItem = int.Parse(argument["--campaign-loot-item=".Length..]);
@@ -240,6 +241,7 @@ public partial class FieldContracts : Node
             if (argument == "--cube") _cube = true;
             if (argument.StartsWith("--status=", StringComparison.Ordinal)) _status = int.Parse(argument["--status=".Length..]);
             if (argument == "--ending") _endingCheck = true;
+            if (argument == "--title-return") _titleReturn = true;
             if (argument == "--event-roundtrip") _eventRoundTrip = true;
             // --play=EVENT plays an event (event_z009_m08_l0, a room's local one) once the player first has control, as
             // the room's condition would, then the check goes on with what follows.
@@ -340,28 +342,81 @@ public partial class FieldContracts : Node
     private const int EventFrames = 60 * 600;
 
     private bool _endingCheck;
+    private bool _titleReturn, _titleOwnerConfigured, _awaitingTitle;
+    private int _titleFrames, _titleMenuFrames;
     private Wol.Games.Vagrant.Scenes.Ending.Ending? _ending;
 
     public override void _PhysicsProcess(double delta)
     {
+        if (_awaitingTitle)
+        {
+            _titleFrames++;
+            if (_titleFrames % 60 == 1) Input.ActionRelease("ps_start");
+            if (GetTree().CurrentScene is Wol.Games.Vagrant.Scenes.Title.TitleSequence title)
+            {
+                if (title.Failure.Length != 0) { Finish(title.Failure); return; }
+                if (title.Screen == "menu" && !GetNode<Wol.Engine.SceneManager>("/root/SceneManager").IsTransitioning)
+                {
+                    Input.ActionRelease("ps_start");
+                    // The menu stage begins before its panel fades in. Observe the settled screen too.
+                    if (++_titleMenuFrames < 120) return;
+                    Capture(this, _capture, "title_return");
+                    GD.Print("FIELD: the actual title scene reached its menu after the closing screen");
+                    Finish(""); return;
+                }
+                _titleMenuFrames = 0;
+                if (_titleFrames % 60 == 0) Input.ActionPress("ps_start");
+            }
+            if (_titleFrames > 1800) Finish("the closing screen did not return to the actual title menu");
+            return;
+        }
         if (_yaw is { } yaw && _view != null) _view.Gameplay.Yaw = yaw;
         if (_ending == null && _view is { GameEnded: true })
             foreach (var child in _view.Screen.GetChildren())
                 if (child is Wol.Games.Vagrant.Scenes.Ending.Ending ending)
                 {
                     _ending = ending;
+                    if (_campaign)
+                    {
+                        GD.Print($"CAMPAIGN: earned final event reached after {_campaignRooms} room entries, story {_view.Flags[130]}, clears {_view.Clears}");
+                        if (_campaignSave.Length != 0)
+                        {
+                            if (_view.SaveGame(1, 1, _view.SavePoint) != Error.Ok || FieldView.ReadCardFile(1, 1) is not { } saved)
+                            { Finish("campaign: earned clear state could not be exported"); return; }
+                            File.WriteAllText(_campaignSave, Json.Stringify(saved));
+                            GD.Print($"CAMPAIGN: wrote earned clear state {_campaignSave}; this diagnostic export does not check a post-credits save menu");
+                        }
+                    }
                     _frame = 0;
                     GD.Print("FIELD: the final event handed the field to the ending");
                     break;
                 }
         if (_ending != null)
         {
+            if (_titleReturn && !_titleOwnerConfigured)
+            {
+                // Keep the observer alive while the ending's own SceneManager call replaces the real scene.
+                // This changes only test ownership after gameplay has handed off to the ending.
+                Node owner = _view != null ? _view : _ending;
+                owner.Reparent(GetTree().Root);
+                GetTree().CurrentScene = owner;
+                _ending.KeepScene = false;
+                _titleOwnerConfigured = true;
+            }
             _frame++;
             if (_capture.Length != 0 && DisplayServer.GetName() != "headless" && (_frame % _storyEvery == 0 || _frame is 300)) Capture($"ending_{_ending.Frames:d5}");
             // The closing screen waits for a button: Circle once its parts are all in.
             if (_ending.Results != null && _frame % 600 == 0) Input.ActionPress("ps_circle");
             if (_ending.Results != null && _frame % 600 == 4) Input.ActionRelease("ps_circle");
-            if (_ending.Finished) { GD.Print($"FIELD: the ending ran {_ending.Frames} frames of credits and its closing screen, {_frame} in all, to the title"); Finish(""); return; }
+            if (_ending.Finished)
+            {
+                GD.Print($"FIELD: the ending ran {_ending.Frames} frames of credits and its closing screen, {_frame} in all");
+                if (!_titleReturn) { Finish(""); return; }
+                Input.ActionRelease("ps_circle");
+                _awaitingTitle = true;
+                _view = null!; _ending = null;
+                return;
+            }
             if (_frame > 60 * 600) Finish("the ending did not finish");
             return;
         }
@@ -686,7 +741,7 @@ public partial class FieldContracts : Node
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
         if (_view.Battle is { AshleyDefenseFrame: >= 1 and <= 2 } defending && _press == 0)
         {
-            int defense = _campaignBypassEnemies || (_view.Zone, _view.Map) is (50, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 43 : 46;
+            int defense = _campaignBypassEnemies || (_view.Zone, _view.Map) is (24, 9) or (24, 1) or (50, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 43 : 46;
             if ((_view.Zone, _view.Map) == (29, 0) && defending.Ashley is { } guarding && guarding.Hp * 2 < guarding.MaxHp) defense = 46;
             int slot = Array.IndexOf(defending.DefenseSlots, defense);
             if (slot >= 0)
@@ -909,19 +964,48 @@ public partial class FieldContracts : Node
                 var circleTile = circle["tile"].AsGodotArray();
                 var point = new Vector3(circleTile[0].AsInt32() * 128 + 64, 0, circleTile[1].AsInt32() * 128 + 64);
                 if (_view.Player is not { } saver) return;
+                // The Atrium's receiving lift returns to -512; jump east onto its gallery before approaching circle 34.
+                if ((_view.Zone, _view.Map) == (25, 4) && _campaignPuzzle < 2)
+                {
+                    Input.ActionRelease("ps_r2");
+                    var platform = _view.PlatformState(0)!.Value;
+                    bool grounded = _view.FloorAt(saver.Position) is { } atriumFloor && Math.Abs(atriumFloor - saver.Position.Y) < 2;
+                    if (_campaignPuzzle == 0)
+                    {
+                        Steer(Vector2.Zero);
+                        if (platform.Now.Y <= -500 && grounded && _press == 0)
+                        { Tap("ps_square"); _campaignPuzzle = 1; _campaignHallAt = _frame; }
+                        return;
+                    }
+                    var landing = new Vector3(576, -512, 704);
+                    if (new Vector2(landing.X - saver.Position.X, landing.Z - saver.Position.Z).Length() < 16 && Math.Abs(saver.Position.Y + 512) < 2 && grounded)
+                    { _campaignPuzzle = 2; Steer(Vector2.Zero); return; }
+                    if (_frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+                    float atriumTurn = (saver.FacingToward(landing) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                    Steer(new Vector2(Mathf.Sin(atriumTurn), -Mathf.Cos(atriumTurn)));
+                    return;
+                }
                 if (new Vector2(point.X - saver.Position.X, point.Z - saver.Position.Z).Length() < 12 && _view.SavePoint == circle["location"].AsInt32())
                 {
                     Steer(Vector2.Zero);
+                    Input.ActionRelease("ps_r2");
                     _campaignUiGeneration = FieldView.ReadCardFile(1, 1)?.GetValueOrDefault("generation", 0).AsInt32() ?? 0;
                     Tap("ps_triangle"); _campaignUiStep = 1;
                 }
                 else
                 {
-                    var path = _view.Path(saver.Position, point);
+                    // The Cathedral circle is behind a tall partition; use its southern opening rather than climbing the narrow wall.
+                    var approach = (_view.Zone, _view.Map) == (24, 6) && saver.Position.X > 640
+                        ? saver.Position.X > 2176 && Math.Abs(saver.Position.Z - 1280) > 16 ? new Vector3(2304, -256, 1280) : new Vector3(576, -384, 1280)
+                        : point;
+                    var path = (_view.Zone, _view.Map) == (24, 6) ? new List<Vector3>() : _view.Path(saver.Position, approach, 256);
                     while (path.Count > 1 && new Vector2(path[0].X - saver.Position.X, path[0].Z - saver.Position.Z).Length() < 16) path.RemoveAt(0);
-                    var next = path.Count > 0 ? path[0] : point;
+                    var next = path.Count > 0 ? path[0] : approach;
                     float turn = (saver.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
                     Steer(new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)));
+                    var saverProbe = saver.Position.MoveToward(next, 96);
+                    if (_view.FloorAt(saverProbe) is { } saverAhead && saver.Position.Y - saverAhead is > FieldPlayer.StepHeight and <= 256) Input.ActionPress("ps_r2");
+                    else Input.ActionRelease("ps_r2");
                 }
                 return;
             }
@@ -1234,8 +1318,12 @@ public partial class FieldContracts : Node
         }
         var lateBoss = !(_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             && ((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23) && _view.Battle is { Ashley: { } bossRunner } bossBattle
-            ? bossBattle.Combatants.Values.FirstOrDefault(c => c.Targetable && (c.Marked || c.Name == "Kali" || c.Name == "Last Crusader" && !_view.Spells.Contains(91) && _view.Items.GetValueOrDefault(429) == 0 || c.Name == "Minotaur Lord" && _view.Items.GetValueOrDefault(460) == 0) && c.MaxHp >= 300 && FieldBattle.Relation(c, bossRunner) == 3) : null;
+            ? bossBattle.Combatants.Values.FirstOrDefault(c => c.Targetable && (c.Marked || (_view.Zone, _view.Map) == (24, 9) || c.Name == "Kali" || c.Name == "Lich Lord" && _view.Flags[273] == 0 || c.Name == "Lich" && _view.Flags[914] == 0 || c.Name == "Flame Dragon" && _view.Flags[0x1B6 + 475] == 0 || c.Name == "Arch Dragon" && _view.Flags[0x1B6 + 477] == 0 || c.Name == "Last Crusader" && !_view.Spells.Contains(91) && _view.Items.GetValueOrDefault(429) == 0 || c.Name == "Minotaur Lord" && _view.Items.GetValueOrDefault(460) == 0) && (c.MaxHp >= 300 || c.Name is "Lich Lord" or "Lich" || (_view.Zone, _view.Map) == (24, 9)) && FieldBattle.Relation(c, bossRunner) == 3) : null;
         bool finishingLateBoss = lateBoss is { Hp: <= 150 };
+        bool cathedralBoss = _view.Zone is >= 22 and <= 27 && lateBoss != null;
+        // Phantom Pain spends the earned blade's PP; Instill restores PP from the preceding hit. Assign both
+        // through the native menu rather than spending scarce MP on buffs against these resistant guardians.
+        bool ppChain = cathedralBoss && _view.Abilities.Contains(31) && _view.Abilities.Contains(30);
         if (finishingLateBoss && _campaignResting) { _campaignResting=false; _fightProgressAt=_frame; }
         var lateLimb = lateBoss?.Limbs.Where(l => l.MaxHp > 0).MinBy(l => l.ChainEvasion);
         int lateAffinity = lateLimb == null ? 0 : Enumerable.Range(0, 5).MinBy(i => lateLimb.Affinities[i]);
@@ -1269,9 +1357,10 @@ public partial class FieldContracts : Node
         }
 
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
-        int damageChain = clearWesternPassage || sparkSupply || quarryTreasure || lateBoss != null ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
+        int abilitySlot = ppChain && _view.ChainButtons[0] == 31 ? 1 : 0;
+        int damageChain = ppChain ? abilitySlot == 0 ? 31 : 30 : clearWesternPassage || sparkSupply || quarryTreasure || lateBoss != null ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
-            && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[0] != damageChain))
+            && (_campaignAbilityStep > 0 || _view.Abilities.Contains(damageChain) && _view.ChainButtons[abilitySlot] != damageChain))
         {
             Steer(Vector2.Zero);
             if (_press > 0 || _frame % 8 != 0) return;
@@ -1290,7 +1379,7 @@ public partial class FieldContracts : Node
                 case 2:
                     int row = _view.Abilities.FindAll(id => id is >= 22 and < 40).IndexOf(damageChain);
                     if (_campaignAbilitySelection < row) { Tap("ps_down"); _campaignAbilitySelection++; }
-                    else { Tap("ps_circle"); _campaignAbilityStep = 3; }
+                    else { Tap(abilitySlot == 0 ? "ps_circle" : "ps_triangle"); _campaignAbilityStep = 3; }
                     break;
                 case 3:
                     if (_view.MenuOpen) Tap("ps_cross");
@@ -1321,7 +1410,7 @@ public partial class FieldContracts : Node
             && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && (c.Name is "Lich" or "Zombie Mage" or "Harpy" or "Neesa" or "Tieger" or "Water Elemental" or "Imp"
                 || c == lateBoss && c.Limbs.Any(l => l.Actions.Any(id => id is >= 54 and <= 130))))
             && (warding.Mp >= 21 || new[] { 327, 328, 329, 330 }.Any(id => _view.Items.GetValueOrDefault(id) > 0));
-        bool heraklesNeeded = !finishingLateBoss && (clearWesternPassage || supplyCombat || quarryTreasure || lateBoss != null || (_view.Zone, _view.Map) == (49, 10) || quarryWater) && _view.Spells.Contains(60)
+        bool heraklesNeeded = !ppChain && !finishingLateBoss && (clearWesternPassage || supplyCombat || quarryTreasure || lateBoss != null || (_view.Zone, _view.Map) == (49, 10) || quarryWater) && _view.Spells.Contains(60)
             && _view.Battle is { Ashley: { } strengthening } strengthBattle && !strengthening.Has(FieldBattle.Herakles)
             && !strengthening.Has(12) && !strengthening.Has(FieldBattle.Silence) && strengthening.Mp >= 12 && strengthBattle.HostileCount() > 0;
         FieldBattle.Combatant? westernTarget = null;
@@ -1332,13 +1421,17 @@ public partial class FieldContracts : Node
         bool westernDebuff = westernTarget != null && _view.Spells.Contains(54) && _view.Battle!.Ashley!.Mp >= 7
             && !westernTarget.Has(FieldBattle.Degenerate) && (westernTarget.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0
             && westernTarget.Actor.Position.DistanceTo(_view.Player!.Position) < 400;
+        // Heal's second native effect damages class-2 undead; select their actual target in MAGIC's sphere.
+        var undeadEscort = (_view.Zone, _view.Map) is (24, 9) or (24, 1) && _view.Spells.Contains(96) && _view.Battle?.Ashley is { Mp: >= 5 }
+            ? _view.Battle.Combatants.Values.FirstOrDefault(c => c.Targetable && (c.Class & 7) == 2 && c.Actor.Position.DistanceTo(_view.Battle.Ashley.Actor.Position) < 300
+                && Math.Abs(c.Actor.Position.Y - _view.Battle.Ashley.Actor.Position.Y) < 128) : null;
         int recoveryPercent = finishingLateBoss ? 60 : (_view.Zone, _view.Map) is (40, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && !finishingLateBoss && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) or (53, 23) or (53, 29) ? 30 : 50)) && restBattle.HostileCount() > 0
+            if (!_campaignResting && undeadEscort == null && !finishingLateBoss && !clearWesternPassage && (!sparkSupply || _view.Items.GetValueOrDefault(334) == 0) && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5) or (49, 10)) && (restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) or (53, 1) or (53, 23) or (53, 29) ? 30 : 50)) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334, 337, 338 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -1409,15 +1502,15 @@ public partial class FieldContracts : Node
         bool rosencrantzFight = (_view.Zone, _view.Map) == (29, 0);
         bool mineElemental = (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) or (53, 5);
         bool mineEarth = mineElemental && _view.Map != 14;
-        bool elementalFight = lateBoss != null && !finishingLateBoss && lateAffinity != 0 || earthDragon || grissomFight || rosencrantzFight || mineElemental || quarryWater || supplyCombat || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
+        bool elementalFight = !ppChain && lateBoss != null && !finishingLateBoss && lateAffinity != 0 || earthDragon || grissomFight || rosencrantzFight || mineElemental || quarryWater || supplyCombat || (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20;
         bool airFusion = earthDragon || crusaderOnly || rosencrantzFight || sparkSupply || mineElemental && !mineEarth;
         int fusionSpell = lateBoss != null ? 65 + lateAffinity : quarryWater ? 67 : airFusion ? 66 : mineEarth ? 68 : grissomFight ? 67 : 69, fusionItem = lateBoss != null ? 448 + lateAffinity : quarryWater ? 450 : airFusion ? 449 : mineEarth ? 451 : grissomFight ? 450 : 452, fusionStatus = lateBoss != null ? 18 + lateAffinity : quarryWater ? 20 : airFusion ? 19 : mineEarth ? 21 : grissomFight ? 20 : 22;
         int guardSpell = earthDragon || mineElemental && !mineEarth ? 72 : grissomFight || mineEarth ? 70 : 71, guardItemId = guardSpell == 72 ? 455 : guardSpell == 70 ? 453 : 454, guardStatus = guardSpell == 72 ? 25 : guardSpell == 70 ? 23 : 24;
         bool fusionAvailable = (lateBoss == null || lateAffinity != 0) && (_view.Spells.Contains(fusionSpell) || _view.Items.GetValueOrDefault(fusionItem) > 0);
-        bool mineDebuff = !finishingLateBoss && (!_campaignBypassEnemies || lateBoss != null) && (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+        bool mineDebuff = !ppChain && !finishingLateBoss && (!_campaignBypassEnemies || lateBoss != null) && (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
-        if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || !finishingLateBoss && patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff
+        if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || !finishingLateBoss && patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff || undeadEscort != null
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || !finishingLateBoss && patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
                 || !finishingLateBoss && patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
@@ -1431,9 +1524,9 @@ public partial class FieldContracts : Node
             bool guard = !life && (wardNeeded || heraklesNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
             bool weakening = !life && (westernDebuff || mineDebuff);
             _campaignHealSpell = guard && heraklesNeeded ? 60 : guard && elementalFight && frost && !patient.Has(fusionStatus) ? fusionSpell : guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
-            _campaignHealEnemy = westernDebuff && weakening && !guard ? westernTarget?.Actor.Id ?? "" : "";
+            _campaignHealEnemy = !life && !guard && undeadEscort != null ? undeadEscort.Actor.Id : westernDebuff && weakening && !guard ? westernTarget?.Actor.Id ?? "" : "";
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
-            _campaignHealMagic = urgentPotion == 0 && (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
+            _campaignHealMagic = urgentPotion == 0 && (life || guard || weakening || undeadEscort != null) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
             // The native ward blocks even Ashley's own healing magic; use her owned HP items while it lasts.
             if (_campaignHealSpell == 96 && patient.Has(12) && new[] { 323, 324, 325, 326, 335, 336, 337, 338 }.Any(id => _view.Items.GetValueOrDefault(id) > 0)) _campaignHealMagic = false;
             if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
@@ -1513,7 +1606,7 @@ public partial class FieldContracts : Node
                 case 5:
                     if (healing.Paused)
                     {
-                        if (_campaignHealMagic && _campaignHealSpell is 54 or 55 or 56 or 57 or 114 && healing.SphereTarget is { } target
+                        if (_campaignHealMagic && (_campaignHealEnemy.Length > 0 || _campaignHealSpell is 54 or 55 or 56 or 57 or 114) && healing.SphereTarget is { } target
                             && (FieldBattle.Relation(target, recovering) != 3 || _campaignHealEnemy.Length > 0 && target.Actor.Id != _campaignHealEnemy
                                 || _campaignHealSpell == 54 && target.Has(FieldBattle.Degenerate)))
                         {
@@ -1888,6 +1981,7 @@ public partial class FieldContracts : Node
                 int zone = candidate["zone"].AsInt32();
                 if (zone == 0) zone = _view.Zone;
                 int cost = _campaignAttempts.GetValueOrDefault((_view.Zone, _view.Map, i)) * 1000 + _campaignVisits.GetValueOrDefault((zone, candidate["map"].AsInt32()));
+                if ((_view.Zone, _view.Map, zone, candidate["map"].AsInt32(), i) == (24, 11, 24, 12, 4)) cost--;
                 if (_campaignCheckpoint is { } destination)
                 {
                     if (zone == destination.Zone) cost += 20 * Math.Abs(candidate["map"].AsInt32() - destination.Map);
@@ -2026,6 +2120,711 @@ public partial class FieldContracts : Node
             Input.ActionRelease("ps_r2");
             if (jumping && (!_campaignBoarding || (_frame - _campaignPuzzleAt) % 120 == 1) && landed && _press == 0)
             { Tap("ps_square"); _campaignBoarding = true; }
+            return;
+        }
+        // Struggle for the Soul's galleries are separated by a two-tile drop. Follow the west gallery,
+        // then make a standing jump across it before walking to the requested door.
+        if ((_view.Zone, _view.Map) == (22, 8) && _campaignDoor is 0 or 1 && _campaignPuzzle < 6)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Cathedral gallery step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            bool north = _campaignDoor == 1;
+            var point = !north ? _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -640, 320), 1 => new Vector3(320, -576, 576),
+                2 => new Vector3(320, -576, 608), 3 => new Vector3(320, -576, 960),
+                4 => new Vector3(320, -640, 1216), _ => new Vector3(320, -640, 1856),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -640, 1856), 1 => new Vector3(320, -640, 1216),
+                2 => new Vector3(320, -576, 960), 3 => new Vector3(320, -576, 904),
+                4 => new Vector3(320, -576, 576), _ => new Vector3(320, -640, 320),
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == (north ? 3 : 2) ? 5 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Cathedral gallery step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (_campaignPuzzle == (north ? 4 : 3) && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == (north ? 4 : 3) && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Abasement from Above's south and west galleries meet across a gap. Launch from the western edge
+        // of the southern gallery and catch the west ledge before approaching the Flame Dragon's door.
+        if ((_view.Zone, _view.Map) == (23, 3) && _campaignDoor is 0 or 2 && _campaignPuzzle < 6
+            && (_campaignPuzzle > 0 || (_campaignDoor == 2 ? ashley.Actor.Position.X > 800 : ashley.Actor.Position.X < 800)))
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Abasement gallery step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            bool west = _campaignDoor == 2;
+            var point = !west ? _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -512, 1344), 1 => new Vector3(448, -512, 1600),
+                2 => new Vector3(496, -512, 1600), 3 => new Vector3(960, -512, 1728),
+                4 => new Vector3(960, -512, 1984), _ => new Vector3(960, -512, 2368),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(960, -512, 2368), 1 => new Vector3(960, -512, 1984),
+                2 => new Vector3(960, -512, 1728), 3 => new Vector3(904, -512, 1728),
+                4 => new Vector3(448, -512, 1600), _ => new Vector3(320, -512, 1344),
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == (west ? 3 : 2) ? 8 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Abasement gallery step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (_campaignPuzzle == (west ? 4 : 3) && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == (west ? 4 : 3) && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Across the cleared Flame Dragon arena the west and east doors share its open centre aisle.
+        if ((_view.Zone, _view.Map) == (24, 11) && _campaignDoor is >= 0 and <= 5)
+        {
+            var arenaTile = doors[_campaignDoor].AsGodotDictionary()["tile"].AsGodotArray();
+            var point = new Vector3(arenaTile[0].AsInt32() * 128 + 64, 0, arenaTile[1].AsInt32() * 128 + 64);
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            if (_frame % 20 == 0 && point.DistanceTo(ashley.Actor.Position) < 200) Tap("ps_cross");
+            return;
+        }
+        // He Screams for Mercy: the central west spur faces the southern landing across the void.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 1, 0) && _campaignPuzzle < 7
+            && (_campaignPuzzle > 0 || ashley.Actor.Position.Z < 2000))
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Mercy south step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(704, -512, 1344), 1 => new Vector3(704, -512, 1472),
+                2 => new Vector3(576, -512, 1600), 3 => new Vector3(576, -512, 1728),
+                4 => new Vector3(576, -512, 1776), 5 => new Vector3(320, -512, 2112),
+                _ => new Vector3(320, -512, 2368),
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == 4 ? 8 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { GD.Print($"CAMPAIGN: Mercy south step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 5 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == 5 && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Return from Malice to the north gallery by the central spur and two northern gaps.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 1, 1) && _campaignPuzzle < 17)
+        {
+            _campaignDoorAt = _frame;
+            if (_campaignPuzzle == 0 && ashley.Actor.Position.Z < 2000) _campaignPuzzle = 7;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Mercy north step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -512, 2368), 1 => new Vector3(320, -512, 2112),
+                2 => new Vector3(320, -512, 2060), 3 => new Vector3(576, -512, 1728),
+                4 => new Vector3(576, -512, 1600), 5 => new Vector3(704, -512, 1472),
+                6 => new Vector3(704, -512, 1344), 7 => new Vector3(576, -512, 1216),
+                8 => new Vector3(576, -512, 960), 9 => new Vector3(576, -512, 904),
+                10 => new Vector3(960, -512, 832), 11 => new Vector3(960, -512, 320),
+                12 => new Vector3(832, -512, 320), 13 => new Vector3(784, -512, 320),
+                14 => new Vector3(576, -512, 320), 15 => new Vector3(320, -512, 320),
+                _ => new Vector3(320, -512, 128),
+            };
+            bool jumping = _campaignPuzzle is 3 or 10 or 14;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 2 or 9 or 13 ? 5 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { GD.Print($"CAMPAIGN: Mercy north step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (_campaignPuzzle is 2 or 9 or 13) Input.ActionPress("ps_r2"); else Input.ActionRelease("ps_r2");
+            return;
+        }
+        // From the north bank, cross back to Mercy's central spur and the Flame Dragon junction.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 1, 2) && _campaignPuzzle < 10
+            && (_campaignPuzzle > 0 || ashley.Actor.Position.Z < 1000))
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Mercy east step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -512, 320), 1 => new Vector3(576, -512, 320),
+                2 => new Vector3(628, -512, 320), 3 => new Vector3(832, -512, 320),
+                4 => new Vector3(960, -512, 320), 5 => new Vector3(960, -512, 832),
+                6 => new Vector3(920, -512, 832), 7 => ashley.Actor.Position.X >= 640 ? new Vector3(512, -512, 896) : new Vector3(576, -512, 960),
+                8 => new Vector3(576, -512, 1216), 9 => new Vector3(960, -512, 1344),
+                _ => new Vector3(1152, -512, 1344),
+            };
+            bool jumping = _campaignPuzzle is 3 or 7;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 2 or 6 ? 5 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { GD.Print($"CAMPAIGN: Mercy east step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (_campaignPuzzle is 2 or 6) Input.ActionPress("ps_r2"); else Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Sin and Punishment's two tall partitions have their broad openings at Z=1280.
+        if ((_view.Zone, _view.Map) == (24, 6) && _campaignPuzzle < 3)
+        {
+            _campaignDoorAt = _frame;
+            bool south = _campaignDoor is 0 or 1;
+            var point = south ? _campaignPuzzle switch
+            {
+                0 => new Vector3(576, -384, 1280), 1 => new Vector3(832, -256, 1280), _ => new Vector3(1344, -256, 1984),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(1920, -256, 1280), 1 => new Vector3(2304, -256, 1280), _ => new Vector3(2496, 0, 1856),
+            };
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Cathedral save gallery step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2)
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Return through the two Cathedral receiving lifts: leave each gallery on platform 0 at its door stop.
+        if (_view.Zone == 24 && _view.Map is 7 or 13 && _campaignDoor == 0 && _campaignPuzzle < (_view.Map == 7 ? 5 : 3))
+        {
+            _campaignDoorAt = _frame;
+            bool cracked = _view.Map == 7;
+            int board = cracked ? 3 : 1;
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Cathedral return lift step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (cracked && _campaignPuzzle == 0 && _view.PlatformUnder(ashley.Actor.Position) == 1 && ashley.Actor.Position.Y < -513)
+            { Steer(Vector2.Zero); return; }
+            var platform = _view.PlatformState(0)!.Value;
+            if (_campaignPuzzle == board + 1) { Steer(Vector2.Zero); return; }
+            var point = _campaignPuzzle == board ? platform.Now : cracked ? _campaignPuzzle switch
+            {
+                0 => new Vector3(448, -384, 1216), 1 => new Vector3(1088, -384, 704),
+                _ => new Vector3(1088, -384, 448),
+            } : new Vector3(576, -384, 1216);
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (_campaignPuzzle != board || _view.PlatformUnder(ashley.Actor.Position) == 0))
+            { GD.Print($"CAMPAIGN: Cathedral return lift step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == board && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (platform.Now.Y <= -376 && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == board && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle < board ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (_campaignPuzzle < board) Input.ActionPress("ps_r2"); else Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Free from Base Desires: climb the northeast 256-unit perch before jumping to the lift 384 above it.
+        // The lower gallery cannot reach the lift directly.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (24, 13, 1) && _campaignPuzzle < 5)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Cathedral upper lift step {_campaignPuzzle} stalled at {ashley.Actor.Position}, platform {_view.PlatformState(1)}"); return; }
+            if (_campaignPuzzle == 4) { Steer(Vector2.Zero); return; }
+            if (_view.PlatformState(1) is not { } platform) { Finish("campaign: the Cathedral upper lift is unavailable"); return; }
+            if (_campaignPuzzle == 3 && _view.PlatformUnder(ashley.Actor.Position) == 1
+                && new Vector2(ashley.Actor.Position.X - platform.Now.X, ashley.Actor.Position.Z - platform.Now.Z).Length() < 16
+                && Math.Abs(ashley.Actor.Position.Y - platform.Now.Y) < 2)
+            { _campaignPuzzle = 4; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1088, -384, 320), 1 => new Vector3(1216, -640, 320),
+                2 => new Vector3(1216, -640, 360), _ => platform.Now,
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (_campaignPuzzle < 3 && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == 2 ? 5 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Cathedral upper lift step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (_campaignPuzzle == 3 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == 3 && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // The Wine-Lecher's Fall: let the receiving lift reach its upper stop, leave along the east wall,
+        // then jump the southern stepping stone to the west gallery.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 5, 0) && _campaignPuzzle < 9)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Wine-Lecher gallery step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (_view.PlatformState(0) is not { } platform) { Finish("campaign: the receiving Cathedral lift is unavailable"); return; }
+            if (_campaignPuzzle >= 2 && _view.PlatformUnder(ashley.Actor.Position) == 0)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Wine-Lecher crossings fell into the pit"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_campaignPuzzle == 0)
+            {
+                Steer(Vector2.Zero);
+                if (platform.Now.Y <= -500) { _campaignPuzzle = 1; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                1 => new Vector3(1344, -512, 448), 2 => new Vector3(1344, -512, 832),
+                3 => new Vector3(1344, -512, 880), 4 => new Vector3(1344, -512, 1216),
+                5 => new Vector3(1088, -512, 1344), 6 => new Vector3(1048, -512, 1344),
+                7 => new Vector3(576, -512, 1344), _ => new Vector3(448, -512, 1216),
+            };
+            bool jumping = _campaignPuzzle is 4 or 5 or 7;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 3 or 6 ? 10 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            {
+                GD.Print($"CAMPAIGN: Wine-Lecher gallery step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt >= 45 && landed && _press == 0)
+                { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        // Return across the Wine-Lecher stepping stones, then board the east lift at its upper stop.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 5, 1) && _campaignPuzzle < 10)
+        {
+            _campaignDoorAt = _frame;
+            Input.ActionRelease("ps_r2");
+            if (_frame - _campaignPuzzleAt > 1800) { Finish($"campaign: Wine-Lecher return step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var platform = _view.PlatformState(0)!.Value;
+            if (_campaignPuzzle == 9) { Steer(Vector2.Zero); return; }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(448, -512, 1216), 1 => new Vector3(576, -512, 1344),
+                2 => new Vector3(624, -512, 1344), 3 => new Vector3(1088, -512, 1344),
+                4 => new Vector3(1344, -512, 1216), 5 => new Vector3(1344, -512, 1176),
+                6 => new Vector3(1344, -512, 832), 7 => new Vector3(1344, -512, 448),
+                _ => platform.Now,
+            };
+            bool jumping = _campaignPuzzle is 3 or 4 or 6 or 8;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 2 or 5 ? 10 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (_campaignPuzzle != 8 || _view.PlatformUnder(ashley.Actor.Position) == 0))
+            {
+                GD.Print($"CAMPAIGN: Wine-Lecher return step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (_frame - _campaignPuzzleAt >= 45 && landed && _press == 0 && (_campaignPuzzle != 8 || platform.Now.Y <= -500))
+                { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            return;
+        }
+        // The Nexus's activated Cloudstone joins its northern and southern perches.
+        if ((_view.Zone, _view.Map) == (24, 5) && _campaignPuzzle < 7
+            && (_campaignDoor is 0 or 1 && (_campaignPuzzle > 0 || ashley.Actor.Position.Z < 1600)
+                || _campaignDoor is 2 or 3 && (_campaignPuzzle > 0 || ashley.Actor.Position.Z > 1600)))
+        {
+            _campaignDoorAt = _frame;
+            bool south = _campaignDoor is 0 or 1;
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Nexus Cloudstone step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var platform = _view.PlatformState(0)!.Value;
+            if (platform.Off) { Finish("campaign: the Nexus Cloudstone is not enabled"); return; }
+            int ride = south ? 4 : 3;
+            if (_campaignPuzzle == ride)
+            {
+                Steer(Vector2.Zero);
+                bool ready = south ? platform.Now.Z >= 1952 && platform.Bound.Z >= platform.Now.Z : platform.Now.Z <= 1120 && platform.Bound.Z <= platform.Now.Z;
+                if (ready) { _campaignPuzzle++; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = south ? _campaignPuzzle switch
+            {
+                0 => new Vector3(1088, -512, 832), 1 => new Vector3(1088, -640, 960),
+                2 => new Vector3(1088, -640, 1004), 3 => platform.Now,
+                5 => platform.Now + new Vector3(0, 0, 52), _ => new Vector3(1088, -512, 2112),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(1088, -512, 2112), 1 => new Vector3(1088, -512, 2060),
+                2 => platform.Now, 4 => platform.Now + new Vector3(0, 0, -52),
+                _ => new Vector3(1088, -640, 960),
+            };
+            int board = south ? 3 : 2, leave = south ? 6 : 5;
+            bool jumping = _campaignPuzzle == board || _campaignPuzzle == leave;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle == board - 1 || _campaignPuzzle == leave - 1 ? 8 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (_campaignPuzzle != board || _view.PlatformUnder(ashley.Actor.Position) == 0))
+            { GD.Print($"CAMPAIGN: Nexus Cloudstone step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle = _campaignPuzzle == leave ? 7 : _campaignPuzzle + 1; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                bool near = _campaignPuzzle == board ? south ? platform.Now.Z <= 1120 && platform.Bound.Z <= platform.Now.Z : platform.Now.Z >= 1952 && platform.Bound.Z >= platform.Now.Z
+                    : south ? platform.Now.Z >= 1952 && platform.Bound.Z >= platform.Now.Z : platform.Now.Z <= 1120 && platform.Bound.Z <= platform.Now.Z;
+                if (near && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // Light and Dark Wage War: the western galleries lead to the lever which unlocks the Atrium route.
+        if ((_view.Zone, _view.Map) == (23, 2) && (_view.Flags[279] == 0 || _campaignDoor is 0 or 1)
+            && _campaignPuzzle < (_view.Flags[279] == 0 ? 10 : 8))
+        {
+            _campaignDoorAt = _frame;
+            bool lever = _view.Flags[279] == 0;
+            int since = _frame - _campaignPuzzleAt;
+            if (since > 2400) { Finish($"campaign: Light and Dark gallery step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            if (lever && _campaignPuzzle == 9)
+            {
+                float turn = (ashley.Actor.FacingToward(new Vector3(448, -576, 2752)) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(since is >= 45 and < 49 ? new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)) : Vector2.Zero);
+                if (since >= 90 && since % 30 == 0 && _press == 0) Tap("ps_cross");
+                return;
+            }
+            var point = lever ? _campaignPuzzle switch
+            {
+                0 => new Vector3(1216, -576, 832), 1 => new Vector3(576, -576, 832),
+                2 => new Vector3(524, -576, 832), 3 => new Vector3(320, -576, 832),
+                4 => new Vector3(320, -576, 1600), 5 => new Vector3(320, -576, 1660),
+                6 => new Vector3(320, -576, 2240), 7 => new Vector3(320, -576, 2368),
+                _ => new Vector3(448, -576, 2624),
+            } : _campaignPuzzle switch
+            {
+                0 => new Vector3(320, -576, 2368), 1 => new Vector3(320, -576, 2240),
+                2 => new Vector3(320, -576, 2180), 3 => new Vector3(320, -576, 1600),
+                4 => new Vector3(320, -576, 832), 5 => new Vector3(372, -576, 832),
+                6 => new Vector3(576, -576, 832), 7 => new Vector3(1216, -576, 832),
+                _ => new Vector3(1216, -576, 640),
+            };
+            bool jumping = _campaignPuzzle is 3 or 6;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 2 or 5 ? 4 : 12)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { GD.Print($"CAMPAIGN: Light and Dark gallery step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (since > 45 && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // Melodics: move the wooden crate E/S/E as a support, slide stone 38 onto stone 39,
+        // then push it north over the wooden support to the ledge. Its top permits the 384-unit grab.
+        if ((_view.Zone, _view.Map) == (24, 12) && _campaignDoor is 2 or 3 && _view.Flags[287] == 0 && _campaignPuzzle < 16)
+        {
+            _campaignDoorAt = _frame;
+            int since = _frame - _campaignPuzzleAt;
+            if (since > 2400) { Finish($"campaign: Melodics step {_campaignPuzzle} stalled at {ashley.Actor.Position}, blocks {string.Join(';', _view.Crates)}"); return; }
+            if (_campaignPuzzle is 1 or 3 or 5 or 7 or 9 or 10 or 11)
+            {
+                string moving = _campaignPuzzle <= 5 ? "37" : "38";
+                var destination = _campaignPuzzle switch { 1 => (2, 8), 3 => (2, 9), 5 => (3, 9), 7 => (3, 10), 9 => (3, 9), 10 => (3, 8), _ => (3, 4) };
+                if (since > 45 && _view.CrateObjects.Any(c => c.Id == moving && (c.X, c.Z) == destination && c.Resting))
+                { GD.Print($"CAMPAIGN: Melodics push {_campaignPuzzle} reached {destination}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; Steer(Vector2.Zero); return; }
+                var face = _campaignPuzzle switch
+                {
+                    1 => new Vector3(192, -192, 1088), 3 => new Vector3(320, -64, 1088),
+                    5 => new Vector3(320, -64, 1216), 7 => new Vector3(320, -256, 1344),
+                    9 => new Vector3(448, -256, 1344), 10 => new Vector3(448, -192, 1216),
+                    _ => new Vector3(448, -128, 1088),
+                };
+                float turn = (ashley.Actor.FacingToward(face) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+                Steer(since is >= 45 and < 49 ? new Vector2(Mathf.Sin(turn), -Mathf.Cos(turn)) : Vector2.Zero);
+                if (since >= 90 && since % 30 == 0 && _press == 0)
+                { if (since == 90) GD.Print($"CAMPAIGN: Melodics push {_campaignPuzzle} from {ashley.Actor.Position}"); Tap("ps_cross"); }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(64, -128, 1088), 2 => new Vector3(320, -128, 960),
+                4 => ashley.Actor.Position.X > 198 ? new Vector3(192, -192, 1088) : new Vector3(192, -128, 1216),
+                6 => ashley.Actor.Position.X > 198 ? new Vector3(192, -128, 1216) : new Vector3(192, -256, 1344),
+                8 => new Vector3(448, -128, 1472), 12 => new Vector3(448, 0, 704),
+                13 => new Vector3(448, -128, 576), 14 => new Vector3(448, -512, 448),
+                _ => new Vector3(576, -512, 320),
+            };
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (!(_campaignPuzzle is 4 or 6 && ashley.Actor.Position.X > 198) && new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 12 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed)
+            { GD.Print($"CAMPAIGN: Melodics step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 14 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (since > 45 && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == 14 && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle < 13 && _campaignPuzzle is not (4 or 6) ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (_campaignPuzzle == 14) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
+            return;
+        }
+        // The Nightmare victory enables the lift Cloudstone; the next shaft's lift reaches the Atrium.
+        if (((_view.Zone, _view.Map, _campaignDoor) == (25, 1, 0) && _view.Flags[277] != 0
+                || (_view.Zone, _view.Map, _campaignDoor) == (25, 2, 0)) && _campaignPuzzle < 3)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Cathedral final lift step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var platform = _view.PlatformState(0)!.Value;
+            bool nightmare = _view.Map == 1;
+            if (_campaignPuzzle == 2) { Steer(Vector2.Zero); return; }
+            var point = _campaignPuzzle == 0 ? nightmare ? new Vector3(1088, 0, 1088) : new Vector3(448, -64, 704) : platform.Now;
+            if (_campaignPuzzle == 1) point.Y = _view.FloorAt(point) ?? point.Y;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < 16 && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (_campaignPuzzle != 1 || _view.PlatformUnder(ashley.Actor.Position) == 0))
+            { _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (_campaignPuzzle == 1 && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                if (!platform.Off && platform.Now.Y >= (nightmare ? -140 : -268) && (!nightmare || platform.Bound.Y >= platform.Now.Y) && landed && _press == 0)
+                { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (_campaignPuzzle == 1 && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            var path = _campaignPuzzle == 0 ? _view.Path(ashley.Actor.Position, point, 256) : new List<Vector3>();
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            Input.ActionRelease("ps_r2");
+            return;
+        }
+        if ((_view.Zone, _view.Map) == (25, 3) && _view.PlatformUnder(ashley.Actor.Position) == 0
+            && _view.PlatformState(0) is { } galleryLift && galleryLift.Now.Y > -500)
+        { _campaignDoorAt = _frame; Steer(Vector2.Zero); return; }
+        // The Atrium's final story is its native type-2 region at tiles (10,2)..(11,3), beside the lift.
+        if ((_view.Zone, _view.Map) == (25, 4) && _view.Flags[130] <= 77)
+        {
+            _campaignDoorAt = _frame;
+            var point = new Vector3(1344, 0, 320);
+            point.Y = _view.FloorAt(point) ?? 0;
+            var path = _view.Path(ashley.Actor.Position, point, 256);
+            while (path.Count > 1 && new Vector2(path[0].X - ashley.Actor.Position.X, path[0].Z - ashley.Actor.Position.Z).Length() < 16) path.RemoveAt(0);
+            var next = path.Count > 0 ? path[0] : point;
+            float heading = (ashley.Actor.FacingToward(next) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            return;
+        }
+        // The Heretics' Story's lower crossing uses three oscillating Cloudstones. Board each near its
+        // neighbour, then leave the last one's west edge for the Calla gate and Dao.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 4, 2) && _campaignPuzzle < 10)
+        {
+            _campaignDoorAt = _frame;
+            Input.ActionRelease("ps_r2");
+            if (_campaignPuzzle >= 2 && ashley.Actor.Position.X > 2100 && _view.PlatformUnder(ashley.Actor.Position) < 0)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Heretics Cloudstone crossings fell into the pit"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Heretics Cloudstone step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var first = _view.PlatformState(1)!.Value;
+            var middle = _view.PlatformState(2)!.Value;
+            var last = _view.PlatformState(3)!.Value;
+            if (first.Off || middle.Off || last.Off) { Finish("campaign: the lower Heretics Cloudstones are not enabled"); return; }
+            if (_campaignPuzzle is 2 or 4 or 6)
+            {
+                Steer(Vector2.Zero);
+                bool ready = _campaignPuzzle == 2 ? first.Now.X - middle.Now.X < 240 && middle.Bound.X >= middle.Now.X
+                    : _campaignPuzzle == 4 ? middle.Now.X - last.Now.X < 240 && last.Now.X >= 1152 && last.Bound.X >= last.Now.X
+                    : last.Now.X <= 992 && last.Bound.X <= last.Now.X;
+                if (ready) { _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
+                return;
+            }
+            int boarded = _campaignPuzzle switch { 1 => 1, 3 => 2, 5 => 3, _ => -1 };
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(2060, -256, 1600), 1 => first.Now, 3 => middle.Now, 5 => last.Now,
+                7 => last.Now + new Vector3(-52, 0, 0), _ => new Vector3(448, -256, 1600),
+            };
+            bool jumping = _campaignPuzzle is 1 or 3 or 5 or 8;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 0 or 7 ? 10 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (boarded < 0 || _view.PlatformUnder(ashley.Actor.Position) == boarded))
+            {
+                GD.Print($"CAMPAIGN: Heretics Cloudstone step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle = _campaignPuzzle == 8 ? 10 : _campaignPuzzle + 1;
+                _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                bool ready = _campaignPuzzle == 1 ? first.Now.X >= 1936 && first.Bound.X >= first.Now.X
+                    : _campaignPuzzle != 8 || last.Now.X <= 992 && last.Bound.X <= last.Now.X;
+                if (ready && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (!jumping) Input.ActionPress("ps_r2");
+            return;
+        }
+        // The Heretics' Story's return crossing boards the fast western Cloudstone first, then follows
+        // the middle and eastern stones back to the Wine-Lecher gallery.
+        if ((_view.Zone, _view.Map, _campaignDoor) == (23, 4, 5) && _campaignPuzzle < 10)
+        {
+            _campaignDoorAt = _frame;
+            Input.ActionRelease("ps_r2");
+            if (_campaignPuzzle >= 2 && ashley.Actor.Position.X < 500 && _view.PlatformUnder(ashley.Actor.Position) < 0)
+            {
+                if (++_campaignBoardingMisses > 3) { Finish("campaign: four Heretics Cloudstone crossings fell into the pit"); return; }
+                _campaignPuzzle = 0; _campaignPuzzleAt = _frame; _campaignBoarding = false;
+            }
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Heretics Cloudstone step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var first = _view.PlatformState(3)!.Value;
+            var middle = _view.PlatformState(2)!.Value;
+            var last = _view.PlatformState(1)!.Value;
+            if (first.Off || middle.Off || last.Off) { Finish("campaign: the lower Heretics Cloudstones are not enabled"); return; }
+            if (_campaignPuzzle is 2 or 4 or 6)
+            {
+                Steer(Vector2.Zero);
+                bool ready = _campaignPuzzle == 2 ? middle.Now.X - first.Now.X < 240 && middle.Bound.X <= middle.Now.X
+                    : _campaignPuzzle == 4 ? last.Now.X - middle.Now.X < 240 && last.Now.X <= 1792 && last.Bound.X <= last.Now.X
+                    : last.Now.X >= 1952 && last.Bound.X >= last.Now.X;
+                if (ready) { _campaignPuzzle++; _campaignPuzzleAt = _frame; _campaignBoarding = false; }
+                return;
+            }
+            int boarded = _campaignPuzzle switch { 1 => 3, 3 => 2, 5 => 1, _ => -1 };
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(500, -256, 1600), 1 => first.Now, 3 => middle.Now, 5 => last.Now,
+                7 => last.Now + new Vector3(52, 0, 0), _ => new Vector3(2240, -256, 1600),
+            };
+            bool jumping = _campaignPuzzle is 1 or 3 or 5 or 8;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 0 or 7 ? 10 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (boarded < 0 || _view.PlatformUnder(ashley.Actor.Position) == boarded))
+            {
+                GD.Print($"CAMPAIGN: Heretics Cloudstone step {_campaignPuzzle} reached at {ashley.Actor.Position}");
+                _campaignPuzzle = _campaignPuzzle == 8 ? 10 : _campaignPuzzle + 1;
+                _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return;
+            }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                bool ready = _campaignPuzzle == 1 ? first.Now.X <= 992 && first.Bound.X <= first.Now.X
+                    : _campaignPuzzle != 8 || last.Now.X >= 1952 && last.Bound.X >= last.Now.X;
+                if (ready && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (!jumping) Input.ActionPress("ps_r2");
+            return;
+        }
+        // With Malice's native bridge event complete, ride the upper Cloudstone from the north gallery.
+        if ((_view.Zone, _view.Map) == (23, 4) && _campaignDoor is 0 or 1 && ashley.Actor.Position.Y <= -700 && _campaignPuzzle < 7)
+        {
+            _campaignDoorAt = _frame;
+            if (_frame - _campaignPuzzleAt > 2400) { Finish($"campaign: Heretics upper step {_campaignPuzzle} stalled at {ashley.Actor.Position}"); return; }
+            var platform = _view.PlatformState(0)!.Value;
+            if (platform.Off) { Finish("campaign: the upper Heretics Cloudstone is not enabled"); return; }
+            if (_campaignPuzzle == 3)
+            {
+                Steer(Vector2.Zero);
+                if (platform.Now.Z >= 2208 && platform.Bound.Z >= platform.Now.Z) { _campaignPuzzle = 4; _campaignPuzzleAt = _frame; }
+                return;
+            }
+            var point = _campaignPuzzle switch
+            {
+                0 => new Vector3(1216, -832, 832), 1 => new Vector3(1216, -832, 884),
+                2 => platform.Now, 4 => platform.Now + new Vector3(0, 0, 52),
+                _ => new Vector3(1216, -832, 2496),
+            };
+            bool jumping = _campaignPuzzle is 2 or 5;
+            bool landed = _view.FloorAt(ashley.Actor.Position) is { } floor && Math.Abs(floor - ashley.Actor.Position.Y) < 2;
+            if (new Vector2(point.X - ashley.Actor.Position.X, point.Z - ashley.Actor.Position.Z).Length() < (_campaignPuzzle is 1 or 4 ? 8 : 16)
+                && Math.Abs(point.Y - ashley.Actor.Position.Y) < 2 && landed
+                && (_campaignPuzzle != 2 || _view.PlatformUnder(ashley.Actor.Position) == 0))
+            { GD.Print($"CAMPAIGN: Heretics upper step {_campaignPuzzle} reached at {ashley.Actor.Position}"); _campaignPuzzle = _campaignPuzzle == 5 ? 7 : _campaignPuzzle + 1; _campaignPuzzleAt = _frame; _campaignBoarding = false; Steer(Vector2.Zero); return; }
+            if (jumping && !_campaignBoarding)
+            {
+                Steer(Vector2.Zero);
+                bool ready = _campaignPuzzle == 2 ? platform.Now.Z <= 992 && platform.Bound.Z <= platform.Now.Z : platform.Now.Z >= 2208 && platform.Bound.Z >= platform.Now.Z;
+                if (ready && landed && _press == 0) { Tap("ps_square"); _campaignBoarding = true; _campaignHallAt = _frame; }
+                return;
+            }
+            if (jumping && _frame - _campaignHallAt < 4) { Steer(Vector2.Zero); return; }
+            float heading = (ashley.Actor.FacingToward(point) - _view.Gameplay.Yaw) * Mathf.Tau / 4096;
+            Steer(new Vector2(Mathf.Sin(heading), -Mathf.Cos(heading)));
+            if (jumping) Input.ActionRelease("ps_r2"); else Input.ActionPress("ps_r2");
             return;
         }
         // The Crumbling Market's western entrance joins the marked stair ramp. Climb it
@@ -5424,20 +6223,25 @@ public partial class FieldContracts : Node
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
-        bool extendedChain = _campaign && ((((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23) && battle.Combatants.Values.Any(c => c.Targetable && c.MaxHp >= 300 && FieldBattle.Relation(c, ashley) == 3)) || (_campaignLoot == (51, 5) && _campaignLootItem == 450 && (_view.Zone, _view.Map) is (51, 4) or (51, 5)) || (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10)
+        bool extendedChain = _campaign && ((((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23) && battle.Combatants.Values.Any(c => c.Targetable && (c.MaxHp >= 300 || c.Name is "Lich Lord" or "Lich" || (_view.Zone, _view.Map) == (24, 9)) && FieldBattle.Relation(c, ashley) == 3)) || (_campaignLoot == (51, 5) && _campaignLootItem == 450 && (_view.Zone, _view.Map) is (51, 4) or (51, 5)) || (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (49, 10)
             || (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469);
-        // Alternate Heavy Shot and Gain Life on a low-evasion part when the passage or caster needs a sustained chain.
-        // The native "in time" window starts after the hit; zero is still the "fast" grade.
-        // Alternate the earned buttons over a short chain, releasing each before the next cue.
+        bool ppChainFight = _view.Zone is >= 22 and <= 27 && battle.ChainSlots[0] == 31 && battle.ChainSlots[1] == 30;
+        // FieldBattle decrements its strike clock before grading this input. Press at zero so it lands one tick
+        // after the hit, inside even the narrowest native chain window. Alternate the earned buttons.
         if (battle.AshleyStrikeFrame is not { } timing) { _fightLinked = false; _fightChainLinks = 0; }
         else
         {
             if (timing < 0) _fightLinked = false;
             var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0 && ((_view.Zone, _view.Map) != (40, 24) && !extendedChain || i != 2)).ToArray();
-            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && (ashley.Risk < 65 || extendedChain)
-                && slots.Length > 0 && _fightChainLinks < (extendedChain ? 32 : slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
+            if (_campaign && (_view.Zone, _view.Map) != (40, 22) && !_fightLinked && (ppChainFight ? timing == 0 : timing is >= 1 and <= 2) && _press == 0 && (ashley.Risk < 65 || extendedChain)
+                && slots.Length > 0 && _fightChainLinks < (ppChainFight ? 64 : extendedChain ? 32 : slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) is (50, 17) or (40, 22) ? 3 : 6))
             {
-                Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
+                int slot = slots[_fightChainLinks % slots.Length];
+                // Finish with Temper and Instill so a killing Phantom Pain does not empty the blade for the next boss.
+                if (ppChainFight && slot == 0 && battle.ChainSlots[2] == 28
+                    && typeof(FieldBattle).GetField("_victim", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(battle) is FieldBattle.Combatant victim
+                    && victim.Hp <= Math.Max(150, ashley.Blade.Pp + _fightChainLinks + 1)) slot = 2;
+                Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slot]);
                 _fightLinked = true; _fightChainLinks++;
             }
         }
@@ -5473,10 +6277,19 @@ public partial class FieldContracts : Node
                     else { Tap("ps_cross"); _campaignCubePicks = 0; _fightCloseUntil = _frame + 120; }
                 return;
             }
+            string cathedralTarget = (_view.Zone, _view.Map) == (24, 9) ? "Lich Lord" : (_view.Zone, _view.Map) == (24, 1) ? "Lich" : "";
+            if (_campaign && cathedralTarget.Length > 0 && battle.SphereTarget?.Name != cathedralTarget
+                && battle.Combatants.Values.Any(c => c.Targetable && c.Name == cathedralTarget))
+            {
+                if (_press == 0)
+                    if (++_campaignCubePicks <= 4) Tap("ps_right");
+                    else { Tap("ps_cross"); _campaignCubePicks = 0; _fightCloseUntil = _frame + 120; }
+                return;
+            }
             _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && ((_view.Zone is >= 22 and <= 27 or 30 or 31) || _view.Zone == 53 && _view.Map >= 23)
-                && opened && battle.SphereTarget is { MaxHp: >= 300 } bossTarget)
+                && opened && battle.SphereTarget is { } bossTarget && (bossTarget.MaxHp >= 300 || bossTarget.Name is "Lich Lord" or "Lich"))
             {
                 var reachable = ((List<(FieldBattle.Combatant Who, List<int> Parts)>)typeof(FieldBattle)
                     .GetField("_targets", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(battle)!)
@@ -5535,6 +6348,8 @@ public partial class FieldContracts : Node
             if (c.Targetable && FieldBattle.Relation(c, ashley) == 3 && ((_view.Zone, _view.Map, _campaignPuzzle) != (51, 4, 3) || c.Name == "Blood Lizard") && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
         if (_campaign && (_view.Zone, _view.Map) == (49, 10))
             nearest = battle.Combatants.Values.FirstOrDefault(c => c.Targetable && c.Name == "Neesa") ?? nearest;
+        if (_campaign && (_view.Zone, _view.Map) is (24, 9) or (24, 1))
+            nearest = battle.Combatants.Values.FirstOrDefault(c => c.Targetable && c.Name == ((_view.Zone, _view.Map) == (24, 9) ? "Lich Lord" : "Lich")) ?? nearest;
         if (nearest == null) { Steer(Vector2.Zero); return; }
         if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;
