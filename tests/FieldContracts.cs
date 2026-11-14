@@ -20,7 +20,7 @@ public partial class FieldContracts : Node
     /// <summary>With --near-enemy, Ashley is set down beside the room's first hostile character as she gets control.</summary>
     private bool _nearEnemy;
     /// <summary>A continuous New Game run using pad input, without the focused checks' state grants.</summary>
-    private bool _campaign, _campaignBypassEnemies, _campaignRepair, _campaignRepaired, _campaignBoarding;
+    private bool _campaign, _campaignBypassEnemies, _campaignRepair, _campaignRepaired, _campaignBoarding, _campaignResting;
     private int _campaignRepairFrame, _campaignUiStep, _campaignUiAt, _campaignUiGeneration;
     private bool _campaignSaveUi, _campaignUiSaved;
     private string _campaignSave = "", _campaignLoad = "";
@@ -49,6 +49,9 @@ public partial class FieldContracts : Node
     private Godot.Collections.Dictionary? _repairLoose, _repairAccessory, _repairStored, _repairShield, _repairArmour;
     private readonly Dictionary<string, Vector3> _campaignHiddenPositions = new();
     private readonly Dictionary<string, int> _campaignHops = new();
+    // Optional room-by-room pad route, with cutaways left to the event runtime.
+    private readonly List<(int Zone, int Map)> _campaignRoute = new();
+    private int _campaignRouteAt;
     private readonly Dictionary<(int Zone, int Map), int> _campaignVisits = new();
     private readonly Dictionary<(int Zone, int Map, int Door), int> _campaignAttempts = new();
 
@@ -148,6 +151,12 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--campaign-load=", StringComparison.Ordinal)) { _campaign = true; _campaignLoad = argument["--campaign-load=".Length..]; }
             if (argument.StartsWith("--campaign-checkpoint=", StringComparison.Ordinal) && argument["--campaign-checkpoint=".Length..].Split(',') is [var checkpointZone, var checkpointMap]) _campaignCheckpoint = (int.Parse(checkpointZone), int.Parse(checkpointMap));
             if (argument == "--workshop-repair") _repairAllCheck = true;
+            if (argument.StartsWith("--campaign-route=", StringComparison.Ordinal))
+                foreach (string stop in argument["--campaign-route=".Length..].Split('/'))
+                {
+                    var pair = stop.Split(',');
+                    _campaignRoute.Add((int.Parse(pair[0]), int.Parse(pair[1])));
+                }
             if (argument == "--campaign-repair") _campaignRepair = true;
             if (argument == "--campaign-save-ui") _campaignSaveUi = true;
             if (argument == "--workshop-combine") _combineCheck = true;
@@ -625,6 +634,7 @@ public partial class FieldContracts : Node
             _campaignHops.Clear();
             _campaignBypassEnemies = false;
             _campaignBoarding = false;
+            _campaignResting = false;
             _fightTargetId = "";
             _fightProgressAt = _frame;
             _campaignDoor = -1;
@@ -632,6 +642,7 @@ public partial class FieldContracts : Node
             _campaignHallAt = 0;
             _campaignPuzzleAt = _frame;
             var room = (_view.Zone, _view.Map);
+            if (_campaignRouteAt + 1 < _campaignRoute.Count && _campaignRoute[_campaignRouteAt + 1] == room) _campaignRouteAt++;
             _campaignVisits[room] = _campaignVisits.GetValueOrDefault(room) + 1;
             GD.Print($"CAMPAIGN: entered {room}, visits {_campaignVisits[room]}, frame {_frame}, story {_view.Flags[0x82]}");
             if (_campaignVisits[room] > 4) { Finish($"campaign: route driver repeated {room} five times without advancing beyond its obstacles"); return; }
@@ -915,6 +926,22 @@ public partial class FieldContracts : Node
             return;
         }
         if (_view.Battle is not { Ashley: { } ashley } battle) { Finish("campaign: no player combatant"); return; }
+        // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
+        // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
+        if (!_campaignResting && ashley.Risk >= 50 && battle.HostileCount() > 0
+            && new[] { 331, 332, 333 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
+        { _campaignResting = true; GD.Print($"CAMPAIGN: resting with no RISK roots, RISK {ashley.Risk}"); }
+        if (_campaignResting)
+        {
+            if (ashley.Risk <= 15) { _campaignResting = false; GD.Print($"CAMPAIGN: native recovery lowered RISK to {ashley.Risk}"); }
+            else
+            {
+                Steer(Vector2.Zero);
+                _fightProgressAt++;
+                if (battle.Paused || !battle.Busy && battle.Drawn) Tap("ps_cross");
+                return;
+            }
+        }
         // The western branch of room 9,13 is reached from the southwest 256-high step: a running jump grabs
         // the 640-high central platform, then Ashley can drop west to the wolf and the story route.
         if ((_view.Zone, _view.Map) == (9, 13) && ashley.Actor.Position.X >= 768 && _campaignPuzzle < 5
@@ -1219,11 +1246,15 @@ public partial class FieldContracts : Node
                     if (_view.Zone == 17 && (zone != 15 || candidate["map"].AsInt32() != 10)) cost += 10000;
                     if ((_view.Zone, _view.Map) == (15, 10) && zone != 32) cost += 10000;
                 }
+                if (_campaignRouteAt + 1 < _campaignRoute.Count && _campaignRoute[_campaignRouteAt] == (_view.Zone, _view.Map)
+                    && (zone, candidate["map"].AsInt32()) != _campaignRoute[_campaignRouteAt + 1]) cost += 100000;
                 if (cost < best) { best = cost; _campaignDoor = i; }
             }
             if (_campaignDoor < 0) { Finish($"campaign: no available door in {_view.Zone},{_view.Map}, story {_view.Flags[0x82]}"); return; }
             var key = (_view.Zone, _view.Map, _campaignDoor);
             _campaignAttempts[key] = _campaignAttempts.GetValueOrDefault(key) + 1;
+            if (_campaignRoute.Count > 0 && _campaignAttempts[key] > 4)
+            { Finish($"campaign: requested route door {_campaignDoor} in {_view.Zone},{_view.Map} remained unreachable from {ashley.Actor.Position}"); return; }
             _campaignDoorAt = _frame;
             if (_campaignPuzzle == 0) _campaignPuzzleAt = _frame;
             GD.Print($"CAMPAIGN: seeking door {_campaignDoor}, HP {ashley.Hp}/{ashley.MaxHp}, carried {_view.Equipment.Count}, learned {_view.Abilities.Count}");
@@ -3406,13 +3437,14 @@ public partial class FieldContracts : Node
         if (opened)
         {
             int hp = battle.Combatants.Values.Where(c => c.Targetable).Sum(c => c.Hp);
-            _fightStalls = hp == _fightLastHp ? _fightStalls + 1 : 0;
-            if (hp != _fightLastHp) _fightProgressAt = _frame;
-            _fightLastHp = hp;
+            bool progress = _fightLastHp < 0 || hp < _fightLastHp;
+            _fightStalls = progress ? 0 : _fightStalls + 1;
+            if (progress) _fightProgressAt = _frame;
+            _fightLastHp = _fightLastHp < 0 ? hp : Math.Min(_fightLastHp, hp);
             _fightPartSearch = 0;
         }
         if (_campaign && _fightProgressAt > 0 && _frame - _fightProgressAt > 7200)
-        { Finish($"campaign: no damage for 7200 frames in {_view.Zone},{_view.Map}, target {_fightTargetId}, {_view.SystemBox.Text}"); return; }
+        { Finish($"campaign: no net HP reduction for 7200 frames in {_view.Zone},{_view.Map}, target {_fightTargetId}, {_view.SystemBox.Text}"); return; }
         if (battle.Paused)
         {
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
