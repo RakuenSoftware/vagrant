@@ -57,7 +57,10 @@ is integrity/provenance information, not a bit-for-bit reproducibility claim.
 ## CI and publication
 
 `.github/workflows/desktop.yml` builds on native Linux, Windows and macOS runners
-when dispatched or a `v*` tag is pushed. It uploads only audited player archives
+for pull requests into `main`, when dispatched, or when a `v*` tag is pushed.
+Each PR run produces the Linux, Windows and universal macOS archives on their
+native hosted runners; these CI artifacts are the reviewable distribution builds.
+It uploads only audited player archives
 and checksums, never the engine checkout, staging project or SDK cache. Automatic
 reviews remain enabled. Configure a read-only `WOL_ENGINE_READ_TOKEN` with access
 to the private engine; the default repository token usually cannot fetch a

@@ -2,6 +2,8 @@
 name: Desktop player packages
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -29,7 +31,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TARGET: ${{ matrix.target }}
-      BUILD_VERSION: ${{ inputs.version || github.ref_name }}
+      BUILD_VERSION: ${{ inputs.version || (github.event_name == 'pull_request' && format('pr-{0}', github.event.number)) || github.ref_name }}
     steps:
       - uses: actions/checkout@v5
         with:
