@@ -1,0 +1,196 @@
+[gd_scene load_steps=2 format=3]
+[ext_resource type="Script" path="GraphicsSettings.cs" id="1"]
+
+[node name="Graphics" type="GridContainer"]
+script = ExtResource("1")
+layout_mode = 2
+columns = 2
+theme_override_constants/h_separation = 16
+theme_override_constants/v_separation = 8
+
+[node name="FullscreenLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Fullscreen"
+[node name="Fullscreen" type="CheckButton" parent="."]
+layout_mode = 2
+text = "Enabled"
+
+[node name="ScreenLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Display"
+
+[node name="Screen" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 0
+
+[node name="ResolutionLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Window resolution"
+
+[node name="Resolution" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MSAALabel" type="Label" parent="."]
+layout_mode = 2
+text = "Anti-aliasing (3D)"
+
+[node name="MSAA" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 4
+popup/item_0/text = "Off"
+popup/item_0/id = 0
+popup/item_1/text = "MSAA 2×"
+popup/item_1/id = 1
+popup/item_2/text = "MSAA 4×"
+popup/item_2/id = 2
+popup/item_3/text = "MSAA 8×"
+popup/item_3/id = 3
+
+[node name="AnisotropyLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Anisotropic filtering"
+
+[node name="Anisotropy" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 5
+popup/item_0/text = "Off"
+popup/item_0/id = 0
+popup/item_1/text = "2×"
+popup/item_1/id = 1
+popup/item_2/text = "4×"
+popup/item_2/id = 2
+popup/item_3/text = "8×"
+popup/item_3/id = 3
+popup/item_4/text = "16×"
+popup/item_4/id = 4
+
+[node name="FXAALabel" type="Label" parent="."]
+layout_mode = 2
+text = "Post-process AA"
+
+[node name="FXAA" type="CheckButton" parent="."]
+layout_mode = 2
+text = "FXAA"
+
+[node name="TextureFilterLabel" type="Label" parent="."]
+layout_mode = 2
+text = "World textures"
+
+[node name="TextureFilter" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 2
+popup/item_0/text = "Pixel sharp"
+popup/item_0/id = 0
+popup/item_1/text = "Smooth"
+popup/item_1/id = 1
+
+[node name="RoundGeometryLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Rounded shapes"
+
+[node name="RoundGeometry" type="CheckButton" parent="."]
+layout_mode = 2
+tooltip_text = "Draws faceted round shapes (rings, domes, barrels, wheels) as smooth circles. Original geometry when off."
+text = "Enabled"
+
+[node name="EnhanceSpritesLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Enhanced 2D art"
+
+[node name="EnhanceSprites" type="CheckButton" parent="."]
+layout_mode = 2
+tooltip_text = "Smoothly enlarges original sprites, portraits and interface art. Applies when assets next load."
+text = "Enabled"
+
+[node name="SpriteScaleLabel" type="Label" parent="."]
+layout_mode = 2
+text = "2D art scale"
+
+[node name="SpriteScale" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "Enlargement used while enhanced 2D art is enabled."
+item_count = 3
+popup/item_0/text = "2x"
+popup/item_0/id = 2
+popup/item_1/text = "4x"
+popup/item_1/id = 4
+popup/item_2/text = "8x"
+popup/item_2/id = 8
+
+[node name="EnhanceTextLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Enhanced text"
+
+[node name="EnhanceText" type="CheckButton" parent="."]
+layout_mode = 2
+tooltip_text = "Renders original fonts and text at a higher resolution with smoothed edges. Applies when assets next load."
+text = "Enabled"
+
+[node name="FontScaleLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Text scale"
+
+[node name="FontScale" type="OptionButton" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "Enlargement used while enhanced text is enabled."
+item_count = 3
+popup/item_0/text = "2x"
+popup/item_0/id = 2
+popup/item_1/text = "4x"
+popup/item_1/id = 4
+popup/item_2/text = "8x"
+popup/item_2/id = 8
+
+[node name="RenderScaleLabel" type="Label" parent="."]
+layout_mode = 2
+text = "3D render scale"
+
+[node name="RenderScale" type="SpinBox" parent="."]
+layout_mode = 2
+min_value = 50.0
+max_value = 200.0
+step = 5.0
+value = 100.0
+suffix = "%"
+
+[node name="FrameLimitLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Frame rate (VSync)"
+
+[node name="FrameLimit" type="OptionButton" parent="."]
+layout_mode = 2
+
+[node name="UISmoothingLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Menu textures"
+[node name="UISmoothing" type="CheckButton" parent="."]
+layout_mode = 2
+text = "Smooth"
+
+[node name="HDRLabel" type="Label" parent="."]
+layout_mode = 2
+text = "HDR output"
+[node name="HDR" type="CheckButton" parent="."]
+layout_mode = 2
+text = "Automatic"
+tooltip_text = "Uses system brightness and display calibration. Switches to SDR automatically when HDR is unavailable."
+[node name="HDROutputLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Current output"
+[node name="HDRStatus" type="Label" parent="."]
+layout_mode = 2
+text = "SDR"
+[node name="InterpolationLabel" type="Label" parent="."]
+layout_mode = 2
+text = "Frame interpolation"
+[node name="Interpolation" type="CheckButton" parent="."]
+layout_mode = 2
+button_pressed = true
+tooltip_text = "Smooths motion between source frames while preserving game timing and original sprite drawings."

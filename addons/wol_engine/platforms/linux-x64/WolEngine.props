@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <WolEngineConfiguration Condition="'$(Configuration)' == 'Debug'">Debug</WolEngineConfiguration>
+    <WolEngineConfiguration Condition="'$(Configuration)' != 'Debug'">Release</WolEngineConfiguration>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="addons/wol_engine/**/*.cs" />
+    <Reference Include="WolEngine">
+      <HintPath>$(MSBuildThisFileDirectory)managed/$(WolEngineConfiguration)/WolEngine.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

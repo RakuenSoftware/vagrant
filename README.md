@@ -1,6 +1,6 @@
 # Vagrant
 
-Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), consumed at `addons/wol_engine`.
+Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), vendored as compiled binaries and runtime resources at `addons/wol_engine`.
 
 **You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files and the ending's unlisted XA sectors byte for byte; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
 
@@ -29,21 +29,20 @@ FFmpeg/ffprobe remain required for first-time disc conversion.
 
 ## Build
 
-Use the pinned wol-engine **binary SDK release**, Python 3.12+ and .NET SDK
-10.0.403. The SDK includes the matching qualified Godot 4.7.2 editor/API binaries.
-No engine source checkout, SCons or C++ compiler is needed for Vagrant builds.
+The wol-engine binaries are already checked into this repository. No private
+engine access, submodule initialization, SCons or C++ compiler is needed. Install
+Python 3.12+ and .NET SDK 10.0.403, then build a player on its native host:
 
 ```sh
-python tools/release.py linux-x64 --version development \
-  --engine-package /path/to/wol-engine-<commit>-linux-x64.zip
+python tools/release.py linux-x64 --version development
+# Use windows-x64 on Windows or macos-universal on macOS.
 ```
 
-Build Windows and universal macOS players on their native CI runners. See
-[the binary release contract](docs/DISTRIBUTION.md) for filenames, pinning and
-CI setup. The `godot-dotnet` commands below refer to the SDK's qualified editor.
-For direct development builds, set `WolEngineSdkRoot` to the extracted SDK path;
-keep its runtime resources at `addons/wol_engine/runtime` and its native manifest
-and library at `addons/wol_engine/native`.
+For development, `dotnet build` references the vendored assemblies automatically.
+`python tools/release.py linux-x64 --prepare` downloads the public Godot editor
+and templates, installs the vendored matching API, and prints the qualified
+editor path. The `godot-dotnet` commands below refer to that prepared editor.
+See [the vendored release contract](docs/DISTRIBUTION.md) for provenance and updates.
 
 To install headlessly from a disc image: `godot-dotnet --headless --path . -- --install-disc=/path/to/disc.cue`. `--install-root=DIR` selects another installation directory (default `user://vagrant-story`).
 

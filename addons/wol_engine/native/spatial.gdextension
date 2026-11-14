@@ -1,0 +1,13 @@
+[configuration]
+entry_symbol = "spatial_library_init"
+compatibility_minimum = "4.3"
+
+[libraries]
+linux.debug.x86_64 = "bin/libspatial.linux.template_release.x86_64.so"
+linux.release.x86_64 = "bin/libspatial.linux.template_release.x86_64.so"
+windows.debug.x86_64 = "bin/libspatial.windows.template_release.x86_64.dll"
+windows.release.x86_64 = "bin/libspatial.windows.template_release.x86_64.dll"
+macos.debug = "bin/libspatial.macos.template_release.universal.dylib"
+macos.release = "bin/libspatial.macos.template_release.universal.dylib"
+web.debug.wasm32 = "bin/libspatial.web.template_release.wasm32.nothreads.wasm"
+web.release.wasm32 = "bin/libspatial.web.template_release.wasm32.nothreads.wasm"

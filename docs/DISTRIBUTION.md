@@ -2,87 +2,93 @@
 
 # Desktop distribution
 
-Vagrant vendors a pinned **binary wol-engine release**. It does not compile the
-engine's sources. `WolEngine.dll` is managed .NET code shared by the desktop
-platforms; each platform's SDK also provides its native GDExtension: `.so` on
-Linux, `.dll` on Windows, and a universal Intel/Apple Silicon `.dylib` on macOS.
+Vagrant includes the compiled wol-engine dependency in Git at
+`addons/wol_engine`. This is an ordinary vendored directory, not a submodule.
+A fresh clone contains the managed DLLs, native libraries, matching Godot API
+DLLs and runtime resources for all three desktop targets. CI does not download
+anything from private wol-engine and needs no engine access token.
 
-The game references the precompiled engine DLL. Godot resources keep their addon
-paths through empty C# resource stubs, shaders and scenes. The first game autoload
-registers the engine's script types before Godot creates engine autoloads. The
-engine implementation is absent from both the binary SDK and the player archive.
+`WolEngine.dll` contains managed .NET code. Native GDExtensions are `.so` on Linux,
+`.dll` on Windows, and a universal Intel/Apple Silicon `.dylib` on macOS. The
+managed/API assemblies in `platforms/<target>` retain the upstream platform
+builds. Shared resources and native libraries keep stable Godot addon paths.
+C# resource files are empty stubs; C# and C++ implementation sources are absent.
 Managed assemblies remain inspectable/decompilable.
 
-## Engine release
+## Provenance and updates
 
-The source gitlink at `addons/wol_engine` identifies the required engine commit;
-Vagrant CI never initializes that submodule. Engine CI owns compilation and
-publishes a release named `runtime-<full-engine-commit>` when that tag is pushed.
-The release is published only after all three native SDK jobs succeed. Each job
-also tests a consumer containing no engine implementation sources before uploading.
+`addons/wol_engine/VENDOR.json` records the upstream release URL, engine commit,
+original SDK asset names/checksums, and hashes of every vendored file. Each
+platform also retains its original RUNTIME.json from the SDK. Managed/native
+binary bytes are copied unchanged. Vendored text file line endings
+are normalized to LF, and C# resource stubs contain one newline.
 
-Each release contains `wol-engine-<commit>-<target>.zip` plus its SHA-256 sidecar,
-for `linux-x64`, `windows-x64`, and `macos-universal`. SDKs contain the managed
-Debug/Release assembly, native library, resource stubs, matching API binaries,
-qualified build-time editor, notices, and a hashed RUNTIME.json manifest. The
-editor is a build dependency and is excluded from the shipped game.
+The source is the published `runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148`
+release. Its Linux, Windows and universal macOS SDKs passed native CI builds and
+source-free consumer smoke tests before publication. The runtime payloads here
+were extracted from those SDK archives; the build-time editor was omitted.
+No private engine source checkout, SDK source cache or build tools are vendored.
 
-The private engine's release downloads need an Actions secret
-`WOL_ENGINE_READ_TOKEN` with Contents: read access to wol-engine. This credential
-is used to download release assets, not to fetch an engine source checkout.
-The normal Vagrant repository token handles the game checkout. No credentials
-belong in a source file or a player archive.
-
-## Game build
-
-Vagrant needs Python 3.12+, .NET SDK 10.0.403 and the binary SDK for the native
-host platform. It does not need SCons, a C++ toolchain, or an engine source checkout.
-For example, after downloading the pinned Linux SDK and its checksum from the
-engine release:
+Only a maintainer updating the dependency needs access to private engine
+releases. Download all three SDK ZIPs and their adjacent `.zip.sha256` files from
+one published release. Preserve the old addon outside the checkout, then run:
 
 ```sh
-python tools/release.py linux-x64 --version development \
-  --engine-package /path/to/wol-engine-<commit>-linux-x64.zip
+python tools/release.py --vendor-runtime /path/to/linux-sdk.zip \
+  /path/to/windows-sdk.zip /path/to/macos-sdk.zip
 ```
 
-Use `windows-x64` on Windows or `macos-universal` on macOS. The release tool checks
-the archive checksum, per-file manifest, pinned commit, target and Godot version.
-It exports from an isolated temporary project containing game source and binary
-engine dependencies. It downloads verified official .NET export templates;
-compilation and export use the SDK's qualified editor/API pair. Output defaults
-to `dist/<target>`; `--output` must name an empty directory.
+The updater checks archive/file hashes, matching commits and targets, compares
+shared resources, rejects implementation source, and writes a new vendored tree.
+It refuses to overwrite an existing addon. Review and commit that directory and
+VENDOR.json together. CI never runs this maintainer operation.
 
-`.github/workflows/desktop.yml` performs this download and build on native hosted
-Linux, Windows and macOS runners for PRs into main, manual runs and `v*` tags.
-It uploads only game archives/checksums. Engine SDKs and private checkout data
-are never uploaded as Vagrant artifacts. There is no automatic public game Release
-publication. Automatic reviews remain enabled.
+## Build and CI
+
+Use Python 3.12+ and .NET SDK 10.0.403. No engine credentials, SCons or C++
+compiler are needed. On the native host:
+
+```sh
+python tools/release.py linux-x64 --version development
+# Windows host: windows-x64; macOS host: macos-universal.
+```
+
+The release owner verifies vendored file hashes, downloads the matching official
+Godot 4.7.2 .NET editor and export templates with SHA-512 verification, and
+replaces the editor's API with the vendored API DLLs. macOS preserves the public
+editor's own entitlements and ad-hoc signs the modified app. Engine source is
+never compiled or fetched. `--prepare` performs this setup without exporting.
+Direct `dotnet build` selects the vendored assemblies for the host OS.
+
+Exports use an isolated temporary project containing only game source and the
+selected binary engine dependencies. Output defaults to `dist/<target>`;
+`--output` must name an empty directory. Debug and ExportRelease compiler
+warnings are errors; solution Release maps to ExportRelease.
+
+`.github/workflows/desktop.yml` builds and tests on native hosted Linux, Windows
+and macOS runners for PRs into main, manual runs and `v*` tags. Checkout is an
+ordinary non-recursive clone using its repository token. Only game archives and
+checksums are uploaded. It does not automatically publish a public game Release.
+Automatic reviews remain enabled.
 
 ## Player contents and verification
 
 Players receive the game, compiled managed/native engine, self-contained
 Godot/.NET runtime, resources and notices. They need no .NET installation, SDK,
-Godot editor or engine checkout. No retail assets, disc images, BIOS, installed
-files or decoded caches are bundled. A verified owned US disc is still required.
-Vagrant remains AGPL-3.0-only and its game source remains publicly downloadable.
+Godot editor or engine checkout. The editor, unused platform dependencies,
+tests, source, symbols and developer caches are excluded from the player.
 
-The audit rejects loose implementation source, symbols and disc data. On each
-native CI host the actual exported executable runs `--verify-package` with an
-empty installation, verifies the separate compiled engine and native audio,
-and rejects test types and implementation sources in the PCK. C# resource stubs
-are whitespace only. Archives include BUILD.json with game/engine revisions,
-engine-package checksum, native hashes and game dirty state, plus a SHA-256
-sidecar. This is provenance information, not a bit-for-bit reproducibility claim.
+The audit verifies the exact vendored Release WolEngine.dll and matching
+GodotSharp API. Each native CI job runs the actual exported executable's
+`--verify-package` check with an empty installation, verifies the separate
+compiled engine/native audio, and rejects test types and implementation source
+in the PCK. Archives contain BUILD.json with game/engine revisions, upstream SDK
+checksum, native hashes and game dirty state, plus a SHA-256 sidecar. These are
+provenance checks, not a bit-for-bit reproducibility claim.
 
-FFmpeg and ffprobe remain external first-install dependencies on PATH. macOS
-packages use ad-hoc signing; public friction-free downloads require Developer ID
-signing and notarization on the release host. Credentials remain outside Git.
-Linux release CI builds on Ubuntu 22.04 for host-library compatibility.
-
-## Code hygiene
-
-Debug and ExportRelease builds treat compiler warnings as errors; solution
-Release maps to ExportRelease. Packaging excludes tests, developer output and
-private disc data. Godot C# UID sidecars are source metadata. Focused contracts
-cover gameplay changes; package checks are not an exhaustive architecture or
-retail-parity audit. CI qualification is only complete when all native jobs pass.
+No retail assets, disc images, BIOS, installed files or decoded caches are
+bundled. A verified owned US disc is required. Vagrant remains AGPL-3.0-only;
+its game source is publicly downloadable. FFmpeg and ffprobe remain external
+first-install dependencies on PATH. macOS packages are ad-hoc signed and need
+Developer ID signing/notarization for public friction-free downloads. Credentials
+stay outside Git. Linux CI builds on Ubuntu 22.04 for host-library compatibility.

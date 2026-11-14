@@ -1,0 +1,22 @@
+<Project>
+  <!-- Shared dependency ownership: the editor and exports use the same rebuilt API. -->
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <WolGodotApiRoot>$(MSBuildThisFileDirectory).dependencies/godot-api/api</WolGodotApiRoot>
+    <DisableImplicitGodotSharpReferences>true</DisableImplicitGodotSharpReferences>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="GodotSharp">
+      <HintPath>$(WolGodotApiRoot)/$(GodotApiConfiguration)/GodotSharp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="GodotSharpEditor" Condition=" '$(Configuration)' == 'Debug' ">
+      <HintPath>$(WolGodotApiRoot)/Debug/GodotSharpEditor.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="WolGodotApiReady" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(WolGodotApiRoot)/$(GodotApiConfiguration)/GodotSharp.dll')"
+           Text="Build the pinned WoL managed API with the engine's SCons build before compiling the game; use game_root for a consumer checkout. See the engine's docs/godot_interop.md." />
+  </Target>
+</Project>
