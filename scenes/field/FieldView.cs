@@ -1282,7 +1282,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             case "event.section":
                 return Error.Ok;
             case "thread.stop":
+            {
+                // F4's high bit clears the selected script pointer (BATTLE.PRG 0x800BB504..0x800BB550).
+                // Retire its pending wait too, so a completed camera wait cannot restart a stopped worker.
+                int slot = Array.IndexOf(_flows, args["event"].AsString());
+                if (slot < 0) return Error.DoesNotExist;
+                _restarts.Remove(slot);
+                _events!.Cancel(slot);
                 return Error.Ok;
+            }
             case "actor.spawn":
                 return Spawn(args);
             case "actor.flags":

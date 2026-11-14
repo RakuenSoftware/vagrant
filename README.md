@@ -53,6 +53,8 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 # Assembly component ownership, cancellation and naming; controller keyboard editing and confirmation.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-assembly
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-name
+# Forest-entry cutscene workers stop before control returns (isolated event fixture).
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=40,21 --flag=1:1 --flag=130:39 --flag=187:19
 # Continuous New Game exploration using pad controls and earned state; this driver is still being extended.
 # An optional --campaign-checkpoint=ZONE,MAP guides the route and stops at that checkpoint, not a full-campaign verdict.
 # --campaign-story=N additionally requires story flag 130 to reach N, so a boss checkpoint can wait for its scene.
