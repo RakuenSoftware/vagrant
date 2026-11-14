@@ -22,8 +22,8 @@ public partial class FieldContracts : Node
     /// <summary>A continuous New Game run using pad input, without the focused checks' state grants.</summary>
     private bool _campaign, _campaignBypassEnemies, _campaignRepair, _campaignRepaired, _campaignBoarding, _campaignResting;
     private int _campaignRepairFrame, _campaignUiStep, _campaignUiAt, _campaignUiGeneration;
-    private bool _campaignSaveUi, _campaignUiSaved;
-    private string _campaignSave = "", _campaignLoad = "";
+    private bool _campaignSaveUi, _campaignUiSaved, _campaignWesternRetreat;
+    private string _campaignSave = "", _campaignLoad = "", _campaignHealEnemy = "";
     private (int Zone, int Map)? _campaignCheckpoint;
     private int _campaignRooms, _campaignDoor = -1, _campaignDoorAt, _campaignBagTries;
     private int _campaignTeleport = -1, _campaignTeleportStep, _campaignTeleportSelection, _campaignTeleportRooms, _campaignTeleportMp, _campaignTeleportCost;
@@ -712,7 +712,7 @@ public partial class FieldContracts : Node
             if (_campaignRouteAt + 1 < _campaignRoute.Count && _campaignRoute[_campaignRouteAt + 1] == room) _campaignRouteAt++;
             _campaignVisits[room] = _campaignVisits.GetValueOrDefault(room) + 1;
             GD.Print($"CAMPAIGN: entered {room}, visits {_campaignVisits[room]}, frame {_frame}, story {_view.Flags[0x82]}");
-            if (_campaignVisits[room] > 4) { Finish($"campaign: route driver repeated {room} five times without advancing beyond its obstacles"); return; }
+            if (_campaignVisits[room] > Math.Max(4, _campaignRoute.Count(step => step == room) + 1)) { Finish($"campaign: route driver repeated {room} five times without advancing beyond its obstacles"); return; }
             GD.Print($"CAMPAIGN: blocks on entry {string.Join(';', _view.CrateObjects.Select(c => $"{c.Id}:{c.X},{c.Z},{c.Bottom}"))}; flag 0 {_view.Flags[0]}");
             Capture($"campaign_{_campaignRooms:d4}_{_view.Zone:d3}_{_view.Map:d2}");
         }
@@ -818,7 +818,7 @@ public partial class FieldContracts : Node
                 else if (c.HopState == 0 && _campaignHops.Remove(c.Actor.Id)) GD.Print($"CAMPAIGN: {c.Name} completed its vanish/warp/reappearance");
             }
             if (_frame % 600 == 0)
-                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, RISK {observed.Risk}, status {observed.Status:x8}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp} at {c.Actor.Position}, MP {c.Mp}/{c.MaxMp}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
+                GD.Print($"CAMPAIGN: combat HP {observed.Hp}/{observed.MaxHp}, MP {observed.Mp}/{observed.MaxMp}, RISK {observed.Risk}, status {observed.Status:x8}, at {observed.Actor.Position}, facing {observed.Actor.Facing}, motion {observed.Actor.Player?.CurrentAnimation}, local flag 48 {_view.Flags[48]}, enemies {string.Join(';', observedBattle.Combatants.Values.Where(c => c.Hostile && !c.Dead).Select(c => $"{c.Name}:{c.Hp}/{c.MaxHp} at {c.Actor.Position}, MP {c.Mp}/{c.MaxMp}, status {c.Status:x8}, shown {c.Actor.Visible}, hostile {c.Hostile}, suspended {c.Suspended}, dead {c.Dead}"))}");
         }
         if (_frame > 60 * 60 * 240) { Finish($"campaign: four hours elapsed in {_view.Zone},{_view.Map}; {_view.WaitingOn}"); return; }
         // HP reaches zero before the status tick dispatches the defeat event. Do not save or open menus in that gap.
@@ -879,8 +879,17 @@ public partial class FieldContracts : Node
         }
         // Saving at an earned checkpoint can also go through its actual magic circle and DATA screens.
         if (_campaignSaveUi && !_campaignUiSaved && _campaignCheckpoint == (_view.Zone, _view.Map)
-            && (!_campaignRepair || _campaignRepaired) && _view.Controlled && _view.Battle?.HostileCount() == 0)
+            && (_campaignItem == 0 || _view.Items.GetValueOrDefault(_campaignItem) > 0)
+            && _view.Flags[130] >= _campaignStory && _view.Flags[_campaignFlag] >= _campaignFlagValue
+            && (!_campaignRepair || _campaignRepaired) && _view.Controlled && _view.Battle is { Ashley: { } saving } savingBattle && savingBattle.HostileCount() == 0)
         {
+            // DATA must save the requested recovered state, after the checkpoint's earned prerequisites hold.
+            if (_campaignUiStep == 0 && _campaignRest && (saving.Hp < saving.MaxHp || saving.Mp < saving.MaxMp))
+            {
+                Steer(Vector2.Zero);
+                if (savingBattle.Drawn && !savingBattle.Busy) Tap("ps_cross");
+                return;
+            }
             if (_campaignUiAt == 0) _campaignUiAt = _frame;
             if (_frame - _campaignUiAt > 2400) { Finish($"campaign: DATA save step {_campaignUiStep} stalled at {_view.CardStage}, page {_view.MenuPage}"); return; }
             if (_campaignUiStep == 0)
@@ -1168,7 +1177,31 @@ public partial class FieldContracts : Node
                 return;
             }
         }
-        bool clearWesternPassage = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7);
+        bool clearWesternPassage = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469;
+        if (_view.Controlled && _view.Battle is { Ashley: { } recuperating } retreatBattle)
+        {
+            if (_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 4))
+            {
+                if (recuperating.Risk > 15 || recuperating.Hp < recuperating.MaxHp || recuperating.Mp < recuperating.MaxMp)
+                {
+                    Steer(Vector2.Zero);
+                    if (retreatBattle.Drawn && !retreatBattle.Busy) Tap("ps_cross");
+                    return;
+                }
+                _campaignWesternRetreat = false;
+                GD.Print("CAMPAIGN: recovered at The Sunless Way before returning through the undead passage");
+            }
+            if (!_campaignWesternRetreat && clearWesternPassage && (_view.Zone, _view.Map) == (48, 5)
+                && _campaignHealStep == 0 && !retreatBattle.Busy && recuperating.Risk >= 50 && retreatBattle.HostileCount() > 0)
+            {
+                // Return through the actual eastern door. Waiting at the corridor's end lets its mage pin Ashley.
+                _campaignRoute.InsertRange(_campaignRouteAt + 1, new[] { (48, 4), (48, 5) });
+                _campaignDoor = -1;
+                _campaignWesternRetreat = true;
+                GD.Print("CAMPAIGN: retreating through the eastern door for native RISK and MP recovery");
+            }
+        }
+
         // Match the earned damage chain to the encounter through BATTLE ABILITIES.
         int damageChain = clearWesternPassage ? 22 : (_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5) or (51, 4) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 22 : (_view.Zone, _view.Map) == (40, 24) ? crusaderOnly ? 22 : 27 : 26;
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
@@ -1212,22 +1245,32 @@ public partial class FieldContracts : Node
                 = (1, _frame, _frame, item, _view.Items[item], preparingItems.Hp, preparingItems.Mp);
             GD.Print($"CAMPAIGN: preparing with earned {_view.ItemName(item)} through ITEMS");
         }
-        bool wardNeeded = (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _view.Spells.Contains(76)
+        bool wardNeeded = !_campaignWesternRetreat && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _view.Spells.Contains(76)
             && _view.Battle is { Ashley: { } warding } wardBattle && !warding.Has(12) && !warding.Has(FieldBattle.Silence)
             && wardBattle.Combatants.Values.Any(c => c.Targetable && c.Mp >= 7 && c.Name is "Lich" or "Zombie Mage")
             && (warding.Mp >= 21 || new[] { 327, 328, 329, 330 }.Any(id => _view.Items.GetValueOrDefault(id) > 0));
+        bool heraklesNeeded = clearWesternPassage && _view.Spells.Contains(60)
+            && _view.Battle is { Ashley: { } strengthening } strengthBattle && !strengthening.Has(FieldBattle.Herakles)
+            && !strengthening.Has(12) && !strengthening.Has(FieldBattle.Silence) && strengthening.Mp >= 12 && strengthBattle.HostileCount() > 0;
+        FieldBattle.Combatant? westernTarget = null;
+        if (clearWesternPassage && _view.Battle is { Ashley: { } slowing } slowBattle)
+            westernTarget = slowBattle.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, slowing) == 3)
+                .MinBy(c => c.Actor.Position.DistanceTo(slowing.Actor.Position));
+        // The stat debuffs share a native category. Keep Degenerate for defence reduction instead of alternating it with Leadbones.
+        bool westernDebuff = westernTarget != null && _view.Spells.Contains(54) && _view.Battle!.Ashley!.Mp >= 7
+            && !westernTarget.Has(FieldBattle.Degenerate) && (westernTarget.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0
+            && westernTarget.Actor.Position.DistanceTo(_view.Player!.Position) < 400;
         int recoveryPercent = (_view.Zone, _view.Map) is (40, 22) or (40, 24) or (29, 0) or (51, 2) or (51, 14) ? 95 : 75;
         if (_campaignHealStep == 0 && _view.Controlled && _view.Battle is { Ashley: { } restRunner } restBattle)
         {
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && !clearWesternPassage && !restBattle.Busy && (_view.Zone, _view.Map) != (48, 7) && (_view.Zone, _view.Map) is not ((49, 1) or (49, 2) or (49, 5)) && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : (_view.Zone, _view.Map) is (40, 24) or (29, 0) or (51, 2) or (51, 6) or (51, 14) ? 30 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333, 334 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
                 _campaignRestPoint = (_view.Zone, _view.Map) == (40, 24) ? new Vector3(960, 0, 832) : restRunner.Actor.Position;
-                if ((_view.Zone, _view.Map) == (48, 5)) _campaignRestPoint = new Vector3(1984, 0, 1088);
                 if ((_view.Zone, _view.Map) == (50, 17))
                     _campaignRestPoint = new[] { new Vector3(320, 0, 448), new Vector3(320, 0, 1984), new Vector3(1344, 0, 1984) }
                         .MaxBy(p => restBattle.Combatants.Values.Where(c => c.Targetable).Min(c => p.DistanceTo(c.Actor.Position)));
@@ -1278,7 +1321,7 @@ public partial class FieldContracts : Node
         bool mineDebuff = (_view.Zone, _view.Map) != (40, 24) && ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
             && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
-        if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff || wardNeeded
+        if (_view.Controlled && !(_campaignWesternRetreat && (_view.Zone, _view.Map) == (48, 5)) && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff || wardNeeded || heraklesNeeded || westernDebuff
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
                 || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
@@ -1287,13 +1330,14 @@ public partial class FieldContracts : Node
         {
             bool life = patient.Hp * 100 < patient.MaxHp * recoveryPercent;
             bool frost = fusionAvailable;
-            bool guard = !life && (wardNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
-            bool weakening = !life && mineDebuff;
-            _campaignHealSpell = guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
+            bool guard = !life && (wardNeeded || heraklesNeeded || elementalFight && recovery.HostileCount() > 0 && (frost ? !patient.Has(fusionStatus) : !patient.Has(guardStatus)));
+            bool weakening = !life && (westernDebuff || mineDebuff);
+            _campaignHealSpell = guard && heraklesNeeded ? 60 : guard && wardNeeded ? 76 : weakening ? 54 : guard ? frost ? fusionSpell : guardSpell : 96;
+            _campaignHealEnemy = westernDebuff && weakening && !guard ? westernTarget?.Actor.Id ?? "" : "";
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
             _campaignHealMagic = (life || guard || weakening) && _view.Spells.Contains(_campaignHealSpell) && patient.Mp >= cost && !patient.Has(FieldBattle.Silence) && !patient.Has(FieldBattle.Paralysis);
             // The native ward blocks even Ashley's own healing magic; use her owned HP items while it lasts.
-            if (_campaignHealSpell == 96 && patient.Has(12)) _campaignHealMagic = false;
+            if (_campaignHealSpell == 96 && patient.Has(12) && new[] { 323, 324, 325, 326, 335, 336, 337, 338 }.Any(id => _view.Items.GetValueOrDefault(id) > 0)) _campaignHealMagic = false;
             if ((patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0)
                 || (!life && patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0)
                 || (!life && patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0)) _campaignHealMagic = false;
@@ -1311,7 +1355,7 @@ public partial class FieldContracts : Node
             }
             else
             {
-                int guardItem = wardNeeded ? 440 : frost ? fusionItem : guardItemId;
+                int guardItem = heraklesNeeded ? 431 : wardNeeded ? 440 : frost ? fusionItem : guardItemId;
                 int cure = patient.Has(FieldBattle.Paralysis) ? 339 : !life && patient.Has(FieldBattle.Poison) ? 340 : !life && patient.Has(FieldBattle.Numbness) ? 341 : 0;
                 int[] choices = cure != 0 && _view.Items.GetValueOrDefault(cure) > 0 ? new[] { cure }
                     : weakening && _view.Items.GetValueOrDefault(432) > 0 ? new[] { 432 }
@@ -1370,7 +1414,13 @@ public partial class FieldContracts : Node
                 case 5:
                     if (healing.Paused)
                     {
-                        if (_campaignHealMagic && _campaignHealSpell == 54 && healing.SphereTarget is { } target && FieldBattle.Relation(target, recovering) != 3) Tap("ps_right");
+                        if (_campaignHealMagic && _campaignHealSpell is 54 or 55 or 56 or 57 && healing.SphereTarget is { } target
+                            && (FieldBattle.Relation(target, recovering) != 3 || _campaignHealEnemy.Length > 0 && target.Actor.Id != _campaignHealEnemy
+                                || _campaignHealSpell == 54 && target.Has(FieldBattle.Degenerate)))
+                        {
+                            if (++_campaignHealSelection > 16) { Tap("ps_cross"); _campaignHealStep = 0; }
+                            else Tap("ps_right");
+                        }
                         else Tap("ps_circle");
                     }
                     if (_campaignHealMagic ? recovering.Mp < _campaignHealMp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
@@ -1398,7 +1448,7 @@ public partial class FieldContracts : Node
                     break;
                 case 8:
                     if (_campaignHealSelection < _campaignHealSpellRow) { Tap("ps_down"); _campaignHealSelection++; }
-                    else { Tap("ps_circle"); _campaignHealStep = 5; _campaignHealAt = _frame; }
+                    else { Tap("ps_circle"); _campaignHealStep = 5; _campaignHealAt = _frame; _campaignHealSelection = 0; }
                     break;
             }
             return;
@@ -1560,7 +1610,7 @@ public partial class FieldContracts : Node
         if ((_view.Zone, _view.Map, _campaignPuzzle) == (51, 4, 3)
             && battle.Combatants.Values.Any(c => c.Targetable && c.Name == "Blood Lizard")) _campaignBypassEnemies = false;
         // The undead occupy the one-tile western passage to the Clematis chest; clear them through real combat.
-        if (clearWesternPassage) _campaignBypassEnemies = false;
+        if (clearWesternPassage) _campaignBypassEnemies = _campaignWesternRetreat;
         // An introduction can arm a marked foe after this room was initially safe to cross.
         if (_campaignCheckpoint == (_view.Zone, _view.Map) && _campaignItem > 0 && _view.Items.GetValueOrDefault(_campaignItem) > 0)
             _campaignBypassEnemies = true;
@@ -4637,7 +4687,7 @@ public partial class FieldContracts : Node
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
     {
         bool extendedChain = _campaign && ((_view.Zone, _view.Map) is (49, 1) or (49, 2) or (49, 5)
-            || (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7));
+            || (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469);
         // Alternate Heavy Shot and Gain Life on a low-evasion part when the passage or caster needs a sustained chain.
         // The native "in time" window starts after the hit; zero is still the "fast" grade.
         // Alternate the earned buttons over a short chain, releasing each before the next cue.
@@ -4681,7 +4731,7 @@ public partial class FieldContracts : Node
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_campaign && (_view.Zone, _view.Map) == (40, 24) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "LEGS";
             if (_campaign && (_view.Zone, _view.Map) == (49, 1) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "NECK";
-            if (_campaign && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignCheckpoint == (48, 7) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
+            if (_campaign && (_view.Zone, _view.Map) is (48, 5) or (48, 7) && _campaignLoot == (48, 7) && _campaignLootItem == 469 && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 2) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "BODY";
             if (_campaign && (_view.Zone, _view.Map) == (49, 5) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "ABDOMEN";
             if (_campaign && (_view.Zone, _view.Map) is (51, 2) or (51, 6) or (51, 14) && opened && _fightPreferredPart.Length == 0) _fightPreferredPart = "HEAD";
