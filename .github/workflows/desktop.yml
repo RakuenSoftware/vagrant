@@ -62,7 +62,7 @@ jobs:
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
           }
-          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          $env:PATH = "$env:PATH;C:\Program Files\Git\usr\bin"
           python tools/release.py "$env:TARGET" --version "$env:BUILD_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload player archives only
