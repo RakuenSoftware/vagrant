@@ -429,6 +429,8 @@ The CONGRATULATIONS screen (`ResultsScreen`; MENU/MENUF.PRG submenu 0, opened by
 - **Bonus.** Reel 0 if Ashley's intelligence and agility are both at least her strength, else 1 if her strength and agility are at least her intelligence, else 2. The stop it lands on is added to the stat for good (STR, AGL, INT, most HP or most MP, at most 999).
 - **Timing** is in the type's summary: each part comes in at its own frame of one timer, and Circle before frame 273 skips to the reel. Its sounds are resident ones played as the menus play theirs (below), the reel's turning loop among them, stopped by id as it lands; the music change is not played yet.
 
+Awaited type-4 system messages buffer Circle/Cross edges from each display frame until the 30 Hz event tick consumes them. Opening a new awaited message clears earlier edges, so a press between event ticks acknowledges it without dismissing the following message.
+
 **Menu sounds.** The menus play resident sounds on voices 1 to 6 in turn, centred and at full volume (the executable's 0x7E player): 4 as the cursor changes, 5 for a choice, 6 for leaving, 7 for a refusal, 8 for a file written. The command list, the item menu, EQUIP, the gadget bag and the memory card screens play them so far (a save written plays 8), and so does the title menu (New Game plays 1, 2 and 3 together) (the bag plays 13 as a thing is taken); taking up a weapon or shield plays 0x21 (0x22 for the empty row) and discarding 28, as MENU3.PRG does.
 
 ## Quick Manual pictures

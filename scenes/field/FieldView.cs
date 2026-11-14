@@ -1479,7 +1479,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                     _scriptBox = box;
                     SystemBox.Open((geometry["height"].AsInt32() - 4) / Installation.DialogueConversion.LineHeight, (flags >> 8) & 15);
                     SystemBox.Text = SystemBox.Fill(WithNumbers(args["message"].AsGodotDictionary()));
-                    if (awaited) _waits.Add((id, () => _scriptBox != box || Input.IsActionJustPressed("ps_circle") || Input.IsActionJustPressed("ps_cross")));
+                    if (awaited)
+                    {
+                        // Button edges are sampled every display frame; the event wait runs every other frame.
+                        _pressedButtons = 0;
+                        _waits.Add((id, () => _scriptBox != box || (_pressedButtons & 0x60) != 0));
+                    }
                     return Error.Ok;
                 }
                 bool balloon = (flags & 15) is 1 or 5 or 7;

@@ -48,6 +48,9 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/teleport_contracts.tscn -- --install-root=/path/to/installation
 # Container selections: identical pieces, multiple transfers, discard, cancellation and item stacks.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/container_contracts.tscn -- --install-root=/path/to/installation
+# Awaited system messages preserve a single display-frame button edge on either event-clock phase.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/system_message_contracts.tscn -- --install-root=/path/to/installation
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/system_message_contracts.tscn -- --install-root=/path/to/installation --other-phase
 # Native body collision bounds, vertical separation, contact, escape and exclusions (isolated fixture).
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/body_collision_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
