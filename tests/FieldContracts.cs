@@ -85,7 +85,8 @@ public partial class FieldContracts : Node
     /// <summary>With <c>--yaw=</c>, the gameplay camera stands at that yaw (4096 a turn, 512 a step of L1 or R1), to match a view the footage shows.</summary>
     private int? _yaw;
     /// <summary>With <c>--fight</c>, once Ashley is the player's in the room she fights what it holds, pressing Circle as each of her blows lands as a player chains them, in place of the room's other steps; it ends when nothing hostile is left.</summary>
-    private bool _fight;
+    private bool _fight, _battleSides;
+    private int _battleSidesFrames;
     /// <summary>
     /// With <c>--swoop</c> in a fight (Guildenstern's final form, <c>--room=27,1</c>), Ashley keeps her full hit points
     /// and each change of scenario variable 166, by which the boss and the room's scenes hand the swoop over, is
@@ -202,6 +203,7 @@ public partial class FieldContracts : Node
             if (argument.StartsWith("--at=", StringComparison.Ordinal) && argument["--at=".Length..].Split(',') is [var tileX, var tileZ]) _at = (int.Parse(tileX), int.Parse(tileZ));
             if (argument.StartsWith("--yaw=", StringComparison.Ordinal)) _yaw = int.Parse(argument["--yaw=".Length..]);
             if (argument == "--fight") _fight = true;
+            if (argument == "--battle-sides") _battleSides = true;
             if (argument == "--options-window") _optionsWindow = true;
             // --options=N sets the OPTIONS word ([0x80060020]) as a player's choices would: 0x40 WEAPON STATUS ON, 0x80 ARMOR STATUS ON.
             if (argument.StartsWith("--options=", StringComparison.Ordinal)) _options = Convert.ToUInt32(argument["--options=".Length..], 16);
@@ -345,6 +347,28 @@ public partial class FieldContracts : Node
         if (_view.Battle?.Hud is { NoticesShown: > 0 } && _noticeAt == 0) { _noticeAt = _frame + 10; GD.Print($"FIELD: a gear-change notice shows at frame {_frame}"); }
         if (_noticeAt > 0 && _frame == _noticeAt && _capture.Length != 0 && DisplayServer.GetName() != "headless") Capture("battle_notice");
         if (_view.Failure.Length != 0) { Finish(_view.Failure); return; }
+        if (_battleSides && _view.Controlled && _view.Battle is { Ashley: { } player } sides)
+        {
+            if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+            if (++_battleSidesFrames < 5) return;
+            var sydney = sides.Combatants.Values.FirstOrDefault(c => c.Name == "Sydney");
+            if (sydney == null || sydney.Side != 4 || !sydney.Targetable || FieldBattle.Relation(sydney, player) != 2)
+            { Finish("the Grissom fixture did not load Sydney as a targetable AI ally"); return; }
+            var enemies = sides.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, player) == 3).Select(c => c.Name).ToList();
+            if (enemies.Count != 2 || !enemies.Contains("Grissom") || !enemies.Contains("Dark Crusader"))
+            { Finish($"the Grissom fixture's foes differ: {string.Join(',', enemies)}"); return; }
+            if (sides.SphereTarget is { } chosen && FieldBattle.Relation(chosen, player) == 3)
+            {
+                Capture("battle_sides");
+                GD.Print("FIELD: Sydney remains legally targetable as an ally; the pad driver selected a foe");
+                Finish(""); return;
+            }
+            Fight(sides, player, _frame);
+            if (sides.SphereTarget == sydney && _press == 4 && _pressed == "ps_circle")
+            { Finish("the pad driver queued an attack on its AI ally Sydney"); return; }
+            if (_battleSidesFrames > 900) Finish("the pad driver did not select a foe past Sydney");
+            return;
+        }
         if (_campaign) { StepCampaign(); return; }
         if (_repairAllCheck) { StepWorkshopRepair(); return; }
         if (_combineCheck) { StepWorkshopCombine(); return; }
@@ -996,7 +1020,7 @@ public partial class FieldContracts : Node
         int guardSpell = earthDragon ? 72 : 71, guardItemId = earthDragon ? 455 : 454, guardStatus = earthDragon ? 25 : 24;
         bool mineDebuff = ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
-            && mineFight.Combatants.Values.Any(c => c.Targetable && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
+            && mineFight.Combatants.Values.Any(c => c.Targetable && FieldBattle.Relation(c, caster) == 3 && c.MaxHp >= 300 && (c.Immunity & (1u << FieldBattle.StatusBit(FieldBattle.Degenerate))) == 0 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
         if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp * 100 < patient.MaxHp * recoveryPercent || patient.Risk > 60 || mineDebuff
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
@@ -1085,7 +1109,11 @@ public partial class FieldContracts : Node
                     if (_frame - _campaignHealAt >= 16) { Tap("ps_circle"); _campaignHealStep = 5; }
                     break;
                 case 5:
-                    if (healing.Paused) Tap("ps_circle");
+                    if (healing.Paused)
+                    {
+                        if (_campaignHealMagic && _campaignHealSpell == 54 && healing.SphereTarget is { } target && FieldBattle.Relation(target, recovering) != 3) Tap("ps_right");
+                        else Tap("ps_circle");
+                    }
                     if (_campaignHealMagic ? recovering.Mp < _campaignHealMp : _view.Items.GetValueOrDefault(_campaignHealItem) < _campaignHealCount)
                     { _campaignHealStep = 6; _campaignHealAt = _frame; }
                     else if (!healing.Paused && !healing.Busy && _frame - _campaignHealAt > 120)
@@ -3958,7 +3986,7 @@ public partial class FieldContracts : Node
         _fightWasPaused = battle.Paused;
         if (opened)
         {
-            int hp = battle.Combatants.Values.Where(c => c.Targetable).Sum(c => c.Hp);
+            int hp = battle.Combatants.Values.Where(c => c.Targetable && FieldBattle.Relation(c, ashley) == 3).Sum(c => c.Hp);
             bool progress = _fightLastHp < 0 || hp < _fightLastHp;
             _fightStalls = progress ? 0 : _fightStalls + 1;
             if (progress) _fightProgressAt = _frame;
@@ -3969,6 +3997,16 @@ public partial class FieldContracts : Node
         { Finish($"campaign: no net HP reduction for 7200 frames in {_view.Zone},{_view.Map}, target {_fightTargetId}, {_view.SystemBox.Text}"); return; }
         if (battle.Paused)
         {
+            if (battle.SphereTarget is { } selected && (selected.Cube || FieldBattle.Relation(selected, ashley) != 3))
+            {
+                if (_press == 0)
+                {
+                    if (++_campaignCubePicks <= 4) Tap("ps_right");
+                    else { Tap("ps_cross"); _campaignCubePicks = 0; _fightCloseUntil = _frame + 120; }
+                }
+                return;
+            }
+            _campaignCubePicks = 0;
             string part = _view.SystemBox.Text.Split(" HP ", 2, StringSplitOptions.None)[0];
             if (_fightNextPart)
             {
@@ -4006,7 +4044,7 @@ public partial class FieldContracts : Node
         if (!battle.Drawn) { Steer(Vector2.Zero); Tap("ps_circle"); return; }
         FieldBattle.Combatant? nearest = null;
         foreach (var c in battle.Combatants.Values)
-            if (c.Targetable && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
+            if (c.Targetable && FieldBattle.Relation(c, ashley) == 3 && (nearest == null || c.Actor.Position.DistanceTo(ashley.Actor.Position) < nearest.Actor.Position.DistanceTo(ashley.Actor.Position))) nearest = c;
         if (nearest == null) { Steer(Vector2.Zero); return; }
         if (_fightTargetId != nearest.Actor.Id) { _fightTargetId = nearest.Actor.Id; _fightPreferredPart = ""; _fightProgressAt = _frame; _fightLastHp = -1; _fightStalls = 0; }
         var offset = nearest.Actor.Position - ashley.Actor.Position;

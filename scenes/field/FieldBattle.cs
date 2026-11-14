@@ -416,6 +416,8 @@ public sealed partial class FieldBattle
     public bool GameOver => _phase == Phase.Over;
     /// <summary>Whether time is stopped for the attack sphere.</summary>
     public bool Paused => _phase is Phase.Sphere;
+    /// <summary>The character or object currently selected in the attack or spell sphere.</summary>
+    public Combatant? SphereTarget => Paused && _target < _targets.Count ? _targets[_target].Who : null;
     /// <summary>Whether an action holds Ashley in place, or she is still reeling from a hit.</summary>
     public bool Busy => _phase != Phase.Free || _stagger > 0;
     /// <summary>Raised as Ashley's strike ends, when a reclaim due may open.</summary>
@@ -2560,7 +2562,8 @@ public sealed partial class FieldBattle
     /// How <paramref name="from"/> stands to <paramref name="to"/>: bits 6 and 7 of its relation word for it (its AI
     /// record's +0x1a4, <see cref="Mind.Relations"/>). 3 is a foe, 2 an ally, 1 neither.
     /// </summary>
-    private static int Relation(Combatant from, Combatant to) => to.Index < 16 ? (int)(from.Mind!.Relations[to.Index] >> 6 & 3) : 0;
+    /// <summary>How the AI currently regards another fighter: 1 neither, 2 ally, 3 foe; 0 without a relation.</summary>
+    public static int Relation(Combatant from, Combatant to) => from.Mind is { } mind && (uint)to.Index < 16 ? (int)(mind.Relations[to.Index] >> 6 & 3) : 0;
 
     /// <summary>
     /// A fighter's well-being as an enemy reckons it (BATTLE.PRG 0x800dcc94, summed by 0x800dc284): six times the
