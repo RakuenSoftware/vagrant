@@ -17,7 +17,7 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// <item>Data saves the game, while she stands on a magic circle.</item>
 /// <item>Battle Abilities shows the abilities set to Circle, Triangle and Square; Options opens the settings window.</item>
 /// </list>
-/// Magic and Break Arts wait on spells and arts; Map, Score and the manual are not built yet.
+/// Magic and Break Arts list the learned spells and arts; Map, Score and the manual use the installed menu data.
 /// </summary>
 public sealed partial class FieldMenu : PanelContainer
 {
@@ -1729,11 +1729,14 @@ public sealed partial class FieldMenu : PanelContainer
                 var contents = _view.ChestContents(_chest);
                 // The bag's sounds (MENUB.PRG): the cursor's change, 13 as a thing is taken, leaving on END.
                 if (contents.Count > 1 && step != 0) { _cursor = (_cursor + step + contents.Count) % contents.Count; _view.MenuSound(FieldView.MenuChange); }
-                if (pressed("ps_circle") && contents.Count > 0) { _view.TakeFromChest(_chest, Math.Min(_cursor, contents.Count - 1)); _view.MenuSound(13); }
+                if (pressed("ps_circle") && contents.Count > 0)
+                    _view.MenuSound(_view.TakeFromChest(_chest, Math.Min(_cursor, contents.Count - 1)) ? 13 : FieldView.MenuInvalid);
                 else if (pressed("ps_square"))
                 {
-                    _view.MenuSound(contents.Count > 0 ? 13 : FieldView.MenuInvalid);
-                    while (_view.ChestContents(_chest).Count > 0) _view.TakeFromChest(_chest, 0);
+                    int before = contents.Count;
+                    for (int i = 0; i < contents.Count;)
+                        if (!_view.TakeFromChest(_chest, i)) i++;
+                    _view.MenuSound(contents.Count < before ? 13 : FieldView.MenuInvalid);
                 }
                 else if (pressed("ps_triangle") || pressed("ps_cross")) { _view.MenuSound(FieldView.MenuLeave); _chest = null; Show(false); return false; }
                 contents = _view.ChestContents(_chest);

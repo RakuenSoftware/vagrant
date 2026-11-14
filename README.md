@@ -40,6 +40,8 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=27,1 --fight --swoop
 # Disk resume and room/zone loads: gear, stats, inventory, progression and native variable lifetimes.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
+# Gadget bag GET/ALL: full categories, existing item stacks, partial collection and freed slots.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/bag_capacity_contracts.tscn -- --install-root=/path/to/installation
 # SETUP's Repair: YES/NO, Cross cancellation, all carried equipment, PP cost, accessories and storage.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/field_contracts.tscn -- --install-root=/path/to/installation --room=42,0 --workshop-repair
 # COMBINE's preview/cancellation/confirmation and equipped/nested parts, shields and armour transactions.

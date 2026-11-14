@@ -5762,17 +5762,21 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         return new GadgetBag.Entry(name, 0, BagCategory(kind), icon, classLine, materialLetter);
     }
 
-    /// <summary>Takes a chest entry into the bag; the chest is marked opened once it is empty.</summary>
-    public void TakeFromChest(GDictionary chest, int index)
+    /// <summary>Takes a chest entry if its bag category has room; only an empty chest is marked collected.</summary>
+    public bool TakeFromChest(GDictionary chest, int index)
     {
         var contents = ChestContents(chest);
-        if (index < 0 || index >= contents.Count) return;
+        if (index < 0 || index >= contents.Count) return false;
         var entry = contents[index].AsGodotDictionary();
         string kind = entry["kind"].AsString();
+        int category = BagCategory(kind);
+        bool stacking = kind == "item" && Items.GetValueOrDefault(entry["id"].AsInt32()) > 0;
+        if (!stacking && BagCounts()[category] >= GadgetBag.Limits[category]) return false;
         if (kind == "item") Items[entry["id"].AsInt32()] = Items.GetValueOrDefault(entry["id"].AsInt32()) + entry["count"].AsInt32();
         else Equipment.Add(new GDictionary { ["kind"] = kind, ["record"] = entry["record"] });
         contents.RemoveAt(index);
         if (contents.Count == 0 && chest["index"].AsInt32() >= 0) SetFlag(0x3C0 + chest["index"].AsInt32(), 1);
+        return true;
     }
 
     /// <summary>
