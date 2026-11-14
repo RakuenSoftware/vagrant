@@ -446,6 +446,8 @@ public sealed partial class FieldBattle
     public int Grades { get; private set; }
     /// <summary>While Ashley's strike plays, its frames from the hit (negative before it); null otherwise.</summary>
     public int? AshleyStrikeFrame => _phase == Phase.Striking && _attacker == Ashley && _attacker != null ? _landAt - _frames : null;
+    /// <summary>While a blow lands on Ashley, its frames from the hit; null once a defense was attempted.</summary>
+    public int? AshleyDefenseFrame => _phase == Phase.Striking && _victim == Ashley && _victim != null && !_attempted ? _landAt - _frames : null;
     private int _lastButton = -1;
     private Combatant? _lastStruck;
 

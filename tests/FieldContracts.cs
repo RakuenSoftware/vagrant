@@ -38,6 +38,7 @@ public partial class FieldContracts : Node
     private int _campaignHealSpell = 96;
     private int _campaignAbilityStep, _campaignAbilitySelection, _fightChainLinks;
     private Vector3 _campaignRestPoint;
+    private int _campaignPrepareStep, _campaignPrepareSelection;
     private (int Zone, int Map)? _campaignLoot;
     private int _campaignLootAt, _campaignLootStart, _campaignLootItem;
 
@@ -635,6 +636,17 @@ public partial class FieldContracts : Node
         if (_frame == 1 && _room == null && _campaignLoad.Length == 0 && (_view.Flags[1] != 1 || _view.Flags[0x11C] != 1))
         { Finish("campaign: New Game did not initialize retail's normal-play flags"); return; }
         if (_press > 0 && --_press == 0) Input.ActionRelease(_pressed);
+        if (_view.Battle is { AshleyDefenseFrame: >= 1 and <= 2 } defending && _press == 0)
+        {
+            int defense = (_view.Zone, _view.Map) == (50, 22) ? 43 : 46;
+            int slot = Array.IndexOf(defending.DefenseSlots, defense);
+            if (slot >= 0)
+            {
+                Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slot]);
+                GD.Print($"CAMPAIGN: timed equipped defense {defense}, previous grade {defending.LastGrade}");
+                return;
+            }
+        }
         if (_capture.Length != 0 && _frame % 120 == 0) Capture($"campaign_frame_{_frame:d7}");
         if (_view.Rooms.Count != _campaignRooms)
         {
@@ -854,6 +866,58 @@ public partial class FieldContracts : Node
             if (_frame % 60 == 1) Tap("ps_square");
             return;
         }
+        // Prepare for the elemental using earned gear through the normal equipment menu.
+        if (_view.Controlled && (_view.Zone, _view.Map) == (50, 14) && _campaignRouteAt + 1 < _campaignRoute.Count
+            && _campaignRoute[_campaignRouteAt + 1] == (50, 13) && _view.Battle is { Ashley: { } preparing } preparation)
+        {
+            var rings = _view.Equipment.Select(v => v.AsGodotDictionary()).Where(e => e["kind"].AsString() == "armour")
+                .Select(e => e["record"].AsGodotDictionary()).Where(e => e["id"].AsInt32() is >= 207 and <= 253
+                    && !_view.EquippedArmour.Values.Any(w => w.RecursiveEqual(e))).ToList();
+            int ring = rings.FindIndex(e => e["id"].AsInt32() == 229);
+            if (_campaignPrepareStep > 0 || ring >= 0)
+            {
+                Steer(Vector2.Zero);
+                if (_press > 0 || _frame % 8 != 0) return;
+                switch (_campaignPrepareStep)
+                {
+                    case 0:
+                        if (preparation.Paused) Tap("ps_cross");
+                        else if (!preparation.Busy) { Tap("ps_triangle"); _campaignPrepareStep = 1; }
+                        break;
+                    case 1:
+                        if (_view.MenuPage == 3) { Tap("ps_circle"); _campaignPrepareStep = 2; _campaignPrepareSelection = 0; }
+                        else if (_view.MenuRow != 3) Tap("ps_down");
+                        else Tap("ps_circle");
+                        break;
+                    case 2:
+                        if (_campaignPrepareSelection++ < 7) Tap("ps_down");
+                        else { Tap("ps_circle"); _campaignPrepareStep = 3; _campaignPrepareSelection = 0; }
+                        break;
+                    case 3:
+                        if (_campaignPrepareSelection++ <= ring) Tap("ps_down");
+                        else { Tap("ps_circle"); _campaignPrepareStep = 4; }
+                        break;
+                    case 4:
+                        if (_view.MenuOpen) Tap("ps_cross");
+                        else
+                        {
+                            if (_view.EquippedArmour.GetValueOrDefault(-1)?.GetValueOrDefault("id", 0).AsInt32() != 229)
+                            { Finish("campaign: EQUIP did not select the owned Salamander Ring"); return; }
+                            _campaignPrepareStep = 0;
+                            GD.Print("CAMPAIGN: equipped the earned Salamander Ring through ITEMS");
+                        }
+                        break;
+                }
+                return;
+            }
+            if (preparation.HostileCount() == 0 && (preparing.Hp < preparing.MaxHp || preparing.Mp < preparing.MaxMp))
+            {
+                Steer(Vector2.Zero);
+                if (preparation.Paused || !preparation.Busy && preparation.Drawn) Tap("ps_cross");
+                if (_frame % 600 == 0) GD.Print($"CAMPAIGN: safe recovery HP {preparing.Hp}/{preparing.MaxHp}, MP {preparing.Mp}/{preparing.MaxMp}");
+                return;
+            }
+        }
         // Put the reclaimed Raging Ache on Circle through BATTLE ABILITIES, keeping the other earned slots.
         if (_view.Controlled && _campaignHealStep == 0 && _view.Battle is { } abilityBattle
             && (_campaignAbilityStep > 0 || _view.Abilities.Contains(26) && _view.ChainButtons[0] != 26))
@@ -889,7 +953,7 @@ public partial class FieldContracts : Node
             if (_campaignResting && _view.MenuOpen) { Steer(Vector2.Zero); if (_frame % 8 == 0) Tap("ps_cross"); return; }
             // Once the earned RISK roots run out, sheathe and let the native recovery clock lower RISK.
             // Continuing to swing at a zero-percent preview can otherwise keep a valid fight going indefinitely.
-            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 65 : 50) && restBattle.HostileCount() > 0
+            if (!_campaignResting && restRunner.Risk >= ((_view.Zone, _view.Map) == (50, 17) ? 35 : 50) && restBattle.HostileCount() > 0
                 && new[] { 331, 332, 333 }.All(id => _view.Items.GetValueOrDefault(id) == 0))
             {
                 _campaignResting = true;
@@ -919,19 +983,19 @@ public partial class FieldContracts : Node
             }
         }
         // Use earned recovery and the owned Pyro Guard against the mine elemental, through the normal menus.
-        bool mineDebuff = (_view.Zone, _view.Map) == (50, 17) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
+        bool mineDebuff = ((_view.Zone, _view.Map) != (50, 17) || _view.Flags[200] < 20) && _view.Battle is { Ashley: { } caster } mineFight && caster.Mp >= 7
             && (_view.Spells.Contains(54) || _view.Items.GetValueOrDefault(432) > 0)
-            && mineFight.Combatants.Values.Any(c => c.Targetable && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
+            && mineFight.Combatants.Values.Any(c => c.Targetable && c.MaxHp >= 300 && !c.Has(FieldBattle.Degenerate) && c.Actor.Position.DistanceTo(caster.Actor.Position) < 400);
         if (_view.Controlled && _view.Battle is { Ashley: { } patient } recovery && _campaignHealStep == 0 && (patient.Hp < patient.MaxHp * 3 / 4 || patient.Risk > 60 || mineDebuff
                 || patient.Has(FieldBattle.Paralysis) && _view.Items.GetValueOrDefault(339) > 0
                 || patient.Has(FieldBattle.Poison) && _view.Items.GetValueOrDefault(340) > 0
                 || patient.Has(FieldBattle.Numbness) && _view.Items.GetValueOrDefault(341) > 0
-                || ((_view.Zone, _view.Map) == (50, 17) && recovery.HostileCount() > 0 && ((_view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0) ? !patient.Has(22)
+                || ((_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20 && recovery.HostileCount() > 0 && ((_view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0) ? !patient.Has(22)
                         : !patient.Has(24) && (_view.Spells.Contains(71) || _view.Items.GetValueOrDefault(454) > 0)))))
         {
             bool life = patient.Hp < patient.MaxHp * 3 / 4;
             bool frost = _view.Spells.Contains(69) || _view.Items.GetValueOrDefault(452) > 0;
-            bool guard = !life && (_view.Zone, _view.Map) == (50, 17) && recovery.HostileCount() > 0 && (frost ? !patient.Has(22) : !patient.Has(24));
+            bool guard = !life && (_view.Zone, _view.Map) == (50, 17) && _view.Flags[200] < 20 && recovery.HostileCount() > 0 && (frost ? !patient.Has(22) : !patient.Has(24));
             bool weakening = !life && mineDebuff;
             _campaignHealSpell = weakening ? 54 : guard ? frost ? 69 : 71 : 96;
             int cost = _view.Content.Data("spells")["actions"].AsGodotDictionary()[_campaignHealSpell.ToString()].AsGodotDictionary()["cost"].AsInt32();
@@ -3720,7 +3784,7 @@ public partial class FieldContracts : Node
             if (timing < 0) _fightLinked = false;
             var slots = Enumerable.Range(0, 3).Where(i => battle.ChainSlots[i] != 0).ToArray();
             if (_campaign && !_fightLinked && timing is >= 1 and <= 2 && _press == 0 && ashley.Risk < 65
-                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : 6))
+                && slots.Length > 0 && _fightChainLinks < (slots.Length == 1 ? 1 : _campaign && (_view.Zone, _view.Map) == (50, 17) ? 3 : 6))
             {
                 Tap(new[] { "ps_circle", "ps_triangle", "ps_square" }[slots[_fightChainLinks % slots.Length]]);
                 _fightLinked = true; _fightChainLinks++;
