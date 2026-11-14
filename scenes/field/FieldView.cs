@@ -291,8 +291,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private readonly int[] _integers = new int[10];
     /// <summary>The fade the next room change uses (6c): 0, 4 and 5 black, 1 white, 2 a wipe, 3 none, and levels a frame.</summary>
     private (int Effect, int Speed) _transitionFade = (0, 8);
-    /// <summary>Where Ashley enters the next room: a tile and a facing. New Game starts her on tile (4, 2) facing +z.</summary>
-    private (int X, int Z, float Facing) _arrival = (4, 2, 2048);
+    /// <summary>Where Ashley enters the next room: tile, facing and floor level. Levels 2 and up identify platforms.</summary>
+    private (int X, int Z, float Facing, int Level) _arrival = (4, 2, 2048, 0);
     /// <summary>A door's half-tile nudge: 64 units along x when arriving facing ±z, along z facing ±x.</summary>
     private bool _arrivalHalf;
     /// <summary>
@@ -404,7 +404,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // A new game starts with the HUD off and the opening turns it on; a room started on its own has it on, as a
         // resumed game does.
         HudShown = (StartZone, StartMap) != (1, 0);
-        if (StartAt is { } at) { _arrival = (at.X, at.Z, at.Facing); _arrivalHalf = at.Half; }
+        if (StartAt is { } at) { _arrival = (at.X, at.Z, at.Facing, 0); _arrivalHalf = at.Half; }
         LoadRoom(StartZone, StartMap);
     }
 
@@ -595,7 +595,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         Gameplay.Yaw = save["yaw"].AsSingle();
         Gameplay.Distance = Gameplay.TargetDistance = save["distance"].AsSingle();
         var tile = save["tile"].AsGodotArray();
-        _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), save["facing"].AsSingle());
+        _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), save["facing"].AsSingle(), 0);
         LoadRoom(save["zone"].AsInt32(), save["map"].AsInt32(), resume: true);
     }
 
@@ -734,6 +734,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             if (Spawn(new GDictionary { ["actor"] = "slot:0", ["character"] = 0, ["tile"] = new GArray { _arrival.X, _arrival.Z } }) != Error.Ok) return;
             if (Player is { } ashley)
             {
+                if (_arrival.Level >= 2 && _arrival.Level - 2 < _platforms.Count)
+                {
+                    var platform = _platforms[_arrival.Level - 2];
+                    ashley.Position = platform.Position + new Vector3(0, platform.Top, 0);
+                    Field.SetActorPosition(platform.Group.ToString(), EventActor.RetailSpace * platform.Position);
+                }
                 if (_arrivalHalf)
                 {
                     bool alongX = (int)(_arrival.Facing / 1024) % 2 == 0;
@@ -3424,6 +3430,21 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             }
             _platforms.Add(platform);
         }
+        if (_arrival.Level >= 2 && _arrival.Level - 2 < _platforms.Count)
+        {
+            // BATTLE.PRG 0x8008c674/0x8008c6b4 enables the receiving platform at its door stop, then sends it
+            // along the next leg without dwelling. Actor placement takes this platform's point (0x800a3220).
+            var platform = _platforms[_arrival.Level - 2];
+            int stop = platform.DoorStop;
+            if (stop >= 0 && stop < platform.Waypoints.Count)
+            {
+                platform.Off = false;
+                platform.Position = platform.Waypoints[stop].Point;
+                platform.Forward = stop < platform.Last;
+                platform.Target = stop + (platform.Forward ? 1 : -1);
+                platform.Leg = stop;
+            }
+        }
     }
 
     /// <summary>The room's collision map in tiles: its width and depth.</summary>
@@ -4207,7 +4228,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // flag 0xaf, the octant play's camera was turned to).
             int changeFlags = transition.GetValueOrDefault("flags", 0).AsInt32();
             float facing = transition["facing"].AsSingle();
-            _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), facing);
+            _arrival = (tile[0].AsInt32(), tile[1].AsInt32(), facing, transition.GetValueOrDefault("level", 0).AsInt32());
             _arrivalHalf = (changeFlags & 1) != 0;
             bool continueEvent = (changeFlags & 4) != 0;
             LoadRoom(zone == 0 ? Zone : zone, transition["map"].AsInt32(), continueEvent: continueEvent, reloadZone: zone != 0);
@@ -5932,7 +5953,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         Battle.Strike(ashley, Math.Min(20, ashley.Hp));
         if (ashley.Dead) return;
         player.Position = new Vector3(_arrival.X * 128 + 64, 0, _arrival.Z * 128 + 64);
-        player.Position = player.Position with { Y = FloorHeight(player.Position) };
+        if (_arrival.Level >= 2 && _arrival.Level - 2 < _platforms.Count)
+        {
+            var platform = _platforms[_arrival.Level - 2];
+            player.Position = platform.Position + new Vector3(0, platform.Top + PlatformDip[platform.Dip], 0);
+        }
+        else player.Position = player.Position with { Y = FloorHeight(player.Position) };
         player.Facing = _arrival.Facing;
     }
 
@@ -5984,7 +6010,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         _door = null;
         int zone = door["zone"].AsInt32(), map = door["map"].AsInt32();
         var destination = door["destination"].AsGodotArray();
-        _arrival = (destination[0].AsInt32(), destination[1].AsInt32(), door["facing"].AsSingle());
+        _arrival = (destination[0].AsInt32(), destination[1].AsInt32(), door["facing"].AsSingle(), door.GetValueOrDefault("destination_level", 0).AsInt32());
         _arrivalHalf = door["half"].AsBool();
         _walkIn = door["walk_in"].AsBool();
         // The door's marker on this room's area map names the marker of the way in on the next room's (its byte 1).
