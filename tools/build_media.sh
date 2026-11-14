@@ -9,7 +9,9 @@ cd "${3:?output directory required}"
 output="$(pwd)"
 if [[ "$target" == windows-x64 ]]; then
     export PATH="/mingw64/bin:/usr/bin:$PATH"
+    export PKG_CONFIG=/usr/bin/pkgconf
 fi
+export PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
 export LC_ALL=C
 architectures=x86_64
 [[ "$target" != macos-universal ]] || architectures="x86_64 arm64"
@@ -53,14 +55,14 @@ for arch in $architectures; do
         --disable-shared --enable-static --disable-x86asm \
         --disable-gpl --disable-nonfree --disable-network \
         --enable-ffmpeg --enable-ffprobe --enable-avfilter --enable-swscale --enable-swresample \
-        --enable-libtheora --enable-libvorbis --pkg-config-flags=--static \
+        --enable-libtheora --enable-libvorbis --pkg-config-flags=--static "--pkg-config=$PKG_CONFIG" \
         "--extra-cflags=$CFLAGS $CPPFLAGS" "--extra-ldflags=$LDFLAGS" \
         --enable-protocol=file \
         --enable-demuxer=psxstr,ogg,wav --enable-indev=lavfi \
         --enable-decoder=mdec,adpcm_xa,pcm_s16le,rawvideo,wrapped_avframe,theora,vorbis \
         --enable-encoder=libtheora,libvorbis,pcm_s16le \
         --enable-muxer=ogg,wav,null \
-        --enable-filter=aresample,aformat,format,scale,anull,null,color,sine
+        --enable-filter=aresample,aformat,format,scale,anull,null,color,sine || { tail -n 100 ffbuild/config.log; exit 1; }
     make -j4
     make install
     # Retain the exact configuration used by each architecture in the binary package.
