@@ -16,7 +16,7 @@ architectures=x86_64
 for arch in $architectures; do
     prefix="$work/$arch/prefix"
     mkdir -p "$work/$arch"
-    cp -R "$work/sources" "$work/$arch/src"
+    cp -Rp "$work/sources" "$work/$arch/src"
     export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
     export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
     export CFLAGS="-O2"
