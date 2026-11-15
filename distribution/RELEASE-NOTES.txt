@@ -15,8 +15,11 @@ verifies its files locally. No retail game assets, disc images, BIOS, original-g
 dialogue, manual or installed-disc cache are supplied in these packages.
 
 FFmpeg and ffprobe are bundled; no separate installation or PATH configuration is needed.
-This update restores the intro's separately attached sword prop by removing its
-extra standalone resting pose while mounted to another actor. The weapon projection,
+This preview vendors the audited Linux, Windows and macOS engine SDKs from the
+public wol-engine-release repository, including the dialogue sizing repair.
+Loose engine shader implementation files and owned debug symbols are excluded.
+The opening fixes cover attached sword poses, guard death completion, Ashley's
+walk-to-door animation, door overlap and enhanced dragon-head shading. The
 audio-stall, shared hit-resource and STR/XA installation repairs are retained.
 The matching FFmpeg/Xiph source and build instructions are in the adjacent
 ProjectVagrant-media-sources.zip download.

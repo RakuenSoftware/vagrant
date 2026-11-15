@@ -81,10 +81,14 @@ selected binary engine dependencies. Output defaults to `dist/<target>`;
 warnings are errors; solution Release maps to ExportRelease.
 
 `.github/workflows/desktop.yml` builds and tests on native hosted Linux, Windows
-and macOS runners for PRs into main, manual runs and `v*` tags. Checkout is an
-ordinary non-recursive clone using its repository token. PR and manual runs upload game archives/checksums as CI artifacts. A `v*` tag
-publishes a versioned preview under GitHub Releases only after all three native
-jobs pass and the downloaded archive checksums are verified. Releases inherit
+and macOS runners for PRs into main, pushes to main, manual runs and `v*` tags.
+Checkout is an ordinary non-recursive clone using its repository token. PR and
+manual runs upload game archives/checksums as CI artifacts. Every merge to main
+also publishes a preview named `v0.1.0-preview.main.<workflow run number>`, with
+its release tag pointing to the exact merged commit. These automatic previews
+use a separate name from manually versioned `v*` releases, which remain supported.
+Publication requires all three native jobs and downloaded checksum checks to
+pass. A failed platform prevents publication. PR checks do not publish releases. Releases inherit
 the repository visibility; this workflow does not make a private repository public.
 Automatic reviews remain enabled.
 
