@@ -1377,7 +1377,7 @@ public sealed class MapConversion
             string surfaceKey = key + "_" + passBlend + (twoSided ? "_both" : "") + suffix;
             if (!surfaces.TryGetValue(surfaceKey, out var surface))
             {
-                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertex_color_srgb"] = true, ["colour_gain"] = 2, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray(), ["faces"] = new JsonArray() };
+                surface = new JsonObject { ["texture"] = key, ["blend"] = passBlend, ["cull"] = twoSided ? "disabled" : "back", ["unshaded"] = true, ["vertex_color_srgb"] = true, ["colour_gain"] = 2, ["vertices"] = new JsonArray(), ["uv"] = new JsonArray(), ["colors"] = new JsonArray(), ["faces"] = new JsonArray(), ["order_corners"] = new JsonArray() };
                 surfaces[surfaceKey] = surface;
             }
             targets.Add((surface, passGain));
@@ -1420,6 +1420,13 @@ public sealed class MapConversion
                 // Retail space is x right, y down, z forward; a half turn about x gives the engine's y-up space.
                 // Flat lists (x, y, z; u, v; r, g, b, a per vertex), which the field reads in one piece.
                 foreach (float value in new[] { Round(x / UnitsPerMetre), Round(-y / UnitsPerMetre), Round(-z / UnitsPerMetre) }) surface["vertices"]!.AsArray().Add(value);
+                // Each primitive goes in the room ordering table at its farthest corner (0x80097ab4,
+                // the fourth corner at 0x8009787c), not at each fragment's interpolated depth.
+                for (int k = 0; k < 4; k++)
+                {
+                    var p = position[Math.Min(k, corners - 1)];
+                    foreach (float value in new[] { Round((p.X + behind.X) / UnitsPerMetre), Round(-(p.Y + behind.Y) / UnitsPerMetre), Round(-(p.Z + behind.Z) / UnitsPerMetre) }) surface["order_corners"]!.AsArray().Add(value);
+                }
                 foreach (float value in new[] { Round((uv[corner].U + centre) / 256f), Round((uv[corner].V + centre) / 256f) }) surface["uv"]!.AsArray().Add(value);
                 int c = at + colourOffsets[corner];
                 int r = _map[c], g = _map[c + 1], b = _map[c + 2];

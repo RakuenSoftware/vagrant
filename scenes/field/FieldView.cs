@@ -6434,8 +6434,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>Gives the event camera to the shared field camera: retail map units become engine units, and the projection distance a field of view.</summary>
     private void ApplyCamera()
     {
-        // The retail room renderer drops each room polygon whose nearest corner's depth, over four, is below the near
-        // clip (BATTLE.PRG 0x80097A10 takes the least of the three GTE depths, 0x800980F8 compares it), so a camera
+        // The retail room renderer drops each room polygon whose farthest corner's depth, over four, is below the near
+        // clip (BATTLE.PRG 0x80097A10 takes the greatest of the three GTE depths, 0x800980F8 compares it), so a camera
         // beside room geometry sees past it; actors keep the ordinary near plane. A corner behind the camera has depth
         // 0, so a face reaching behind it goes too. The view matrix is scaled by ec's value over 4096 (0x8007CD14 into
         // 0x1F800064, applied at 0x8007AF08), which leaves the picture as it is but scales every depth, so the cut stands
@@ -6443,12 +6443,22 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // renderer takes as its second argument) are near polygons first subdivided, by their group's levels, and the
         // pieces tested: a cut by the pixel stands in for that.
         bool staged = _eventCamera && !Controlled;
+        float orderScale = (staged ? _eventFar : 4096) / 4096f;
+        var table = new OrderingTable(Installation.MapConversion.UnitsPerMetre * orderScale, 1 / 12f, 1 / 16f, 1 / 4f, 1,
+            4 / (Installation.MapConversion.UnitsPerMetre * orderScale), new Rect2(-1048576, -1048576, 2097152, 2097152), float.MaxValue, LastEntry: 2046);
+        if (Field.OrderingTable != table) Field.SetOrderingTable(table);
         float reject = 4 * (staged ? _eventNear : 64) * 4096 / (staged ? _eventFar : 4096) / Installation.MapConversion.UnitsPerMetre;
         float pixelCut = _hideFirstPerson ? reject : 0;
         if (pixelCut != _roomNear)
         {
             _roomNear = pixelCut;
             Field.SetFieldNearCut(pixelCut);
+            var groups = Document.GetValueOrDefault("room_groups", new GArray()).AsGodotArray();
+            for (int group = 0; group < groups.Count; group++)
+            {
+                // First-person view keeps the standard material's per-pixel near cut.
+                Field.SetModelOrder(group.ToString(), _hideFirstPerson ? ModelOrder.Depth : ModelOrder.Farthest);
+            }
         }
         if (Controlled)
         {
@@ -6559,7 +6569,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
     /// <summary>
     /// Leaves out the room faces retail does not draw, outside first-person view (where near faces are subdivided
-    /// instead). The room renderer drops a whole face whose nearest corner stands closer to the camera than the near
+    /// instead). The room renderer drops a whole face whose farthest corner stands closer to the camera than the near
     /// cut (see ApplyCamera). The GPU then drops a triangle more than 1023 pixels across or 511 down, a quad going to it
     /// as two triangles tested alone: as for characters (<see cref="EventActor.ProjectAsRetail"/>), a corner nearer than
     /// H / 2 after the view's scale, or behind the eye, is projected as if it stood there and its screen place is held
@@ -6587,15 +6597,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 {
                     int count = room.Faces[surface][face] * 3;
                     if (screen.Length < count) screen = new Vector2[count];
-                    float nearest = float.PositiveInfinity;
+                    float farthest = 0;
                     for (int v = 0; v < count; v++)
                     {
                         // The corner in the camera's frame, in retail units, and its screen place (9/8 across, y down).
                         var local = toEye * vertices[at + v] * units;
-                        nearest = Math.Min(nearest, -local.Z);
+                        farthest = Math.Max(farthest, -local.Z);
                         screen[v] = EventActor.GteProjection(local, projection, least, 0).Screen;
                     }
-                    bool near = !_hideFirstPerson && nearest < reject;
+                    bool near = !_hideFirstPerson && farthest < reject;
                     for (int v = 0; v < count; v += 3, triangle++)
                     {
                         bool drop = near || !_hideFirstPerson && EventActor.GpuDrops(screen[v], screen[v + 1], screen[v + 2]);
@@ -6623,7 +6633,18 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 arrays[(int)Mesh.ArrayType.TexUV] = kept.ConvertAll(v => uv[v]).ToArray();
                 arrays[(int)Mesh.ArrayType.Color] = kept.ConvertAll(v => colors[v]).ToArray();
                 arrays[(int)Mesh.ArrayType.Normal] = kept.ConvertAll(v => normals[v]).ToArray();
-                room.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+                long format = 0;
+                for (int channel = 1; channel <= 3; channel++)
+                {
+                    int type = (int)Mesh.ArrayType.Custom0 + channel;
+                    if (source[type].VariantType == Variant.Type.Nil) continue;
+                    var corners = source[type].AsFloat32Array();
+                    var selected = new float[kept.Count * 4];
+                    for (int v = 0; v < kept.Count; v++) Array.Copy(corners, kept[v] * 4, selected, v * 4, 4);
+                    arrays[type] = selected;
+                    format |= (long)Mesh.ArrayCustomFormat.RgbaFloat << ((int)Mesh.ArrayFormat.FormatCustom0Shift + channel * 3);
+                }
+                room.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, null, (Mesh.ArrayFormat)format);
                 room.Mesh.SurfaceSetMaterial(surface, room.Materials[surface]);
             }
         }

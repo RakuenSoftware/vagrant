@@ -53,7 +53,7 @@ class DesktopRelease:
             (stage / ".godot/extension_list.cfg").write_text("res://addons/wol_engine/native/spatial.gdextension\n")
             self.run("dotnet", "build", stage / "Vagrant.csproj", "--nologo")
             self.run(editor, "--headless", "--editor", "--import", "--path", stage, "--quit")
-            for scene in ("actor_projection_contracts", "animation_script_contracts"):
+            for scene in ("actor_projection_contracts", "animation_script_contracts", "room_ordering_contracts"):
                 self.run(editor, "--headless", "--path", stage, f"res://tests/{scene}.tscn",
                          "--", "--install-root=" + str(stage / "empty-installation"))
 
