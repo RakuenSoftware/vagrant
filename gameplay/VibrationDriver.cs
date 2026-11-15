@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
-using Godot;
 
 namespace Wol.Games.Vagrant.Runtime;
 
@@ -44,6 +43,11 @@ public sealed class VibrationDriver
         public int Id;
         public readonly Motor[] Motors = { new(), new() };
     }
+
+    private readonly Action<float, float> _writeMotors;
+
+    /// <summary>The host supplies device output; envelope decoding and gameplay timing use only .NET types.</summary>
+    public VibrationDriver(Action<float, float> writeMotors) => _writeMotors = writeMotors ?? throw new ArgumentNullException(nameof(writeMotors));
 
     private readonly Channel[] _channels = { new(), new() };
     private float _small, _large;
@@ -123,10 +127,6 @@ public sealed class VibrationDriver
         float weak = Enabled && small > 0 ? 1 : 0, strong = Enabled ? large / 255f : 0;
         if (weak == _small && strong == _large) return;
         (_small, _large) = (weak, strong);
-        foreach (int pad in Input.GetConnectedJoypads())
-        {
-            if (weak == 0 && strong == 0) Input.StopJoyVibration(pad);
-            else Input.StartJoyVibration(pad, weak, strong, 0);
-        }
+        _writeMotors(weak, strong);
     }
 }

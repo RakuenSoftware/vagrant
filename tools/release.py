@@ -42,10 +42,10 @@ class DesktopRelease:
         with tempfile.TemporaryDirectory(prefix="vagrant-projection-", dir=self.cache) as temporary:
             stage = Path(temporary)
             for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg",
-                         "installation", "runtime", "scenes", "tests"):
+                         "installation", "runtime", "gameplay", "scenes", "tests"):
                 source = self.root / name
                 if source.is_dir():
-                    shutil.copytree(source, stage / name)
+                    shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("bin", "obj"))
                 else:
                     shutil.copy2(source, stage / name)
             shutil.copytree(self.engine, stage / "addons/wol_engine")
@@ -320,10 +320,10 @@ class DesktopRelease:
         # A whitelist prevents local discs, caches, test assets and unrelated engine content entering the exporter.
         with tempfile.TemporaryDirectory(prefix="vagrant-export-", dir=self.cache) as temp:
             stage = Path(temp)
-            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg", "installation", "runtime", "scenes"):
+            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg", "installation", "runtime", "gameplay", "scenes"):
                 source = self.root / name
                 if source.is_dir():
-                    shutil.copytree(source, stage / name)
+                    shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("bin", "obj"))
                 else:
                     shutil.copy2(source, stage / name)
             addon = stage / "addons/wol_engine"

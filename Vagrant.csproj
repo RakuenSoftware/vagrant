@@ -18,6 +18,10 @@
   <ItemGroup Condition="'$(Configuration)' == 'Release' or '$(Configuration)' == 'ExportRelease'">
     <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="gameplay/**/*.cs;tests/gameplay/**/*.cs" />
+    <ProjectReference Include="gameplay/Vagrant.Gameplay.csproj" />
+  </ItemGroup>
   <Import Project="$(WolEngineSdkRoot)/WolEngine.props" />
   <Import Project="$(WolEngineSdkRoot)/GodotApi.props" />
 </Project>

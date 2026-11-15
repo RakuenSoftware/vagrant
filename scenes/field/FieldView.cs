@@ -132,7 +132,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private SoundDriver _driver = null!;
 
     /// <summary>The pad's vibration, stepped each frame of play.</summary>
-    public readonly VibrationDriver Vibration = new();
+    public readonly VibrationDriver Vibration = new(Wol.Engine.Controls.InputBindings.SetVibration);
     /// <summary>The sounds playing by name (without their pan), each with its full key.</summary>
     private readonly Dictionary<string, string> _sounds = new();
     /// <summary>The music's volume (0 to 1) as fades move it.</summary>

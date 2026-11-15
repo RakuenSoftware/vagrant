@@ -58,6 +58,32 @@ Dependency updates reject loose shader programs as implementation source.
 It refuses to overwrite an existing addon. Review and commit that directory and
 VENDOR.json together. CI never runs this maintainer operation.
 
+## Engine-independent gameplay
+
+`gameplay/Vagrant.Gameplay.csproj` is an ordinary .NET 10 library with no Godot,
+wol-engine or external package references. Extracted game rules live there;
+the Godot application composes them with the host engine. Controller vibration
+is the first extracted behavior: Vagrant owns the two-channel envelope decoder,
+clock and retail motor levels; wol-engine owns controller device operations.
+The field scene supplies a .NET callback when it constructs the driver.
+
+Run its synthetic contracts with only the .NET SDK installed:
+
+```sh
+dotnet run --project tests/gameplay/GameplayContracts.csproj -c Release
+```
+
+Those checks use deliberate envelope inputs and recorded output, never a physical
+controller or disc content. They reject non-.NET gameplay assembly dependencies.
+CI runs them on Linux, Windows and macOS in sparse checkouts containing only
+this library, its tests and the pinned .NET version, with no engine SDK present.
+Native player builds wait for those checks. Draft PRs run the gameplay checks;
+marking them ready starts the full native package checks. Exported players also
+require the separate gameplay assembly and reject Godot or wol-engine references
+from it.
+Other game systems still contain host-specific dependencies and remain to be
+extracted; this library establishes the boundary for that work.
+
 ## Build and CI
 
 Use Python 3.12+ and .NET SDK 10.0.403. No engine credentials, SCons or C++
