@@ -7,8 +7,13 @@ using Wol.Games.Vagrant.Runtime;
 var assembly = typeof(VibrationDriver).Assembly;
 if (assembly == typeof(Program).Assembly) throw new InvalidOperationException("Gameplay was compiled into the test host.");
 foreach (var dependency in assembly.GetReferencedAssemblies())
+    if (dependency.Name is not { } name || !name.StartsWith("System", StringComparison.Ordinal) && name != "WolEngine.Core")
+        throw new InvalidOperationException("Gameplay depends on a host backend: " + dependency.FullName);
+
+foreach (var dependency in typeof(Wol.Engine.Imaging.RasterImage).Assembly.GetReferencedAssemblies())
     if (dependency.Name is not { } name || !name.StartsWith("System", StringComparison.Ordinal))
-        throw new InvalidOperationException("Gameplay has a non-.NET dependency: " + dependency.FullName);
+        throw new InvalidOperationException("The portable core depends on a backend: " + dependency.FullName);
+ContentContracts.Check();
 
 bool wasEnabled = VibrationDriver.Enabled;
 try
@@ -59,6 +64,6 @@ try
         catch (InvalidDataException) { rejected = true; }
         if (!rejected) throw new InvalidOperationException("A truncated envelope was accepted.");
     }
-    Console.WriteLine("GAMEPLAY_CONTRACTS_OK: no Godot/engine references; two channels, saturation, independent tracks, tagged stops, output suppression and enable/resume");
+    Console.WriteLine("GAMEPLAY_CONTRACTS_OK: no Godot/backend references; two channels, saturation, independent tracks, tagged stops, output suppression and enable/resume");
 }
 finally { VibrationDriver.Enabled = wasEnabled; }

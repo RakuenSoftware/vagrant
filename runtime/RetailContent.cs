@@ -80,7 +80,7 @@ public partial class RetailContent : Node
 
     /// <summary>An image decoded from the disc, by the name the document that has it gives.</summary>
     public Image LoadImage(string name) =>
-        Field.Image(name)?.Duplicate() as Image ?? throw new InvalidDataException($"The disc has no image {name}.");
+        Field.Image(name) is { } pixels ? PixelArtScaler.FromRaster(pixels) : throw new InvalidDataException($"The disc has no image {name}.");
 
     private Texture2D LoadTexture(string name) => ImageTexture.CreateFromImage(LoadImage(name));
 
@@ -172,7 +172,7 @@ public partial class RetailContent : Node
             var layer = layers[i].AsGodotDictionary();
             // The layer's fill: colour 0 of its palette, none when that is 0 (as the GPU leaves such texels out).
             int fill = layer.GetValueOrDefault("fill", 0).AsInt32();
-            result[i] = (ScreenTexture(layer["image"].AsString()), fill == 0 ? null : TitleConversion.ToColor((ushort)fill, false) with { A = 1 });
+            result[i] = (ScreenTexture(layer["image"].AsString()), fill == 0 ? null : DisplaySpace.FromRgba32(TitleConversion.ToColor((ushort)fill, false)));
         }
         return result;
     }

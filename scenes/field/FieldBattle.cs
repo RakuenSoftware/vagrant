@@ -3570,8 +3570,8 @@ public sealed partial class FieldBattle
         // The attack is counted on the 30 Hz event clock, a tick to a SEQ frame. Its script says in which frame the
         // blow lands (operation 2) and its sounds play (4 and 5; 88 is the weapon's swing); without one, the blow
         // lands halfway through.
-        const int Ticks = Installation.CharacterConversion.TicksPerFrame;
-        _frames = Math.Max(2, (int)Math.Ceiling((attacker.Actor.Player?.CurrentAnimationLength ?? 1) * Installation.CharacterConversion.FramesPerSecond * Ticks));
+        const int Ticks = Installation.EventConversion.TicksPerFrame;
+        _frames = Math.Max(2, (int)Math.Ceiling((attacker.Actor.Player?.CurrentAnimationLength ?? 1) * Installation.EventConversion.FramesPerSecond * Ticks));
         _landAt = _frames / 2;
         _cues.Clear();
         foreach (var value in Events(attacker, $"{set}_{animation}"))

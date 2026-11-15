@@ -172,7 +172,7 @@ public partial class TitleMenu : Node2D
             {
                 int texel = (int)Math.Round(indices.GetPixel(x, y).R * 255f);
                 ushort colour = word.Palette[texel];
-                image.SetPixel(x, y, texel == 0 || colour == 0 ? new Color(0, 0, 0, 0) : Installation.TitleConversion.ToColor(colour, false));
+                image.SetPixel(x, y, texel == 0 || colour == 0 ? new Color(0, 0, 0, 0) : Wol.Engine.Display.DisplaySpace.FromRgba32(Installation.TitleConversion.ToColor(colour, false)));
             }
         if (word.Texture == null) word.Texture = ImageTexture.CreateFromImage(image);
         else word.Texture.Update(image);

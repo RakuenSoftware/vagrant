@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -133,12 +133,12 @@ public static class EffectConversion
     private static void Put(byte[] data, int at, ushort colour)
     {
         var shown = TitleConversion.ToColor(colour, false);
-        (data[at], data[at + 1], data[at + 2]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8);
+        (data[at], data[at + 1], data[at + 2]) = ((byte)shown.Red, (byte)shown.Green, (byte)shown.Blue);
         data[at + 3] = colour == 0 ? (byte)0 : (colour & 0x8000) != 0 ? (byte)255 : (byte)254;
     }
 
     /// <summary>Converts effect <paramref name="id"/>; the files are read through <paramref name="read"/> (null if absent).</summary>
-    public static JsonObject? Export(int id, Func<string, byte[]?> read, string name, IDictionary<string, Image> output)
+    public static JsonObject? Export(int id, Func<string, byte[]?> read, string name, IDictionary<string, RasterImage> output)
     {
         byte[]? p = read($"EFFECT/E{id:d3}.P");
         if (p == null) return null;
@@ -277,7 +277,7 @@ public static class EffectConversion
                 for (int row = 0; row < ih; row++) Array.Copy(pixels, row * iw * 4, atlas, ((places[i].Y + row) * width + places[i].X) * 4, iw * 4);
                 records[i]!["rect"] = new JsonArray { places[i].X, places[i].Y, iw, ih };
             }
-            output[name + "_atlas"] = Image.CreateFromData(width, height, false, Image.Format.Rgba8, atlas);
+            output[name + "_atlas"] = new RasterImage(width, height, RasterFormat.Rgba8, atlas);
             effect["atlas"] = name + "_atlas";
             effect["atlas_size"] = new JsonArray { width, height };
         }
@@ -460,7 +460,7 @@ public static class EffectConversion
                             Put(image, (y * width + x) * 4, clut[Math.Min(clut.Length - 1, row * 256 + index)]);
                         }
                     string asset = $"{name}_page_{key}";
-                    output[asset] = Image.CreateFromData(width, 256, false, Image.Format.Rgba8, image);
+                    output[asset] = new RasterImage(width, 256, RasterFormat.Rgba8, image);
                     pages[key] = asset;
                 }
             }

@@ -61,27 +61,37 @@ VENDOR.json together. CI never runs this maintainer operation.
 
 ## Engine-independent gameplay
 
-`gameplay/Vagrant.Gameplay.csproj` is an ordinary .NET 10 library with no Godot,
-wol-engine or external package references. Extracted game rules live there;
-the Godot application composes them with the host engine. Controller vibration
-is the first extracted behavior: Vagrant owns the two-channel envelope decoder,
-clock and retail motor levels; wol-engine owns controller device operations.
-The field scene supplies a .NET callback when it constructs the driver.
+`gameplay/Vagrant.Gameplay.csproj` is an ordinary .NET 10 library. It references
+only .NET and the host-neutral `WolEngine.Core` contracts. It does not reference
+Godot or the `WolEngine` backend assembly. The application composes these rules
+and decoded pixel planes with the host at its presentation boundary.
 
-Run its synthetic contracts with only the .NET SDK installed:
+Vagrant owns the controller's two-channel envelopes and timing, and the retail
+content decoders under `gameplay/installation`: title/loading art, fonts, HUD,
+manuals, overlays, effects, map geometry/textures/skies, inventory, save pictures,
+results, event-script translation and ending decompression. Images are decoded into byte-defined raster
+planes. wol-engine owns hardware controller output, native image creation and
+PNG cache encoding/decoding. There is one decoder per format and one owned image
+buffer; no parallel Godot decoder or second image cache remains.
+
+Run the deliberate-input contracts with the .NET SDK and vendored portable DLLs:
 
 ```sh
 dotnet run --project tests/gameplay/GameplayContracts.csproj -c Release
 ```
 
-Those checks use deliberate envelope inputs and recorded output, never a physical
-controller or disc content. They reject non-.NET gameplay assembly dependencies.
-CI runs them on Linux, Windows and macOS in sparse checkouts containing only
-this library, its tests and the pinned .NET version, with no engine SDK present.
-Native player builds wait for those checks. Exported players also require the
-separate gameplay assembly and reject Godot or wol-engine references from it.
-Other game systems still contain host-specific dependencies and remain to be
-extracted; this library establishes the boundary for that work.
+CI runs these checks on Linux, Windows and macOS in sparse checkouts containing
+only this library, its tests, the pinned .NET version and `portable` binaries.
+Godot, the backend SDK, native libraries and a disc installation are absent.
+The checks reject backend dependencies both in gameplay and transitively in the
+portable core, and exercise palette keys, transparency passes, indexed/direct
+art, save-picture palette columns, glyph metrics and controller envelopes.
+Native player builds wait for these checks and retain the published core DLL
+byte for byte. Vendoring rejects differing portable bytes across target SDKs.
+
+Other game systems, including character rendering, audio playback and scenes,
+still contain Godot dependencies and remain to be extracted. This is an
+incremental boundary, not a claim that the whole application is portable yet.
 
 ## Build and CI
 

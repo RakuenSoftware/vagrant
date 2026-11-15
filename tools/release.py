@@ -308,6 +308,11 @@ class DesktopRelease:
             if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected for p in libraries):
                 raise RuntimeError("The player did not retain the pinned Release library: " + name)
 
+        expected_core = hashlib.sha256((self.engine / "portable/Release/WolEngine.Core.dll").read_bytes()).hexdigest()
+        libraries = list(output.rglob("WolEngine.Core.dll"))
+        if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected_core for p in libraries):
+            raise RuntimeError("The player did not retain the pinned portable core library")
+
     def build(self):
         editor, api = self.prepare()
         output = Path(self.args.output or self.root / "dist" / self.args.target).resolve()
@@ -328,6 +333,7 @@ class DesktopRelease:
                     shutil.copy2(source, stage / name)
             addon = stage / "addons/wol_engine"
             shutil.copytree(self.engine / "runtime", addon / "runtime")
+            shutil.copytree(self.engine / "portable", addon / "portable")
             sdk = addon / "platforms" / self.args.target
             sdk.mkdir(parents=True)
             shutil.copy2(self.sdk / "GodotApi.props", sdk / "GodotApi.props")

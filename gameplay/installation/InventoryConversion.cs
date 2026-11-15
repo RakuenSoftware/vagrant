@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using System.Text.Json.Nodes;
 
+using Wol.Engine.Imaging;
+
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
@@ -466,7 +468,7 @@ public sealed class InventoryConversion
     /// 192 by 240, packed as words: each control word writes its low half's count of zero words, then copies its high
     /// half's count of words that follow, for 0x1780 words of input.
     /// </summary>
-    public static Godot.Image Backdrop(byte[] file)
+    public static RasterImage Backdrop(byte[] file)
     {
         if (file.Length < 0x200) throw new InvalidDataException("MENUBG.BIN is truncated.");
         var pixels = new byte[192 * 240];
@@ -484,7 +486,7 @@ public sealed class InventoryConversion
             at += literal;
             read += literal / 4;
         }
-        var image = Godot.Image.CreateEmpty(192, 240, false, Godot.Image.Format.Rgba8);
+        var image = new RasterImage(192, 240);
         for (int i = 0; i < pixels.Length; i++)
         {
             ushort colour = BitConverter.ToUInt16(file, pixels[i] * 2);

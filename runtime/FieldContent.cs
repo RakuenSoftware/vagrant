@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
 using Godot;
+using Wol.Engine.Imaging;
+using Wol.Engine.Display;
 using Wol.Games.Vagrant.Installation;
 
 namespace Wol.Games.Vagrant.Runtime;
@@ -53,7 +55,7 @@ public sealed class FieldContent
     private readonly string _disc;
     private readonly byte[] _battle, _executable;
     private readonly Dictionary<string, JsonObject?> _data = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Image> _images = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RasterImage> _images = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (JsonObject Definition, byte[] Model)?> _characters = new(StringComparer.Ordinal);
     private readonly Dictionary<string, byte[]> _weapons = new(StringComparer.Ordinal);
     /// <summary>The zone unit file (ZUD) that carries a room character's model and animations, by model id.</summary>
@@ -96,7 +98,9 @@ public sealed class FieldContent
     {
         try
         {
-            string build = typeof(FieldContent).Assembly.ManifestModule.ModuleVersionId.ToString("N");
+            string build = typeof(FieldContent).Assembly.ManifestModule.ModuleVersionId.ToString("N")
+                + typeof(TitleConversion).Assembly.ManifestModule.ModuleVersionId.ToString("N")
+                + typeof(RasterImage).Assembly.ManifestModule.ModuleVersionId.ToString("N");
             Directory.CreateDirectory(Path.Combine(root, build));
             foreach (string old in Directory.GetDirectories(root)) if (Path.GetFileName(old) != build) Directory.Delete(old, true);
             return Path.Combine(root, build);
@@ -216,16 +220,14 @@ public sealed class FieldContent
     }
 
     /// <summary>An image a document names (room textures, effect atlases, manual pictures, illustrations, overlay layers).</summary>
-    public Image? Image(string name)
+    public RasterImage? Image(string name)
     {
         if (_images.TryGetValue(name, out var image)) return image;
         // Images come with the document that names them.
         // A room's are "field_zzzz_mmm.key", "field_zzzz_mmm.sky" and "field_zzzz_mmm_key_framesn".
         if (name.StartsWith("field_", StringComparison.Ordinal) && Cached(name + ".png") is { } png && System.IO.File.Exists(png))
         {
-            var picture = new Image();
-            if (picture.LoadPngFromBuffer(System.IO.File.ReadAllBytes(png)) != Error.Ok) throw new InvalidDataException($"The cached {name} could not be read.");
-            return _images[name] = picture;
+            return _images[name] = PixelArtScaler.DecodePng(System.IO.File.ReadAllBytes(png));
         }
         if (name.StartsWith("field_", StringComparison.Ordinal) && name.Length >= 14) Data(name[..14]);
         else if (name.StartsWith("effect_", StringComparison.Ordinal)) Data(name[..10]);
@@ -443,7 +445,7 @@ public sealed class FieldContent
         if (Cached($"field_{name}.json") is { } cache)
         {
             foreach (var (key, image) in _images)
-                if (key.StartsWith("field_" + name, StringComparison.Ordinal)) Keep(Cached(key + ".png")!, partial => image.SavePng(partial));
+                if (key.StartsWith("field_" + name, StringComparison.Ordinal)) Keep(Cached(key + ".png")!, partial => System.IO.File.WriteAllBytes(partial, PixelArtScaler.EncodePng(image)));
             Keep(cache, partial => System.IO.File.WriteAllText(partial, document.ToJsonString()));
         }
         return document;

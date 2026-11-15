@@ -457,7 +457,7 @@ public sealed class EventActor
 
     /// <summary>A clip for the engine, now or queued: its loop as made, or none played once; the blend in 30ths of a second; its start in animation frames.</summary>
     private Wol.Engine.World.ActorClip Clip(string clip, int blendFrames, int skipFrames, bool once, bool queue) =>
-        new(Id, clip, queue, once ? false : null, blendFrames >= 2 ? blendFrames / 30f : 0, skipFrames > 0 ? skipFrames / Installation.CharacterConversion.FramesPerSecond : 0);
+        new(Id, clip, queue, once ? false : null, blendFrames >= 2 ? blendFrames / 30f : 0, skipFrames > 0 ? skipFrames / Installation.EventConversion.FramesPerSecond : 0);
 
     /// <summary>The clip's frame now (in the rig's animation frames); a clip played once and ended is no longer current, and stands at its end.</summary>
     public int ClipFrame(string clip)
@@ -467,7 +467,7 @@ public sealed class EventActor
         double position = !ended ? Player.CurrentAnimationPosition : Player.HasAnimation(clip) ? Player.GetAnimation(clip).Length : 0;
         // Animation.Length is a float: 31/30 comes back as 30.999999 SEQ frames.
         // An ended clip has reached its declared integer frame, including commands on that tick.
-        double frame = position * Installation.CharacterConversion.FramesPerSecond;
+        double frame = position * Installation.EventConversion.FramesPerSecond;
         return ended ? (int)Math.Round(frame) : (int)frame;
     }
 

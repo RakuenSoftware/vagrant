@@ -3,13 +3,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
 /// Converts the retail title overlay (TITLE/TITLE.PRG) into ordinary images and a layout description.
-/// The overlay's offsets are only meaningful for the verified retail file, which <see cref="RetailDisc"/> catalogues.
+/// The overlay's offsets are only meaningful for the verified retail file, which the retail-disc catalog catalogues.
 /// No PlayStation rendering runs in the game; the presentation draws these images natively.
 /// </summary>
 public sealed class TitleConversion
@@ -61,25 +61,41 @@ public sealed class TitleConversion
 
 
     /// <summary>Converts a 15-bit PlayStation colour. Colour 0x0000 is the hardware's transparent texel.</summary>
-    public static Color ToColor(ushort value, bool transparentBlack)
+    public static Rgba32 ToColor(ushort value, bool transparentBlack)
     {
         int r = value & 31, g = (value >> 5) & 31, b = (value >> 10) & 31;
-        float alpha = transparentBlack && value == 0 ? 0f : 1f;
-        return Color.Color8((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), (byte)(alpha * 255));
+        byte alpha = transparentBlack && value == 0 ? (byte)0 : (byte)255;
+        return new Rgba32((byte)((r << 3) | (r >> 2)), (byte)((g << 3) | (g >> 2)), (byte)((b << 3) | (b >> 2)), alpha);
     }
 
-    private Image DirectImage(int x, int y, int width, int height)
+    /// <summary>
+    /// Writes a PS1 colour (0 transparent) as four bytes of RGBA, scaled by <paramref name="gain"/>. On semi-transparent
+    /// faces only texels with the mask bit (0x8000) blend, as on the rooms' polygons: <paramref name="mask"/> 1 gives those
+    /// half alpha and leaves the rest opaque, 2 keeps only the unmasked texels and 3 only the masked ones (the two draws
+    /// of an additive or subtractive face); 0 ignores the bit.
+    /// </summary>
+    public static void WriteTexel(byte[] data, int at, ushort colour, int mask, float gain)
     {
-        var image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+        bool masked = (colour & 0x8000) != 0;
+        var shown = ToColor(colour, false);
+        data[at] = (byte)(shown.Red * gain);
+        data[at + 1] = (byte)(shown.Green * gain);
+        data[at + 2] = (byte)(shown.Blue * gain);
+        data[at + 3] = colour == 0 ? (byte)0 : mask switch { 1 => masked ? (byte)128 : (byte)255, 2 => masked ? (byte)0 : (byte)255, 3 => masked ? (byte)255 : (byte)0, _ => (byte)255 };
+    }
+
+    private RasterImage DirectImage(int x, int y, int width, int height)
+    {
+        var image = new RasterImage(width, height);
         for (int row = 0; row < height; row++)
             for (int column = 0; column < width; column++)
                 image.SetPixel(column, row, ToColor(_vram[(y + row) * 1024 + x + column], false));
         return image;
     }
 
-    private Image IndexedImage(int offset, int width, int height, int paletteOffset)
+    private RasterImage IndexedImage(int offset, int width, int height, int paletteOffset)
     {
-        var image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+        var image = new RasterImage(width, height);
         for (int row = 0; row < height; row++)
             for (int column = 0; column < width; column++)
             {
@@ -111,30 +127,30 @@ public sealed class TitleConversion
     /// E, T, I and N, are the disc's own glyphs. The title has no small S or G, so these two are the disc's
     /// capital S and G reduced to small-capital height. Columns are those of the verified retail words.
     /// </summary>
-    private static Image ComposeSettings(List<Image> words)
+    private static RasterImage ComposeSettings(List<RasterImage> words)
     {
-        Image newGame = words[0], continueWord = words[1], sound = words[3];
+        RasterImage newGame = words[0], continueWord = words[1], sound = words[3];
         // Small capitals in CONTINUE: T, I, N, E. Capitals: S in SOUND, G in NEW GAME.
-        (Image Source, int Start, int End) capitalS = (sound, 38, 50), capitalG = (newGame, 60, 72);
-        (Image Source, int Start, int End) t = (continueWord, 60, 68), i = (continueWord, 68, 73), n = (continueWord, 73, 83), e = (continueWord, 93, 103);
-        (int Top, int Bottom) Rows(Image source, int start, int end)
+        (RasterImage Source, int Start, int End) capitalS = (sound, 38, 50), capitalG = (newGame, 60, 72);
+        (RasterImage Source, int Start, int End) t = (continueWord, 60, 68), i = (continueWord, 68, 73), n = (continueWord, 73, 83), e = (continueWord, 93, 103);
+        (int Top, int Bottom) Rows(RasterImage source, int start, int end)
         {
             int top = MenuWordHeight, bottom = -1;
             for (int y = 0; y < MenuWordHeight; y++)
                 for (int x = start; x < end; x++)
-                    if (source.GetPixel(x, y).R > 0) { top = Math.Min(top, y); bottom = Math.Max(bottom, y); }
+                    if (source.Pixel(x, y).Red > 0) { top = Math.Min(top, y); bottom = Math.Max(bottom, y); }
             return (top, bottom);
         }
-        int[,] Crop((Image Source, int Start, int End) glyph)
+        int[,] Crop((RasterImage Source, int Start, int End) glyph)
         {
             var result = new int[glyph.End - glyph.Start, MenuWordHeight];
             for (int x = glyph.Start; x < glyph.End; x++)
                 for (int y = 0; y < MenuWordHeight; y++)
-                    result[x - glyph.Start, y] = (int)Math.Round(glyph.Source.GetPixel(x, y).R * 255f);
+                    result[x - glyph.Start, y] = glyph.Source.Pixel(x, y).Red;
             return result;
         }
         var small = Rows(continueWord, e.Start, e.End);
-        int[,] Reduce((Image Source, int Start, int End) glyph)
+        int[,] Reduce((RasterImage Source, int Start, int End) glyph)
         {
             // Area-average the capital's palette indices (which rise with brightness) onto small-capital height,
             // bottom-aligned to the small capitals' baseline.
@@ -153,7 +169,7 @@ public sealed class TitleConversion
                         {
                             double overlap = (Math.Min(sx + 1, x1) - Math.Max(sx, x0)) * (Math.Min(sy + 1, y1) - Math.Max(sy, y0));
                             if (overlap <= 0 || sx >= glyph.End || sy >= MenuWordHeight) continue;
-                            sum += glyph.Source.GetPixel(sx, sy).R * 255f * overlap;
+                            sum += glyph.Source.Pixel(sx, sy).Red * overlap;
                             area += overlap;
                         }
                     result[x, y] = area > 0 ? Math.Clamp((int)Math.Round(sum / area), 0, 15) : 0;
@@ -164,7 +180,7 @@ public sealed class TitleConversion
         var letters = new[] { (Crop(capitalS), 0), (Crop(e), 0), (Crop(t), 0), (Crop(t), 0), (Crop(i), 0), (Crop(n), 0), (Reduce(capitalG), 1), (Reduce(capitalS), 1) };
         int total = 0;
         foreach (var (letter, spacing) in letters) total += letter.GetLength(0) + spacing;
-        var word = Image.CreateEmpty(MenuWordWidth, MenuWordHeight, false, Image.Format.L8);
+        var word = new RasterImage(MenuWordWidth, MenuWordHeight, RasterFormat.Luminance8);
         int column = (MenuWordWidth - total) / 2;
         foreach (var (letter, spacing) in letters)
         {
@@ -173,8 +189,8 @@ public sealed class TitleConversion
                 for (int y = 0; y < MenuWordHeight; y++)
                 {
                     if (letter[x, y] == 0) continue;
-                    int existing = (int)Math.Round(word.GetPixel(column + x, y).R * 255f);
-                    word.SetPixel(column + x, y, new Color(Math.Max(existing, letter[x, y]) / 255f, 0, 0));
+                    int existing = word.Pixel(column + x, y).Red;
+                    word.SetPixel(column + x, y, new Rgba32((byte)Math.Max(existing, letter[x, y]), 0, 0));
                 }
             column += letter.GetLength(0);
         }
@@ -188,11 +204,11 @@ public sealed class TitleConversion
     /// The picture retail shows while it loads, "NOW LOADING..." in glowing blue on black, from the verified
     /// executable (SLUS_010.40 at 0x39950: 126 by 20); it stands in the middle of the 320 by 240 screen.
     /// </summary>
-    public static Image Loading(byte[] executable)
+    public static RasterImage Loading(byte[] executable)
     {
         int width = BitConverter.ToUInt16(executable, LoadingOffset), height = BitConverter.ToUInt16(executable, LoadingOffset + 2);
         if (width == 0 || height == 0 || LoadingOffset + 4 + width * height * 2 > executable.Length) throw new InvalidDataException("The loading picture is missing from the executable.");
-        var image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+        var image = new RasterImage(width, height);
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
                 image.SetPixel(x, y, ToColor(BitConverter.ToUInt16(executable, LoadingOffset + 4 + (y * width + x) * 2), true));
@@ -200,20 +216,20 @@ public sealed class TitleConversion
     }
 
     /// <summary>Makes every title image, among <paramref name="images"/>, and returns the layout document.</summary>
-    public JsonObject Export(IDictionary<string, Image> images)
+    public JsonObject Export(IDictionary<string, RasterImage> images)
     {
-        void Save(Image image, string name) => images[name.Replace(".png", "")] = image;
+        void Save(RasterImage image, string name) => images[name.Replace(".png", "")] = image;
 
         Save(IndexedImage(PublisherOffset + 32, 256, 48, PublisherOffset), "publisher.png");
         Save(IndexedImage(DeveloperOffset, 128, 13, DeveloperOffset + 128 * 13 / 2), "developer.png");
         // The visible title is the interlaced 512x448 display area starting at VRAM (512,16).
         Save(DirectImage(512, 16, 512, 448), "title_background.png");
         // The menu panel is two 160x64 direct-colour pages that the title redraws behind the words.
-        var panel = Image.CreateEmpty(160, 128, false, Image.Format.Rgba8);
-        panel.BlitRect(DirectImage(192, 448, 160, 64), new Rect2I(0, 0, 160, 64), Vector2I.Zero);
-        panel.BlitRect(DirectImage(352, 448, 160, 64), new Rect2I(0, 0, 160, 64), new Vector2I(0, 64));
+        var panel = new RasterImage(160, 128);
+        panel.CopyFrom(DirectImage(192, 448, 160, 64), 0, 0, 160, 64);
+        panel.CopyFrom(DirectImage(352, 448, 160, 64), 0, 0, 160, 64, 0, 64);
         Save(panel, "title_panel.png");
-        var copyright = Image.CreateEmpty(180, 24, false, Image.Format.Rgba8);
+        var copyright = new RasterImage(180, 24);
         for (int i = 0; i < 180 * 24; i++) copyright.SetPixel(i % 180, i / 180, ToColor(BitConverter.ToUInt16(_overlay, CopyrightOffset + i * 2), false));
         Save(copyright, "title_copyright.png");
 
@@ -227,17 +243,17 @@ public sealed class TitleConversion
 
         var words = new JsonArray();
         var glows = new JsonArray();
-        var wordImages = new List<Image>();
+        var wordImages = new List<RasterImage>();
         for (int entry = 0; entry < MenuEntries; entry++)
         {
             var (pageX, pageY) = Page(BitConverter.ToUInt32(_overlay, TextPageOffset + entry * 4));
             var (u, v, clutX, clutY) = Uv(BitConverter.ToUInt32(_overlay, TextUvOffset + entry * 4));
             if (clutX != 480 || clutY != 384 + entry) throw new InvalidDataException("A menu word does not use its own CLUT row.");
             // Menu words keep their 4-bit indices; the presentation recolours them as the retail CLUT blends do.
-            var indices = Image.CreateEmpty(MenuWordWidth, MenuWordHeight, false, Image.Format.L8);
+            var indices = new RasterImage(MenuWordWidth, MenuWordHeight, RasterFormat.Luminance8);
             for (int row = 0; row < MenuWordHeight; row++)
                 for (int column = 0; column < MenuWordWidth; column++)
-                    indices.SetPixel(column, row, new Color(Texel(pageX, pageY, u + column, v + row) / 255f, 0, 0));
+                    indices.SetPixel(column, row, new Rgba32((byte)Texel(pageX, pageY, u + column, v + row), 0, 0));
             Save(indices, $"title_word_{entry}.png");
             wordImages.Add(indices);
             words.Add(new JsonObject { ["file"] = $"title_word_{entry}.png" });
@@ -247,7 +263,7 @@ public sealed class TitleConversion
             if (clutX != 480 || clutY != 394) throw new InvalidDataException("A menu glow does not use the glow CLUT row.");
             uint size = BitConverter.ToUInt32(_overlay, GlowSizeOffset + entry * 4), origin = BitConverter.ToUInt32(_overlay, GlowOriginOffset + entry * 4);
             int width = (int)(size & 0xFFFF), height = (int)(size >> 16);
-            var glow = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+            var glow = new RasterImage(width, height);
             for (int row = 0; row < height; row++)
                 for (int column = 0; column < width; column++)
                     glow.SetPixel(column, row, ToColor(BitConverter.ToUInt16(_overlay, PaletteTableOffset + 32 * 2 + Texel(pageX, pageY, u + column, v + row) * 2), true));

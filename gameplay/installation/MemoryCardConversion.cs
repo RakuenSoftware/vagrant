@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using System.Text.Json.Nodes;
 
+using Wol.Engine.Imaging;
+
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
@@ -44,7 +46,7 @@ public static class MemoryCardConversion
     /// palette and the rest in its second. Column 0 holds NEW DATA, USED, the container's chest, ERROR and NO DATA;
     /// location n - 1 (0 to 47) is the 64 by 32 cell at column 1 + (n &amp; 8) / 8 + (n &amp; 0x30) / 8, row n &amp; 7.
     /// </summary>
-    public static Godot.Image Pictures(byte[] pictures, byte[] palettes)
+    public static RasterImage Pictures(byte[] pictures, byte[] palettes)
     {
         if (pictures.Length < 448 * 256 || palettes.Length < 1024) throw new InvalidDataException("The save pictures are truncated.");
         var rgba = new byte[448 * 256 * 4];
@@ -54,8 +56,8 @@ public static class MemoryCardConversion
                 int palette = x / 64 is >= 1 and <= 4 ? 0 : 512;
                 int colour = BitConverter.ToUInt16(palettes, palette + pictures[y * 448 + x] * 2), at = (y * 448 + x) * 4;
                 var shown = TitleConversion.ToColor((ushort)colour, false);
-                (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, 255);
+                (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]) = ((byte)shown.Red, (byte)shown.Green, (byte)shown.Blue, 255);
             }
-        return Godot.Image.CreateFromData(448, 256, false, Godot.Image.Format.Rgba8, rgba);
+        return new RasterImage(448, 256, RasterFormat.Rgba8, rgba);
     }
 }

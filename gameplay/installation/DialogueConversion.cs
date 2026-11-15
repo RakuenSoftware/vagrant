@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -62,7 +62,7 @@ public sealed class DialogueConversion
     }
 
     /// <summary>Writes the font image and returns its definition, in the shape the field presentation builds a bitmap font from.</summary>
-    public JsonObject Export(IDictionary<string, Image> images) =>
+    public JsonObject Export(IDictionary<string, RasterImage> images) =>
         // The sheet holds two sets of the glyphs, 9 rows of 12 apart: an upright one, and below it the hand-lettered
         // italic capitals the field's balloons and its HUD print in.
         Sheet(images, "dialogue_font", LetteredRow, _palette, _widths);
@@ -73,23 +73,23 @@ public sealed class DialogueConversion
     /// to their core (14 and 15), as the second ramp of the font table's next row (VRAM (848, 223)) runs from dark to
     /// white. The advances are the fixed-width set's (all 6; BATTLE.PRG 0x83010). Returns its definition.
     /// </summary>
-    public JsonObject ExportPlain(IDictionary<string, Image> images)
+    public JsonObject ExportPlain(IDictionary<string, RasterImage> images)
     {
         int fontOffset = (int)BitConverter.ToUInt32(_system, 28), palette = fontOffset + (223 * 64 + 16) * 2;
         return Sheet(images, "system_font", 0, _system[palette..(palette + 32)], _battle[(WidthTableOffset - Glyphs)..WidthTableOffset]);
     }
 
-    private JsonObject Sheet(IDictionary<string, Image> images, string name, int row, byte[] palette, byte[] widths)
+    private JsonObject Sheet(IDictionary<string, RasterImage> images, string name, int row, byte[] palette, byte[] widths)
     {
         int rows = (Glyphs + Columns - 1) / Columns;
-        var image = Image.CreateEmpty(Columns * Cell, rows * Cell, false, Image.Format.Rgba8);
+        var image = new RasterImage(Columns * Cell, rows * Cell);
         for (int y = 0; y < rows * Cell; y++)
             for (int x = 0; x < Columns * Cell; x++)
             {
                 int packed = _font[(y + row) * 128 + x / 2], index = (x & 1) == 0 ? packed & 15 : packed >> 4;
                 int colour = BitConverter.ToUInt16(palette, index * 2), level = colour & 31;
                 byte value = (byte)((level << 3) | (level >> 2));
-                image.SetPixel(x, y, Color.Color8(value, value, value, index == 0 ? (byte)0 : (byte)255));
+                image.SetPixel(x, y, new Rgba32(value, value, value, index == 0 ? (byte)0 : (byte)255));
             }
         images[name + "_image"] = image;
         var glyphs = new JsonObject();
@@ -201,12 +201,12 @@ public sealed class DialogueConversion
     }
 
     /// <summary>The speech balloons' shapes, and the paper they are drawn on among the images.</summary>
-    public JsonObject Balloons(IDictionary<string, Image> images)
+    public JsonObject Balloons(IDictionary<string, RasterImage> images)
     {
         int page = (int)BitConverter.ToUInt32(_system, 4), fontOffset = (int)BitConverter.ToUInt32(_system, 28);
         int pageWidth = BitConverter.ToInt16(_system, page + 4) * 4;
         int clut = fontOffset + 0xE000 + ((220 - 66) * 64 + (992 - 960)) * 2;
-        var tile = Image.CreateEmpty(64, 64, false, Image.Format.Rgba8);
+        var tile = new RasterImage(64, 64);
         for (int y = 0; y < 64; y++)
             for (int x = 0; x < 64; x++)
             {

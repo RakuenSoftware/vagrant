@@ -29,7 +29,7 @@ public partial class EffectContracts : Node
             if (disc.Length == 0 || scratch.Length == 0) throw new InvalidOperationException("pass --disc= and --scratch=");
             Directory.CreateDirectory(scratch);
             using var image = PlayStationDisc.Open(disc, RetailDisc.Catalog);
-            var images = new Dictionary<string, Image>();
+            var images = new Dictionary<string, Wol.Engine.Imaging.RasterImage>();
             int converted = 0, textured = 0, records = 0;
             for (int id = 0; id < 320; id++)
             {
