@@ -36,6 +36,14 @@ class DesktopRelease:
         print("+", " ".join(map(str, command)), flush=True)
         subprocess.run(list(map(str, command)), cwd=cwd or self.root, check=True)
 
+    def verify_projection(self):
+        editor, _ = self.prepare()
+        self.run("dotnet", "build", self.root / "Vagrant.csproj", "--nologo")
+        self.run(editor, "--headless", "--editor", "--import", "--path", self.root, "--quit")
+        with tempfile.TemporaryDirectory(prefix="vagrant-projection-") as temporary:
+            self.run(editor, "--headless", "--path", self.root, "res://tests/actor_projection_contracts.tscn",
+                     "--", "--install-root=" + temporary)
+
     def download(self, filename):
         base = f"https://github.com/godotengine/godot/releases/download/{self.VERSION}-stable/"
         sums = urllib.request.urlopen(base + "SHA512-SUMS.txt").read().decode()
@@ -400,6 +408,7 @@ if __name__ == "__main__":
     parser.add_argument("--output")
     parser.add_argument("--vendor-runtime", nargs=3, metavar="SDK_ZIP", help="Vendor three upstream release SDKs; this maintainer operation is never run by CI")
     parser.add_argument("--media-only", action="store_true", help="Build only the bundled FFmpeg/ffprobe tools from pinned sources")
+    parser.add_argument("--verify-projection", action="store_true", help="Run synthetic attached-rig projection checks without game data")
     parser.add_argument("--prepare", action="store_true", help="Prepare the public editor/templates against vendored API binaries for development")
     parser.add_argument("--audit", type=Path, help="Audit an existing player directory without building")
     args = parser.parse_args()
@@ -410,6 +419,8 @@ if __name__ == "__main__":
         parser.error("a desktop target is required")
     elif args.media_only:
         release.bundle_media(Path(args.output or "dist/media").resolve())
+    elif args.verify_projection:
+        release.verify_projection()
     elif args.prepare:
         editor, _ = release.prepare()
         print("QUALIFIED_EDITOR:", editor)

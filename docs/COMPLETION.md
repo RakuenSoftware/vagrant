@@ -22,6 +22,15 @@ verify each against the current owner before treating that historical list as a 
 
 ## Confirmed defects and remaining gaps
 
+- **Attached weapon geometry during close-ups, repaired.** The close-camera projector walked all skinned
+  meshes in an actor but evaluated their binds through the body's skeleton, including a weapon's separate
+  skeleton. That can place sword geometry through Ashley or leave a stray piece during a camera move.
+  It now resolves each mesh's bound skeleton and global frame, preserves named as well as numeric binds,
+  and respects hidden attachment parents. A synthetic two-skeleton fixture fails before the repair and
+  passes after it, covering independent body placement, moving attachments and visibility. Native CI runs
+  this fixture without retail data. The retail cart intentionally occludes part of the crouching close-up;
+  its room geometry and scene framing are preserved.
+
 - **Audio starvation during combat/render stalls, repaired.** The output producer formerly ran in
   `SoundDriver._Process`, so a long game frame could drain its short playback buffer. Device audio now
   has an independent producer, with serialized access to its interpreter/SPU and joined teardown;
