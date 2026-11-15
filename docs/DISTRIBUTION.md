@@ -24,14 +24,15 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-8fd3e8780c985721730855396de987e59e268fcf`. Native Linux, Windows and
+`runtime-e630d1a33560d2a449747f00b4700f4770060793`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK includes the reused-dialogue sizing fix and moves four painted shader
+This SDK adds the shared controller motor output API, retains the reused-dialogue
+sizing fix and moves four painted shader
 programs into their existing compiled C# owners. There are no loose shader
 implementations or owned debug symbols in the dependency update. Earlier
 versions distributed those four shader files; removing them here does not
