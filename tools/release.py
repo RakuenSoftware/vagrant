@@ -38,11 +38,23 @@ class DesktopRelease:
 
     def verify_projection(self):
         editor, _ = self.prepare()
-        self.run("dotnet", "build", self.root / "Vagrant.csproj", "--nologo")
-        self.run(editor, "--headless", "--editor", "--import", "--path", self.root, "--quit")
-        with tempfile.TemporaryDirectory(prefix="vagrant-projection-") as temporary:
-            self.run(editor, "--headless", "--path", self.root, "res://tests/actor_projection_contracts.tscn",
-                     "--", "--install-root=" + temporary)
+        # Editor import creates UID metadata beside scripts. Keep those writes out of the immutable SDK.
+        with tempfile.TemporaryDirectory(prefix="vagrant-projection-", dir=self.cache) as temporary:
+            stage = Path(temporary)
+            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg",
+                         "installation", "runtime", "scenes", "tests"):
+                source = self.root / name
+                if source.is_dir():
+                    shutil.copytree(source, stage / name)
+                else:
+                    shutil.copy2(source, stage / name)
+            shutil.copytree(self.engine, stage / "addons/wol_engine")
+            (stage / ".godot").mkdir()
+            (stage / ".godot/extension_list.cfg").write_text("res://addons/wol_engine/native/spatial.gdextension\n")
+            self.run("dotnet", "build", stage / "Vagrant.csproj", "--nologo")
+            self.run(editor, "--headless", "--editor", "--import", "--path", stage, "--quit")
+            self.run(editor, "--headless", "--path", stage, "res://tests/actor_projection_contracts.tscn",
+                     "--", "--install-root=" + str(stage / "empty-installation"))
 
     def download(self, filename):
         base = f"https://github.com/godotengine/godot/releases/download/{self.VERSION}-stable/"
