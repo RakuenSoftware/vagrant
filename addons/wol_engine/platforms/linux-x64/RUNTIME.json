@@ -2,7 +2,7 @@
   "schema": 1,
   "target": "linux-x64",
   "godot": "4.7.2",
-  "commit": "562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "commit": "e98acb9c5d6516f0e8f920e04e86995036e1265b",
   "editor": "editor/Godot_v4.7.2-stable_mono_linux.x86_64",
   "files": {
     "WolEngine.props": "f654a34d1d9c44026fbcca08df462f53e0ff13486ce0d77e43f9fe4723a7ef41",
@@ -318,6 +318,14 @@
     "editor/GodotSharp/Api/Debug/GodotSharpEditor.dll": "48c963d369a980ffd2f258a3d86beda1a05ec2d9dc713d307ba3d4ed592c9b3c",
     "native/bin/libspatial.linux.template_release.x86_64.so": "de8a5565cd550f28e63362a9f70bd62d7464f7de3b4d105b402675d8a2757ecc",
     "managed/Release/WolEngine.dll": "6a61152afdc99b2ce65271e15299dc66cde08cf64785b177cae1e51fcb8739fb",
-    "managed/Debug/WolEngine.dll": "5d7b7cf9a7a4659377efda968205928260c50a3eec9e84c2529b1f9532debb02"
-  }
+    "managed/Debug/WolEngine.dll": "5d7b7cf9a7a4659377efda968205928260c50a3eec9e84c2529b1f9532debb02",
+    "runtime/branding/wol_splash.png": "6002156e31b863cee2b989ec049f38d44c7e80bd32ba17202327c7d65310d5a6",
+    "runtime/branding/README.md": "9f312286d9673432848fc23388fd569dafeda637dbcfdebb986867244ebe5c78",
+    "runtime/branding/wol.svg": "863e494b85788d0057026ff0ba0a9fba650a8f84aa531cde5dcfd7d230f20faf",
+    "runtime/branding/wol_icon.png": "4d79db17b93d5e7264c09b5c67a87c990122b2da29d20facf2100bde8745e381",
+    "runtime/branding/wol_splash.svg": "ad79e95024c53ce9c4d58e849d87f2e3269075bd007f50ace48acdb66a8400de"
+  },
+  "binary_commit": "562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "base_release": "runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148",
+  "release": "https://github.com/RakuenSoftware/wol-engine/releases/tag/resources-e98acb9c5d6516f0e8f920e04e86995036e1265b"
 }

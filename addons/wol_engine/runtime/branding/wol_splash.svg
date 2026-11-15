@@ -1,0 +1,6 @@
+<svg width="1920" height="1080" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <!-- The launch splash: the WoL emblem (wol.svg, drawn from that one file) over the engine's name. -->
+  <rect width="1920" height="1080" fill="#000000"/>
+  <image x="800" y="300" width="320" height="320" href="wol.svg" xlink:href="wol.svg"/>
+  <text x="960" y="745" text-anchor="middle" font-family="Noto Sans" font-weight="600" font-size="76" letter-spacing="2" fill="#e8ecff">Wol engine</text>
+</svg>

@@ -5,6 +5,12 @@ config_version=5
 [application]
 
 config/name="Project Vagrant"
+config/icon="res://addons/wol_engine/runtime/branding/wol_icon.png"
+boot_splash/show_image=true
+boot_splash/image="res://addons/wol_engine/runtime/branding/wol_splash.png"
+boot_splash/bg_color=Color(0, 0, 0, 1)
+boot_splash/stretch_mode=1
+boot_splash/use_filter=true
 ; Keep existing installations, saves and preferences in the original user-data directory.
 config/use_custom_user_dir=true
 config/custom_user_dir_name="godot/app_userdata/Vagrant"

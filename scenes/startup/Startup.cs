@@ -76,6 +76,17 @@ public partial class Startup : Control
                             throw new InvalidOperationException("Retail disc content/signature in player: " + path);
                     }
                 }
+                const string branding = "res://addons/wol_engine/runtime/branding/";
+                if (ProjectSettings.GetSetting("application/config/icon").AsString() != branding + "wol_icon.png"
+                    || ProjectSettings.GetSetting("application/boot_splash/image").AsString() != branding + "wol_splash.png"
+                    || !ProjectSettings.GetSetting("application/boot_splash/show_image").AsBool())
+                    throw new InvalidOperationException("The player must use the shared WoL launch splash and window icon.");
+                foreach (string image in new[] { "wol_icon.png", "wol_splash.png" })
+                {
+                    var texture = GD.Load<Texture2D>(branding + image);
+                    if (texture == null || texture.GetWidth() == 0 || texture.GetHeight() == 0)
+                        throw new InvalidOperationException("Missing shared WoL branding image: " + image);
+                }
                 RetailInstallation.VerifyMediaTools();
                 GD.Print("MEDIA_TOOLS_OK: bundled video/audio conversion and probe work with no PATH dependencies");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
