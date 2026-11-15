@@ -225,7 +225,8 @@ class DesktopRelease:
                 archive = supplied
             elif not archive.is_file():
                 partial = archive.with_suffix(".download")
-                urllib.request.urlretrieve(source["url"], partial)
+                self.run("curl", "--fail", "--location", "--retry", "4", "--retry-all-errors",
+                         "--connect-timeout", "30", "--max-time", "600", "--output", partial, source["url"])
                 partial.replace(archive)
             with archive.open("rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != source["sha256"]:
