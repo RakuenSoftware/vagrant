@@ -138,7 +138,7 @@ class DesktopRelease:
                             if data.strip():
                                 raise RuntimeError("Engine implementation source is not vendored")
                             data = b"\n"
-                        if path.suffix in (".txt", ".uid", ".tscn", ".gdshader", ".gdextension", ".props", ".json"):
+                        if path.suffix in (".txt", ".md", ".svg", ".uid", ".tscn", ".gdextension", ".props", ".json"):
                             data = data.replace(b"\r\n", b"\n")
                         if name.startswith(("managed/", ".dependencies/")) or name in ("GodotApi.props", "WolEngine.props"):
                             destination = stage / "platforms" / target / path

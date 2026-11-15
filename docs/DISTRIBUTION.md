@@ -23,24 +23,26 @@ platform also retains its original RUNTIME.json from the SDK. Managed/native
 binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
-The current SDK is the published
-`resources-e98acb9c5d6516f0e8f920e04e86995036e1265b` release. Its platform
-binaries are retained byte for byte from the native-CI-qualified
-`runtime-562646427f09ed44b7eff0a1f67f8e2e5742b148` release. The private engine CI
-verified the original archive/file hashes, rejected implementation/native-build
-changes, and added the shared WoL branding resources. RUNTIME.json and VENDOR.json
-record the SDK resource revision separately from the original binary commit.
-The game uses those shared assets for the startup splash, window icon and native
-Windows/macOS export icons. The build-time editor remains omitted from the
-vendored game dependency. No private engine source checkout, SDK source cache or
-build tools are vendored.
+The current SDK is the public `RakuenSoftware/wol-engine-release` release
+`runtime-8fd3e8780c985721730855396de987e59e268fcf`. Native Linux, Windows and
+universal macOS CI compiled and qualified each SDK from that exact private
+engine tag. A separate job independently audited all three SDKs before
+publication. Each archive and every member file has a verified SHA-256 record.
+The game vendors the downloaded release assets; its CI never fetches or builds
+private engine source.
 
-Future SDK updates come from the public `RakuenSoftware/wol-engine-release`
-repository. Its controlled native CI temporarily reads private source and
-publishes audited binaries only. The updater accepts exact `runtime-<commit>`
-release URLs from that repository, while retaining the original engine's exact
-runtime/resource release URLs for older SDKs. The vendored dependency above
-remains unchanged until the first new SDK release is available.
+This SDK includes the reused-dialogue sizing fix and moves four painted shader
+programs into their existing compiled C# owners. There are no loose shader
+implementations or owned debug symbols in the dependency update. Earlier
+versions distributed those four shader files; removing them here does not
+revoke existing downloads. Compiled assemblies, including their shader strings,
+remain inspectable. Shared WoL artwork provides the startup splash, window icon
+and native Windows/macOS export icons. The build-time editor, source checkouts,
+SDK source caches and engine build tools are omitted from the vendored game.
+
+The updater accepts exact `runtime-<commit>` release URLs from the public release
+repository, retaining the original engine's exact runtime/resource release URLs
+for older SDK provenance.
 
 Only a maintainer updating the dependency downloads the SDKs. Download all three
 SDK ZIPs and their adjacent `.zip.sha256` files from one published release. Preserve the old addon outside the checkout, then run:
@@ -52,8 +54,7 @@ python tools/release.py --vendor-runtime /path/to/linux-sdk.zip \
 
 The updater checks archive/file hashes, matching commits and targets, compares
 shared resources, rejects implementation source, and writes a new vendored tree.
-New dependency updates reject loose shader programs as implementation source;
-the current older SDK still contains four such files, pending replacement.
+Dependency updates reject loose shader programs as implementation source.
 It refuses to overwrite an existing addon. Review and commit that directory and
 VENDOR.json together. CI never runs this maintainer operation.
 
