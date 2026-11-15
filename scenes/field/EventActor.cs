@@ -571,6 +571,13 @@ public sealed class EventActor
         if (Scene != null && Scene.Actors.ContainsKey(Id)) Scene.SetActorVisible(Id, Visible); else Node.Visible = Visible;
         if (Parent?.Skeleton is { } skeleton && Parent.SkeletonBone(ParentBone) is >= 0 and var held)
         {
+            // A static prop's standalone rest pose is for placement in the room. Once attached, its
+            // first two bones inherit the mounting frame instead of adding the humanoid rest turn/lift.
+            if (Player?.AssignedAnimation == "rest" && Skeleton is { } own)
+            {
+                own.ResetBonePose(0);
+                if (own.GetBoneCount() > 1) own.ResetBonePose(1);
+            }
             var bone = skeleton.GlobalTransform * skeleton.GetBoneGlobalPose(held);
             Scene?.UpdateCharacterDirection(Id, false, 0);
             Scene?.SetActorBody(Id, Basis.Identity);

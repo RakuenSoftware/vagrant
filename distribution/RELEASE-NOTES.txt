@@ -15,10 +15,9 @@ verifies its files locally. No retail game assets, disc images, BIOS, original-g
 dialogue, manual or installed-disc cache are supplied in these packages.
 
 FFmpeg and ffprobe are bundled; no separate installation or PATH configuration is needed.
-This update fixes attached weapon geometry being projected through the body skeleton
-during close-ups, which could place the sword through Ashley or leave stray geometry.
-The audio-stall and shared hit-resource repairs from preview.6 and STR/XA installation
-support from preview.5 are retained.
+This update restores the intro's separately attached sword prop by removing its
+extra standalone resting pose while mounted to another actor. The weapon projection,
+audio-stall, shared hit-resource and STR/XA installation repairs are retained.
 The matching FFmpeg/Xiph source and build instructions are in the adjacent
 ProjectVagrant-media-sources.zip download.
 macOS previews are ad-hoc signed and are not notarized. This is preview software;

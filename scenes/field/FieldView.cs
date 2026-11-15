@@ -4219,7 +4219,11 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         // Room faces and characters the camera stands close to are drawn as the GTE and GPU would show them.
         DropNearFaces();
         bool staged = _eventCamera && !Controlled;
-        foreach (var actor in Actors.Values) actor.ProjectAsRetail(Field.Camera, staged ? EventProjection : Gameplay.Projection, staged ? _eventFar : 4096);
+        foreach (var actor in Actors.Values)
+        {
+            if (actor.Parent != null) actor.Apply();
+            actor.ProjectAsRetail(Field.Camera, staged ? EventProjection : Gameplay.Projection, staged ? _eventFar : 4096);
+        }
         foreach (var effect in _effects) (effect.Projection, effect.NearLimit) = (staged ? EventProjection : Gameplay.Projection, (staged ? EventProjection : Gameplay.Projection) / 2 * 4096 / (staged ? _eventFar : 4096));
         PlaceSky();
         // The simple map shows while Ashley is in hand, the HUD is up and nothing pauses the field.

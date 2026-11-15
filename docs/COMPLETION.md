@@ -22,6 +22,14 @@ verify each against the current owner before treating that historical list as a 
 
 ## Confirmed defects and remaining gaps
 
+- **Intro sword prop attachment, repaired.** A static prop retained the standalone resting lift/hip turn
+  after being attached to another actor's bone. The intro's separate rapier could consequently miss its
+  intended position in the corpse. Attached static props now take the mounting frame without that extra
+  resting pose, and are placed after the parent's animation advances. Standalone props and ordinary held
+  weapons retain their existing poses. The expanded synthetic regression fails on the previous code and
+  passes after the repair, including restoration of the standalone pose after detachment. The owned-disc
+  intro was checked on an isolated rendered display, with the sword visible again.
+
 - **Attached weapon geometry during close-ups, repaired.** The close-camera projector walked all skinned
   meshes in an actor but evaluated their binds through the body's skeleton, including a weapon's separate
   skeleton. That can place sword geometry through Ashley or leave a stray piece during a camera move.
