@@ -59,7 +59,7 @@ for arch in $architectures; do
         --enable-libtheora --enable-libvorbis --pkg-config-flags=--static "--pkg-config=$PKG_CONFIG" \
         "--extra-cflags=$CFLAGS $CPPFLAGS" "--extra-ldflags=$LDFLAGS" \
         --enable-protocol=file \
-        --enable-demuxer=psxstr,ogg,wav --enable-indev=lavfi \
+        --enable-demuxer=str,ogg,wav --enable-indev=lavfi \
         --enable-decoder=mdec,adpcm_xa,pcm_s16le,rawvideo,wrapped_avframe,theora,vorbis \
         --enable-encoder=libtheora,libvorbis,pcm_s16le \
         --enable-muxer=ogg,wav,null \

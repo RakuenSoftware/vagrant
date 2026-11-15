@@ -88,7 +88,7 @@ public partial class Startup : Control
                         throw new InvalidOperationException("Missing shared WoL branding image: " + image);
                 }
                 RetailInstallation.VerifyMediaTools();
-                GD.Print("MEDIA_TOOLS_OK: bundled video/audio conversion and probe work with no PATH dependencies");
+                GD.Print("MEDIA_TOOLS_OK: bundled STR/XA decoding, video/audio conversion and probe work with no PATH dependencies");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
                 GetTree().Quit();
             }
