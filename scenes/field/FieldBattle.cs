@@ -664,11 +664,11 @@ public sealed partial class FieldBattle
     public int HitPointPercent(string id) =>
         Combatants.TryGetValue(id, out var c) && c.MaxHp > 0 ? (int)Math.Ceiling(c.Hp * 100.0 / c.MaxHp) : 0;
 
-    /// <summary>The living hostile characters.</summary>
+    /// <summary>Bodies on hostile side 4, as retail 0x8007CF80 counts them; zero HP awaits the death tick.</summary>
     public int HostileCount()
     {
         int count = 0;
-        foreach (var c in Combatants.Values) if (c.Targetable) count++;
+        foreach (var c in Combatants.Values) if (c.Side == 4) count++;
         return count;
     }
 

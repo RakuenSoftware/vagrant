@@ -291,9 +291,16 @@ public partial class RetailContent : Node
         using var state = new GltfState();
         if (document.AppendFromBuffer(model, "", state) != Error.Ok || document.GenerateScene(state) is not Node3D scene)
             throw new InvalidDataException($"The installed {name} could not be read.");
-        // The rig's own sets (base and battle) loop; glTF does not keep that.
+        // glTF loses loop flags. The decoder owns them: half-strides that hand off to the
+        // adjacent slot must finish, whereas a script's restart keeps its clip looping.
+        var looping = name.StartsWith("weapon_", StringComparison.Ordinal) ? null : Field.Character(name)?.Definition["looping"]?.AsArray();
         foreach (var node in scene.FindChildren("*", "AnimationPlayer", true, false))
-            foreach (var clip in ((AnimationPlayer)node).GetAnimationList()) ((AnimationPlayer)node).GetAnimation(clip).LoopMode = Animation.LoopModeEnum.Linear;
+            foreach (var clip in ((AnimationPlayer)node).GetAnimationList())
+            {
+                bool loop = looping == null;
+                if (looping != null) foreach (var value in looping) loop |= value?.GetValue<string>() == clip.ToString();
+                ((AnimationPlayer)node).GetAnimation(clip).LoopMode = loop ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
+            }
         // glTF keeps a mesh's vertex colours but not the material's use of them: a Gouraud-shaded model's colours
         // (the dragons', the shaded props') multiply its texture, doubled, as the PSX's 0x80 leaves a texel as it is.
         foreach (var node in scene.FindChildren("*", "MeshInstance3D", true, false))

@@ -86,6 +86,7 @@ public partial class CharacterQuality : Node
             bool skinned = arrays[(int)Mesh.ArrayType.Bones].VariantType != Variant.Type.Nil;
             var positions = new List<Vector3>(arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array());
             var uvs = arrays[(int)Mesh.ArrayType.TexUV].VariantType == Variant.Type.Nil ? new List<Vector2>(new Vector2[positions.Count]) : new List<Vector2>(arrays[(int)Mesh.ArrayType.TexUV].AsVector2Array());
+            var colours = arrays[(int)Mesh.ArrayType.Color].VariantType == Variant.Type.Nil ? null : new List<Color>(arrays[(int)Mesh.ArrayType.Color].AsColorArray());
             var owner = new List<int>();
             if (skinned)
             {
@@ -102,7 +103,7 @@ public partial class CharacterQuality : Node
             // Only a head that is one shell is rounded: a layered one (a hood over a face, a helmet's brim) would
             // push its outer layer through its inner one (the hooded soldier in MAP003).
             rounds &= Closed(positions, owner, indices, head);
-            for (int level = 0; rounds && level < 2; level++) Divide(positions, uvs, owner, indices, head);
+            for (int level = 0; rounds && level < 2; level++) Divide(positions, uvs, colours, owner, indices, head);
             var output = new Godot.Collections.Array();
             output.Resize((int)Mesh.ArrayType.Max);
             output[(int)Mesh.ArrayType.Vertex] = positions.ToArray();
@@ -117,12 +118,7 @@ public partial class CharacterQuality : Node
                 output[(int)Mesh.ArrayType.Weights] = newWeights;
             }
             output[(int)Mesh.ArrayType.Index] = indices.ToArray();
-            if (arrays[(int)Mesh.ArrayType.Color].VariantType != Variant.Type.Nil)
-            {
-                var colours = new List<Color>(arrays[(int)Mesh.ArrayType.Color].AsColorArray());
-                while (colours.Count < positions.Count) colours.Add(Colors.White);
-                output[(int)Mesh.ArrayType.Color] = colours.ToArray();
-            }
+            if (colours != null) output[(int)Mesh.ArrayType.Color] = colours.ToArray();
             result.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, output);
             result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, material);
         }
@@ -215,7 +211,7 @@ public partial class CharacterQuality : Node
     }
 
     /// <summary>One level of <see cref="Rounded"/>'s division over the triangles wholly on <paramref name="head"/>.</summary>
-    private static void Divide(List<Vector3> positions, List<Vector2> uvs, List<int> owner, List<int> indices, int head)
+    private static void Divide(List<Vector3> positions, List<Vector2> uvs, List<Color>? colours, List<int> owner, List<int> indices, int head)
     {
         (int, int, int) Key(Vector3 p) => ((int)MathF.Round(p.X * 64), (int)MathF.Round(p.Y * 64), (int)MathF.Round(p.Z * 64));
         bool OnHead(int t) => owner[indices[t]] == head && owner[indices[t + 1]] == head && owner[indices[t + 2]] == head;
@@ -242,6 +238,7 @@ public partial class CharacterQuality : Node
                 middle -= ((b - a).Dot(na) * na + (a - b).Dot(nb) * nb) / 8;
             positions.Add(middle);
             uvs.Add((uvs[i] + uvs[j]) / 2);
+            colours?.Add(colours[i].Lerp(colours[j], 0.5f));
             owner.Add(head);
             return made[(Math.Min(i, j), Math.Max(i, j))] = positions.Count - 1;
         }

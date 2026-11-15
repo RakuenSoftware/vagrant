@@ -53,8 +53,9 @@ class DesktopRelease:
             (stage / ".godot/extension_list.cfg").write_text("res://addons/wol_engine/native/spatial.gdextension\n")
             self.run("dotnet", "build", stage / "Vagrant.csproj", "--nologo")
             self.run(editor, "--headless", "--editor", "--import", "--path", stage, "--quit")
-            self.run(editor, "--headless", "--path", stage, "res://tests/actor_projection_contracts.tscn",
-                     "--", "--install-root=" + str(stage / "empty-installation"))
+            for scene in ("actor_projection_contracts", "animation_script_contracts", "room_ordering_contracts"):
+                self.run(editor, "--headless", "--path", stage, f"res://tests/{scene}.tscn",
+                         "--", "--install-root=" + str(stage / "empty-installation"))
 
     def download(self, filename):
         base = f"https://github.com/godotengine/godot/releases/download/{self.VERSION}-stable/"
@@ -108,7 +109,12 @@ class DesktopRelease:
                     if release.setdefault("commit", commit) != commit:
                         raise RuntimeError("Engine SDK commits do not match")
                     source_release = manifest.get("release", "https://github.com/RakuenSoftware/wol-engine/releases/tag/runtime-" + commit)
-                    if not source_release.startswith("https://github.com/RakuenSoftware/wol-engine/releases/tag/"):
+                    allowed_releases = {
+                        "https://github.com/RakuenSoftware/" + repository + "/releases/tag/" + prefix + commit
+                        for repository, prefixes in (("wol-engine", ("runtime-", "resources-")), ("wol-engine-release", ("runtime-",)))
+                        for prefix in prefixes
+                    }
+                    if source_release not in allowed_releases:
                         raise RuntimeError("Unexpected engine release provenance")
                     if release.setdefault("release", source_release) != source_release:
                         raise RuntimeError("Engine SDK releases do not match")
@@ -126,7 +132,7 @@ class DesktopRelease:
                             raise RuntimeError("Engine release file checksum mismatch: " + name)
                         if name.startswith("editor/"):
                             continue
-                        if path.suffix in (".cpp", ".hpp", ".h", ".pdb", ".csproj", ".sln"):
+                        if path.suffix.lower() in (".c", ".cpp", ".cc", ".cxx", ".hpp", ".h", ".hxx", ".pdb", ".snupkg", ".csproj", ".sln", ".gd", ".gdshader", ".gdshaderinc", ".glsl", ".hlsl", ".shader", ".py", ".sh", ".ps1", ".js", ".ts", ".rs", ".map", ".log"):
                             raise RuntimeError("Implementation/development file in engine SDK: " + name)
                         if path.suffix == ".cs":
                             if data.strip():
@@ -224,7 +230,8 @@ class DesktopRelease:
                 archive = supplied
             elif not archive.is_file():
                 partial = archive.with_suffix(".download")
-                urllib.request.urlretrieve(source["url"], partial)
+                self.run("curl", "--fail", "--location", "--retry", "4", "--retry-all-errors",
+                         "--connect-timeout", "30", "--max-time", "600", "--output", partial, source["url"])
                 partial.replace(archive)
             with archive.open("rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != source["sha256"]:
