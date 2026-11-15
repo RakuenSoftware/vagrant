@@ -60,7 +60,34 @@ public partial class ActorProjectionContracts : Node
                 if(!projected.IsVisibleInTree()) throw new InvalidOperationException("A visible attachment did not return.");
                 root.Free(); root=null; camera.Free();camera=null;
             }
-            GD.Print("ACTOR_PROJECTION_CONTRACTS_OK: numeric/named skin binds, body independence, moving and hidden attachments");
+            root = new Node3D(); AddChild(root);
+            var mountingRig = new Node3D(); root.AddChild(mountingRig);
+            var mountingBones = new Skeleton3D(); mountingRig.AddChild(mountingBones);
+            mountingBones.AddBone("b0"); mountingBones.SetBoneRest(0,Transform3D.Identity);
+            var prop = new Node3D(); root.AddChild(prop);
+            var propBones = new Skeleton3D {Name="PropBones"}; prop.AddChild(propBones);
+            propBones.AddBone("b0"); propBones.AddBone("b1"); propBones.SetBoneParent(1,0);
+            propBones.SetBoneRest(0,Transform3D.Identity); propBones.SetBoneRest(1,Transform3D.Identity);
+            var player = new AnimationPlayer(); prop.AddChild(player);
+            var rest = new Animation {Length=1};
+            int track=rest.AddTrack(Animation.TrackType.Position3D); rest.TrackSetPath(track,"PropBones:b0");
+            rest.PositionTrackInsertKey(track,0,new Vector3(0,3,0));
+            track=rest.AddTrack(Animation.TrackType.Rotation3D); rest.TrackSetPath(track,"PropBones:b1");
+            rest.RotationTrackInsertKey(track,0,new Quaternion(Vector3.Right,Mathf.Pi/2));
+            var library=new AnimationLibrary(); library.AddAnimation("rest",rest); player.AddAnimationLibrary("",library);
+            player.Play("rest"); player.Advance(0);
+            var standalone = new EventActor("prop",0,prop);
+            standalone.Apply();
+            if(propBones.GetBonePosePosition(0).Y!=3) throw new InvalidOperationException("Standalone prop lost its resting pose.");
+            standalone.Parent=new EventActor("mount",0,mountingRig); standalone.ParentBone=0;
+            standalone.Apply();
+            if(!propBones.GetBonePose(0).IsEqualApprox(Transform3D.Identity)
+                || !propBones.GetBonePose(1).IsEqualApprox(Transform3D.Identity))
+                throw new InvalidOperationException("Attached prop added its standalone lift/turn to the mounting frame.");
+            standalone.Parent=null; player.Advance(0);
+            if(propBones.GetBonePosePosition(0).Y!=3) throw new InvalidOperationException("Detaching a prop did not restore its standalone pose.");
+            root.Free(); root=null;
+            GD.Print("ACTOR_PROJECTION_CONTRACTS_OK: numeric/named skin binds, body independence, moving and hidden attachments, static prop attachment pose");
             GetTree().Quit();
         }
         catch(Exception error){root?.Free();camera?.Free();GD.PrintErr("ACTOR_PROJECTION_CONTRACTS_FAILED: "+error);GetTree().Quit(1);}
