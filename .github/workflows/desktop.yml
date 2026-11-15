@@ -56,6 +56,9 @@ jobs:
         with:
           msystem: MINGW64
           install: make pkgconf diffutils mingw-w64-x86_64-gcc
+      - name: Verify attached-rig projection with synthetic data
+        shell: bash
+        run: python tools/release.py "$TARGET" --verify-projection
       - name: Build, audit and verify the player using binary engine dependencies
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}

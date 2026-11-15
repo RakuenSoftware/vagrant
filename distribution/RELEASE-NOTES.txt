@@ -15,9 +15,10 @@ verifies its files locally. No retail game assets, disc images, BIOS, original-g
 dialogue, manual or installed-disc cache are supplied in these packages.
 
 FFmpeg and ffprobe are bundled; no separate installation or PATH configuration is needed.
-This update keeps game-driver audio fed during main-thread stalls and reuses hit-effect
-resources instead of rebuilding and uploading them for each combat hit. STR/XA
-installation support from preview.5 is retained.
+This update fixes attached weapon geometry being projected through the body skeleton
+during close-ups, which could place the sword through Ashley or leave stray geometry.
+The audio-stall and shared hit-resource repairs from preview.6 and STR/XA installation
+support from preview.5 are retained.
 The matching FFmpeg/Xiph source and build instructions are in the adjacent
 ProjectVagrant-media-sources.zip download.
 macOS previews are ad-hoc signed and are not notarized. This is preview software;

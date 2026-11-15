@@ -100,6 +100,8 @@ public sealed class EventActor
     private sealed class Surfaces
     {
         public required MeshInstance3D Instance;
+        public required Skeleton3D Skeleton;
+        public Transform3D[] Poses = Array.Empty<Transform3D>();
         public required Godot.Collections.Array[] Arrays;
         public required Vector3[][] Vertices;
         public required int[][] Bones, Faces;
@@ -118,7 +120,6 @@ public sealed class EventActor
     }
 
     private System.Collections.Generic.List<Surfaces>? _surfaces;
-    private Transform3D[] _poses = Array.Empty<Transform3D>();
 
     /// <summary>
     /// A corner as retail's GTE projects it: <paramref name="local"/> is in the camera's frame in retail units. The GTE
@@ -158,7 +159,7 @@ public sealed class EventActor
         if (Skeleton == null) return;
         // A rig whose meshes have been swapped (the Settings' enhanced characters) is read again.
         // A rig whose meshes were replaced (a redrawn rig) is read again too.
-        if (_surfaces != null && _surfaces.Exists(e => !GodotObject.IsInstanceValid(e.Instance) || e.Instance.Mesh != e.Source && e.Instance.Mesh != null))
+        if (_surfaces != null && _surfaces.Exists(e => !GodotObject.IsInstanceValid(e.Instance) || !GodotObject.IsInstanceValid(e.Skeleton) || e.Instance.Mesh != e.Source && e.Instance.Mesh != null))
         {
             foreach (var entry in _surfaces)
             {
@@ -175,9 +176,10 @@ public sealed class EventActor
             foreach (var found in Node.FindChildren("*", "MeshInstance3D", true, false))
             {
                 var instance = (MeshInstance3D)found;
-                if (instance.Name == "Shadow" || instance.Mesh is not ArrayMesh whole || instance.Skin == null) continue;
+                if (instance.Name == "Shadow" || instance.Mesh is not ArrayMesh whole || instance.Skin == null
+                    || instance.GetNodeOrNull<Skeleton3D>(instance.Skeleton) is not { } skeleton) continue;
                 int count = whole.GetSurfaceCount();
-                var entry = new Surfaces { Instance = instance, Arrays = new Godot.Collections.Array[count], Vertices = new Vector3[count][], Bones = new int[count][], Faces = new int[count][] };
+                var entry = new Surfaces { Instance = instance, Skeleton = skeleton, Arrays = new Godot.Collections.Array[count], Vertices = new Vector3[count][], Bones = new int[count][], Faces = new int[count][] };
                 for (int i = 0; i < count; i++)
                 {
                     var arrays = whole.SurfaceGetArrays(i);
@@ -210,7 +212,7 @@ public sealed class EventActor
                 for (int b = 0; b < binds; b++)
                 {
                     int bone = instance.Skin.GetBindBone(b);
-                    entry.BindBones[b] = bone >= 0 ? bone : Skeleton.FindBone(instance.Skin.GetBindName(b));
+                    entry.BindBones[b] = bone >= 0 ? bone : skeleton.FindBone(instance.Skin.GetBindName(b));
                     entry.BindPoses[b] = instance.Skin.GetBindPose(b);
                 }
                 for (int i = 0; i < count; i++)
@@ -246,14 +248,19 @@ public sealed class EventActor
         // A rig far from the eye is left as it is at once; only one some bone of which stands within reach of the limit
         // (a limb's length beyond it) is worked. Each bone's posed frame is read once a frame.
         if (!Node.Visible || Node.GlobalPosition.DistanceTo(from) * units > least + 2048) { Restore(); return; }
-        int boneCount = Skeleton.GetBoneCount();
-        if (_poses.Length != boneCount) _poses = new Transform3D[boneCount];
         float nearest = float.MaxValue;
-        var rig = Skeleton.GlobalTransform;
-        for (int b = 0; b < boneCount; b++)
+        // An attached model can have its own skeleton. Its skin indices name that skeleton's bones,
+        // and its global frame includes the attachment transform; they never index the body skeleton.
+        foreach (var entry in _surfaces)
         {
-            _poses[b] = rig * Skeleton.GetBoneGlobalPose(b);
-            nearest = Math.Min(nearest, -(eye * _poses[b].Origin).Z * units);
+            int boneCount = entry.Skeleton.GetBoneCount();
+            if (entry.Poses.Length != boneCount) entry.Poses = new Transform3D[boneCount];
+            var rig = entry.Skeleton.GlobalTransform;
+            for (int b = 0; b < boneCount; b++)
+            {
+                entry.Poses[b] = rig * entry.Skeleton.GetBoneGlobalPose(b);
+                nearest = Math.Min(nearest, -(eye * entry.Poses[b].Origin).Z * units);
+            }
         }
         if (nearest > least + 160) { Restore(); return; }
         // Every corner in the camera's frame (retail units) through the current pose.
@@ -264,7 +271,8 @@ public sealed class EventActor
             var instance = entry.Instance;
             var surfaces = new Vector3[entry.Arrays.Length][];
             entry.Turned = new Vector3[entry.Arrays.Length][];
-            bool shown = instance.IsInsideTree() && (instance.Visible || entry.Hidden);
+            bool shown = instance.IsInsideTree() && (instance.Visible || entry.Hidden)
+                && (instance.GetParent() is not Node3D parent || parent.IsVisibleInTree());
             for (int surface = 0; shown && surface < entry.Arrays.Length; surface++)
             {
                 var vertices = entry.Vertices[surface];
@@ -274,7 +282,7 @@ public sealed class EventActor
                 for (int v = 0; v < vertices.Length; v++)
                 {
                     int bind = entry.Bones[surface][v];
-                    var frame = _poses[Math.Max(0, entry.BindBones[bind])] * entry.BindPoses[bind];
+                    var frame = entry.Poses[Math.Max(0, entry.BindBones[bind])] * entry.BindPoses[bind];
                     var world = frame * vertices[v];
                     if (normals != null) turned[v] = (frame.Basis * normals[v]).Normalized();
                     local[v] = eye * world * units;
@@ -347,11 +355,11 @@ public sealed class EventActor
         if (Skeleton == null || _surfaces == null) return false;
         foreach (var entry in _surfaces)
         {
-            if (!entry.Instance.IsInsideTree()) continue;
+            if (!entry.Instance.IsInsideTree() || entry.Instance.GetParent() is Node3D parent && !parent.IsVisibleInTree()) continue;
             foreach (var (bind, box) in entry.Pieces)
             {
                 if (box.Size.X <= 0 || box.Size.Y <= 0 || box.Size.Z <= 0 || bind >= entry.BindBones.Length) continue;
-                var frame = _poses[Math.Max(0, entry.BindBones[bind])];
+                var frame = entry.Poses[Math.Max(0, entry.BindBones[bind])];
                 if (box.HasPoint(frame.AffineInverse() * point)) return true;
             }
         }

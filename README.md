@@ -52,6 +52,9 @@ To install headlessly from a disc image: `godot-dotnet --headless --path . -- --
 
 ## Checks
 
+The synthetic attached-rig projection check needs no disc or installation and runs on all three
+native CI platforms: `python tools/release.py linux-x64 --verify-projection` (select the native target).
+
 ```sh
 # Only a genuine retail disc installs; a rejected install keeps the previous one.
 godot-dotnet --headless --path . res://tests/install_contracts.tscn -- --disc=/path/disc.cue --scratch=/tmp/vs-scratch --install-root=/tmp/vs-scratch/root

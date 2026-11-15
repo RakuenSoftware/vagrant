@@ -109,6 +109,11 @@ The room sub-section after the geometry is the collision map.
 
 ## Characters
 
+Close-camera projection resolves the skeleton bound to each skinned mesh. Attached weapons can
+have their own skeleton and global attachment transform; their numeric or named skin binds must
+never be evaluated through the body skeleton. Hidden attachment parents remain hidden during
+projection, and the body's own pose stays independent.
+
 `installation/CharacterConversion.cs` turns an SHP model and its SEQ animation sets into a skinned glTF rig. `RetailContent.Rig` builds it when the field first spawns the character, and `FieldScene.PrepareRigBank` and `ActivateRig` attach it to an actor.
 
 - **Props.** A model with no animations of its own (the opening's dead men, 0x73 to 0x76) gets one clip, `rest`, which the field plays in place of the base idle. Its root stands half its bone 1 length above the actor's place, as the actor renderer lifts every model (BATTLE.PRG 0x800AF620 adds half the model's word at +0x50, bone 1's length, to the drawn height), and its bone 1 takes the standing turn every humanoid animation set gives the hip as its base, (2048, 0, 6144) in 8192ths of a turn. The props are modelled as they lie in their scenes, so unturned they stood on end: Episode 1 at 16:50 (MAP172) has the man slumped in the chair and the man spread on his back across the sloping table, which the script's angles (33) tilt him to fit. The man slumped in MAP172's chair (0x73) is a measured exception: retail draws him against the chair's back, 54 units from the place his script gives him (53 ahead and 11 to one side in his own frame), so his `rest` root carries that offset. It was fitted by rendering him over a grid of places and scoring each against Episode 1 at 16:51 (from beside the chair) and 16:54 (over Ashley's shoulder); the same fit leaves the man on the table (0x74) where his script puts him, and a different turn or tilt about his place fits worse. How retail comes by the offset was not found: the draw routine (0x800B1A68) gives bones 0 and 1 the actor's own matrix, built from its place and angles, and nothing read there moves him.
