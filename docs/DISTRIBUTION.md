@@ -35,9 +35,15 @@ Windows/macOS export icons. The build-time editor remains omitted from the
 vendored game dependency. No private engine source checkout, SDK source cache or
 build tools are vendored.
 
-Only a maintainer updating the dependency needs access to private engine
-releases. Download all three SDK ZIPs and their adjacent `.zip.sha256` files from
-one published release. Preserve the old addon outside the checkout, then run:
+Future SDK updates come from the public `RakuenSoftware/wol-engine-release`
+repository. Its controlled native CI temporarily reads private source and
+publishes audited binaries only. The updater accepts exact `runtime-<commit>`
+release URLs from that repository, while retaining the original engine's exact
+runtime/resource release URLs for older SDKs. The vendored dependency above
+remains unchanged until the first new SDK release is available.
+
+Only a maintainer updating the dependency downloads the SDKs. Download all three
+SDK ZIPs and their adjacent `.zip.sha256` files from one published release. Preserve the old addon outside the checkout, then run:
 
 ```sh
 python tools/release.py --vendor-runtime /path/to/linux-sdk.zip \
@@ -46,6 +52,8 @@ python tools/release.py --vendor-runtime /path/to/linux-sdk.zip \
 
 The updater checks archive/file hashes, matching commits and targets, compares
 shared resources, rejects implementation source, and writes a new vendored tree.
+New dependency updates reject loose shader programs as implementation source;
+the current older SDK still contains four such files, pending replacement.
 It refuses to overwrite an existing addon. Review and commit that directory and
 VENDOR.json together. CI never runs this maintainer operation.
 

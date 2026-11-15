@@ -109,7 +109,12 @@ class DesktopRelease:
                     if release.setdefault("commit", commit) != commit:
                         raise RuntimeError("Engine SDK commits do not match")
                     source_release = manifest.get("release", "https://github.com/RakuenSoftware/wol-engine/releases/tag/runtime-" + commit)
-                    if not source_release.startswith("https://github.com/RakuenSoftware/wol-engine/releases/tag/"):
+                    allowed_releases = {
+                        "https://github.com/RakuenSoftware/" + repository + "/releases/tag/" + prefix + commit
+                        for repository, prefixes in (("wol-engine", ("runtime-", "resources-")), ("wol-engine-release", ("runtime-",)))
+                        for prefix in prefixes
+                    }
+                    if source_release not in allowed_releases:
                         raise RuntimeError("Unexpected engine release provenance")
                     if release.setdefault("release", source_release) != source_release:
                         raise RuntimeError("Engine SDK releases do not match")
@@ -127,7 +132,7 @@ class DesktopRelease:
                             raise RuntimeError("Engine release file checksum mismatch: " + name)
                         if name.startswith("editor/"):
                             continue
-                        if path.suffix in (".cpp", ".hpp", ".h", ".pdb", ".csproj", ".sln"):
+                        if path.suffix.lower() in (".c", ".cpp", ".cc", ".cxx", ".hpp", ".h", ".hxx", ".pdb", ".snupkg", ".csproj", ".sln", ".gd", ".gdshader", ".gdshaderinc", ".glsl", ".hlsl", ".shader", ".py", ".sh", ".ps1", ".js", ".ts", ".rs", ".map", ".log"):
                             raise RuntimeError("Implementation/development file in engine SDK: " + name)
                         if path.suffix == ".cs":
                             if data.strip():
