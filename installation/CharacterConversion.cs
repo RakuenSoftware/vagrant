@@ -110,7 +110,7 @@ public sealed class CharacterConversion
                 if (op == 0 || op >= lengths.Length || lengths[op] == 0 || at + lengths[op] > seq.Length) break;
                 // 32 to 35 show (32, 33) or hide (34, 35) the held weapon (BATTLE.PRG 0x800AAD4C); 33 and 35 at once.
                 // 10 plays a sound from the model's own bank (0x800AE4FC); 58 marks a death played out.
-                if (op is 1 or 2 or 4 or 5 or 10 or 12 or 58 or >= 32 and <= 35)
+                if (op is 1 or 2 or 4 or 5 or 10 or 12 or 23 or 24 or 58 or >= 32 and <= 35)
                 {
                     var entry = new JsonArray { frame, op };
                     for (int k = 1; k < lengths[op]; k++) entry.Add((int)seq[at + k]);
@@ -197,11 +197,11 @@ public sealed class CharacterConversion
         if (names.Count == 0)
         {
             // glTF drops animations without tracks, so the rest pose holds the root bone explicitly.
-            var rest = new Animation { Length = 1 / FramesPerSecond };
+            var rest = new Animation { Length = 1 / FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
             int track = rest.AddTrack(Animation.TrackType.Rotation3D);
             rest.TrackSetPath(track, "Space/Skeleton:b0");
             rest.RotationTrackInsertKey(track, 0, Quaternion.Identity);
-            if (_bones >= 2)
+            if (_bones >= 2 && (_weaponTexture >= 0 || _model.Length >= 0x74 && BitConverter.ToInt16(_model, 0x72) != 0))
             {
                 track = rest.AddTrack(Animation.TrackType.Position3D);
                 rest.TrackSetPath(track, "Space/Skeleton:b0");
@@ -222,6 +222,8 @@ public sealed class CharacterConversion
             names.Add("rest");
         }
         player.AddAnimationLibrary("", library);
+        var looping = new JsonArray();
+        foreach (var clip in library.GetAnimationList()) if (library.GetAnimation(clip).LoopMode != Animation.LoopModeEnum.None) looping.Add(clip.ToString());
 
         using var document = new GltfDocument();
         using var state = new GltfState();
@@ -286,7 +288,7 @@ public sealed class CharacterConversion
         // The head's point above the feet (the u16 at 0x5e, body +0x646), where BATTLE.PRG's code 251 points balloons
         // and the chain cue (0x800a1280).
         int crown = _weaponTexture < 0 && _model.Length >= 0x60 ? BitConverter.ToUInt16(_model, 0x5e) : 0;
-        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["collision_radius"] = collisionRadius, ["collision_height"] = collisionHeight, ["crown"] = crown, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["twists"] = twists, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
+        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["collision_radius"] = collisionRadius, ["collision_height"] = collisionHeight, ["crown"] = crown, ["rig"] = _name, ["animations"] = names, ["looping"] = looping, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["twists"] = twists, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
     }
 
     /// <summary>
@@ -317,10 +319,10 @@ public sealed class CharacterConversion
                 movement[clip] = steps;
             }
             // A clip whose script starts it over (operation 1) loops; one without holds its last frame.
-            bool loops = false;
-            if (scripts != null && index < scripts.Count) foreach (var entry in scripts[index]) loops |= (int)entry![1]! == 1;
+            bool loops = false, changes = false;
+            if (scripts != null && index < scripts.Count) foreach (var entry in scripts[index]) { int op = (int)entry![1]!; loops |= op == 1; changes |= op is 23 or 24; }
             // Event clips loop only so; every other set's clips loop.
-            animations[index].LoopMode = !set.StartsWith("esq", StringComparison.Ordinal) || loops ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
+            animations[index].LoopMode = !changes && (!set.StartsWith("esq", StringComparison.Ordinal) || loops) ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
         }
         return clips;
     }
@@ -582,7 +584,7 @@ public sealed class CharacterConversion
             int header = 16 + index * stride;
             int frames = BitConverter.ToUInt16(seq, header);
             int other = (sbyte)seq[header + 2];
-            var animation = new Animation { Length = Math.Max(1, frames - 1) / FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
+            var animation = new Animation { Length = Math.Max(1, frames) / FramesPerSecond, LoopMode = Animation.LoopModeEnum.None };
             // The translation stream places the root bone above the actor's floor position: its first value in map
             // units, and its keyed deltas in half units. An animation built on a base animation starts from the base's
             // first value, as its rotations do.
@@ -669,6 +671,19 @@ public sealed class CharacterConversion
                     scale += velocity * span;
                     frame += span;
                     animation.ScaleTrackInsertKey(track, frame / FramesPerSecond, (scale / 64).Max(Vector3.One / 4096));
+                }
+            }
+            // glTF derives duration from the last key, discarding a trailing held frame. Keep the
+            // final SEQ tick so script commands on frame `frames` (including stride handoffs) run.
+            // Interpolate without looping here, or the trailing hold becomes the first pose again.
+            for (int track = 0; track < animation.GetTrackCount(); track++)
+            {
+                double end = animation.Length;
+                switch (animation.TrackGetType(track))
+                {
+                    case Animation.TrackType.Position3D: animation.PositionTrackInsertKey(track, end, animation.PositionTrackInterpolate(track, end)); break;
+                    case Animation.TrackType.Rotation3D: animation.RotationTrackInsertKey(track, end, animation.RotationTrackInterpolate(track, end)); break;
+                    case Animation.TrackType.Scale3D: animation.ScaleTrackInsertKey(track, end, animation.ScaleTrackInterpolate(track, end)); break;
                 }
             }
             yield return animation;

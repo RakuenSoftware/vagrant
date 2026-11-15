@@ -33,6 +33,7 @@ public partial class BattleCountContracts : Node
                 // Isolated defeat fixture: the earned campaign fights these actors through pad input separately.
                 foreach (var c in battle.Combatants.Values)
                     if (c.Targetable) battle.Strike(c, c.Hp, flinch: false);
+                if(battle.HostileCount()!=3) throw new InvalidOperationException("Zero HP bypassed the pending death/status tick in the victory count.");
                 _felled = true;
             }
             if ((_view.Zone, _view.Map) == (23, 4) && _view.PlatformState(0) is { Off: false }) _bridge = true;

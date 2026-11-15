@@ -4234,8 +4234,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     private void StepEvent()
     {
         EventFrame++;
-        // Clips' scripts show and hide the held weapon (operations 32 to 35) on their frames.
-        if (!Controlled) foreach (var actor in Actors.Values) RunClipScript(actor);
+        // Clip scripts hand off walking phases and, during events, show or hide the held weapon.
+        foreach (var actor in Actors.Values) RunClipScript(actor);
         // Clips with a movement stream carry their actor (an event's getting-up, MAP022's after the vision).
         foreach (var actor in Actors.Values) RunClipMovement(actor);
         // Their sounds play in play too: a footfall, the thud of a body.
@@ -6397,8 +6397,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     }
 
     /// <summary>
-    /// Runs the weapon operations of an actor's clip script (BATTLE.PRG's interpreter at 0x800AD714) up to the clip's
-    /// current SEQ frame: 32 and 33 show the held weapon, 34 and 35 hide it.
+    /// Runs an actor's clip script (BATTLE.PRG's interpreter at 0x800AD714) up to the current SEQ frame:
+    /// 23/24 select the previous/next phase; during events, 32/33 show the held weapon and 34/35 hide it.
     /// </summary>
     private void RunClipScript(EventActor actor)
     {
@@ -6413,8 +6413,18 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         {
             var entry = value.AsGodotArray();
             int at = entry[0].AsInt32(), op = entry[1].AsInt32();
-            if (op is < 32 or > 35 || at <= actor.ScriptFrame || at > frame) continue;
-            actor.WeaponOut = op <= 33;
+            if (at <= actor.ScriptFrame || at > frame) continue;
+            // The two half-strides hand off to the adjacent animation slot (retail 23/24).
+            // They are not loops: switching at the script frame preserves both foot phases.
+            if (op is 23 or 24)
+            {
+                int split = clip.LastIndexOf('_');
+                if (split < 0 || !int.TryParse(clip[(split + 1)..], out int number)) continue;
+                actor.ScriptFrame = frame;
+                actor.Animate(clip[..(split + 1)] + (number + (op == 23 ? -1 : 1)), 0);
+                return;
+            }
+            if (!Controlled && op is >= 32 and <= 35) actor.WeaponOut = op <= 33;
         }
         actor.ScriptFrame = frame;
     }

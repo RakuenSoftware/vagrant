@@ -53,8 +53,9 @@ class DesktopRelease:
             (stage / ".godot/extension_list.cfg").write_text("res://addons/wol_engine/native/spatial.gdextension\n")
             self.run("dotnet", "build", stage / "Vagrant.csproj", "--nologo")
             self.run(editor, "--headless", "--editor", "--import", "--path", stage, "--quit")
-            self.run(editor, "--headless", "--path", stage, "res://tests/actor_projection_contracts.tscn",
-                     "--", "--install-root=" + str(stage / "empty-installation"))
+            for scene in ("actor_projection_contracts", "animation_script_contracts"):
+                self.run(editor, "--headless", "--path", stage, f"res://tests/{scene}.tscn",
+                         "--", "--install-root=" + str(stage / "empty-installation"))
 
     def download(self, filename):
         base = f"https://github.com/godotengine/godot/releases/download/{self.VERSION}-stable/"
