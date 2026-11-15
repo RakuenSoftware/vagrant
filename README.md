@@ -68,6 +68,9 @@ godot-dotnet --headless --audio-driver Dummy --path . res://tests/field_contract
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/save_resume_contracts.tscn -- --install-root=/path/to/installation
 # Native cleared-game record: story reset, clear cap, titles, best time/map and carried state.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/clear_record_contracts.tscn -- --install-root=/path/to/installation
+# Audio stall regression: use a real backend routed to a silent virtual sink, never speakers.
+# Example on Linux: create a PulseAudio null sink named vagrant_hit_audit, then:
+PULSE_SINK=vagrant_hit_audit godot-dotnet --display-driver headless --audio-driver PulseAudio --path . res://tests/hit_audio_contracts.tscn -- --install-root=/path/to/installation
 # Owned-disc ending XA installation/decode and corruption rejection (use disposable scratch).
 godot-dotnet --headless --path . res://tests/ending_audio_contracts.tscn -- --install-root=/path/to/installation --disc=/path/disc.cue --scratch=/tmp/vs-ending-audio
 # Cancelling the post-credits SAVE preserves the existing card (isolated fixture using an earned record).

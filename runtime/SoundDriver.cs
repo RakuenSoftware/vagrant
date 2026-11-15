@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using Godot;
 
 namespace Wol.Games.Vagrant.Runtime;
@@ -61,6 +62,15 @@ public sealed partial class SoundDriver : Node
     // The sandbox's methods, named once: a name made from a string per call goes through the engine's shared name table.
     private static readonly StringName AddReturnMethod = "add_return", AddSpuTransferMethod = "add_spu_transfer", CallMethod = "call", GetLastErrorMethod = "get_last_error", LoadExecutableMethod = "load_executable", ReadWordMethod = "read_word", RenderMethod = "render", SpuWriteMethod = "spu_write", WriteMemoryMethod = "write_memory";
 
+    // The native interpreter and SPU are one mutable machine. Commands and rendering
+    // share this gate; the audio producer never touches scene nodes.
+    private readonly object _audioGate = new();
+    private Thread? _worker;
+    private volatile bool _stopping;
+    private bool _device, _reportedFailure;
+    private volatile string _failure = "";
+    private readonly Vector2[] _shortFrames = new Vector2[SampleRate / TickRate];
+    private readonly Vector2[] _longFrames = new Vector2[SampleRate / TickRate + 1];
     private GodotObject? _sandbox;
     private AudioStreamPlayer _player = null!;
     private AudioStreamGeneratorPlayback? _playback;
@@ -71,7 +81,7 @@ public sealed partial class SoundDriver : Node
     private bool _music;
 
     /// <summary>The failure that stopped the driver, if any; the game then goes on silent.</summary>
-    public string Failure { get; private set; } = "";
+    public string Failure => _failure;
 
     /// <summary>Starts the sound driver as the game does at boot: its resident instrument banks and sound effects.</summary>
     public void Boot(byte[] executable, byte[] wave0000, byte[] wave0005, byte[] wave0200, byte[] effects)
@@ -91,6 +101,11 @@ public sealed partial class SoundDriver : Node
         Call(LoadResidentBankAt, Staging, 0, 1);
         _sandbox.Call(WriteMemoryMethod, SfxData, effects);
         Call(BindSfxBlob, SfxData);
+        if (_device)
+        {
+            _worker = new Thread(ProduceAudio) { IsBackground = true, Name = "Vagrant audio" };
+            _worker.Start();
+        }
     }
 
     public override void _Ready()
@@ -100,37 +115,76 @@ public sealed partial class SoundDriver : Node
         AddChild(_player);
         _player.Play();
         _playback = _player.GetStreamPlayback() as AudioStreamGeneratorPlayback;
+        _device = _playback != null && AudioServer.GetDriverName() != "Dummy";
     }
 
-    public override void _ExitTree() => _sandbox?.Dispose();
+    public override void _ExitTree()
+    {
+        _stopping = true;
+        // Never join while holding the machine gate: the producer may be finishing a tick.
+        _worker?.Join();
+        _worker = null;
+        lock (_audioGate) { _sandbox?.Dispose(); _sandbox = null; }
+    }
 
-    /// <summary>
-    /// Runs the driver for the frames the output can take. Without an audio device (the Dummy driver takes
-    /// nothing), it keeps time with the game instead, so the music still moves on.
-    /// </summary>
+    /// <summary>Dummy-audio checks retain the simulation clock, including accelerated fixed-fps runs.</summary>
     public override void _Process(double delta)
     {
-        if (_sandbox == null || Failure.Length != 0) return;
-        bool device = _playback != null && AudioServer.GetDriverName() != "Dummy";
-        _owed = device ? _playback!.GetFramesAvailable() : Math.Min(_owed + delta * SampleRate, SampleRate / 4.0);
+        if (Failure.Length != 0)
+        {
+            if (!_reportedFailure) { GD.PrintErr("Sound driver stopped: " + Failure); _reportedFailure = true; }
+            return;
+        }
+        if (_device || !DriverReady) return;
+        _owed = Math.Min(_owed + delta * SampleRate, SampleRate / 4.0);
         try
         {
             while (true)
             {
                 int count = (int)((long)(_tick + 1) * SampleRate / TickRate - (long)_tick * SampleRate / TickRate);
                 if (_owed < count) break;
-                Call(Tick);
-                byte[] samples = _sandbox.Call(RenderMethod, count).AsByteArray();
-                _tick = (_tick + 1) % TickRate;
+                RenderTick(count, false);
                 _owed -= count;
-                if (!device) continue;
-                var frames = new Vector2[count];
-                for (int i = 0; i < count; i++)
-                    frames[i] = new Vector2(BitConverter.ToInt16(samples, i * 4) / 32768f, BitConverter.ToInt16(samples, i * 4 + 2) / 32768f);
-                _playback!.PushBuffer(frames);
             }
         }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        catch (InvalidDataException error) { _failure = error.Message; }
+    }
+
+    /// <summary>
+    /// Keeps the output fed independently of hit effects, room loading and render stalls. Only this thread
+    /// writes the playback ring buffer; commands serialize with one interpreter/SPU tick at a time.
+    /// </summary>
+    private void ProduceAudio()
+    {
+        try
+        {
+            while (!_stopping)
+            {
+                int count = (int)((long)(_tick + 1) * SampleRate / TickRate - (long)_tick * SampleRate / TickRate);
+                if (!_playback!.CanPushBuffer(count)) { Thread.Sleep(1); continue; }
+                lock (_audioGate)
+                {
+                    if (_stopping || !DriverReady) return;
+                    RenderTick(count, true);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            _failure = "Audio production stopped: " + error.Message;
+        }
+    }
+
+    private void RenderTick(int count, bool output)
+    {
+        Call(Tick);
+        byte[] samples = _sandbox!.Call(RenderMethod, count).AsByteArray();
+        _tick = (_tick + 1) % TickRate;
+        if (!output) return;
+        var frames = count == _shortFrames.Length ? _shortFrames : _longFrames;
+        for (int i = 0; i < count; i++)
+            frames[i] = new Vector2(BitConverter.ToInt16(samples, i * 4) / 32768f, BitConverter.ToInt16(samples, i * 4 + 2) / 32768f);
+        if (!_playback!.PushBuffer(frames)) throw new InvalidDataException("The audio output rejected a prepared buffer.");
     }
 
     private void Stage(byte[] data) => _sandbox!.Call(WriteMemoryMethod, Staging, data);
@@ -150,35 +204,44 @@ public sealed partial class SoundDriver : Node
     /// <summary>Starts a music sequence with its instrument bank (loaded into sound RAM first), at a volume of 0 to 127.</summary>
     public void PlayMusic(byte[] sequence, byte[] bank, int volume)
     {
-        if (!DriverReady) return;
-        try
+        lock (_audioGate)
         {
-            if (_music) Call(StopMusic, Sequence);
-            Stage(bank);
-            Call(LoadSoundFile, Staging, 0);
-            _sandbox!.Call(WriteMemoryMethod, Sequence, sequence);
-            Call(MusicVolume, 0, 0, Math.Clamp(volume, 0, 127));
-            Call(StartMusic, Sequence);
-            _music = true;
+            if (!DriverReady) return;
+            try
+            {
+                if (_music) Call(StopMusic, Sequence);
+                Stage(bank);
+                Call(LoadSoundFile, Staging, 0);
+                _sandbox!.Call(WriteMemoryMethod, Sequence, sequence);
+                Call(MusicVolume, 0, 0, Math.Clamp(volume, 0, 127));
+                Call(StartMusic, Sequence);
+                _music = true;
+            }
+            catch (InvalidDataException error) { _failure = error.Message; }
         }
-        catch (InvalidDataException error) { Failure = error.Message; }
     }
 
     /// <summary>Stops the music (driver command 0x11, as the field's release does).</summary>
     public void Stop()
     {
-        if (!DriverReady || !_music) return;
-        try { Call(StopMusic, Sequence); }
-        catch (InvalidDataException error) { Failure = error.Message; }
-        _music = false;
+        lock (_audioGate)
+        {
+            if (!DriverReady || !_music) return;
+            try { Call(StopMusic, Sequence); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+            _music = false;
+        }
     }
 
     /// <summary>Sets the music's volume (0 to 127) at once (driver command 0xc1).</summary>
     public void Volume(int volume)
     {
-        if (!DriverReady || !_music) return;
-        try { Call(MusicVolume, 0, 0, Math.Clamp(volume, 0, 127)); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady || !_music) return;
+            try { Call(MusicVolume, 0, 0, Math.Clamp(volume, 0, 127)); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Whether a music sequence is playing: started, and with channels the driver still runs.</summary>
@@ -186,9 +249,12 @@ public sealed partial class SoundDriver : Node
     {
         get
         {
-            if (!DriverReady || !_music) return false;
-            uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
-            return config != 0 && _sandbox.Call(ReadWordMethod, (long)config + 4).AsInt64() != 0;
+            lock (_audioGate)
+            {
+                if (!DriverReady || !_music) return false;
+                uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
+                return config != 0 && _sandbox.Call(ReadWordMethod, (long)config + 4).AsInt64() != 0;
+            }
         }
     }
 
@@ -200,11 +266,14 @@ public sealed partial class SoundDriver : Node
     {
         get
         {
-            if (!DriverReady || !_music) return -1;
-            uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
-            if (config == 0) return -1;
-            long word = _sandbox.Call(ReadWordMethod, (long)config + 124).AsInt64();
-            return (short)(word & 0xFFFF);
+            lock (_audioGate)
+            {
+                if (!DriverReady || !_music) return -1;
+                uint config = (uint)_sandbox!.Call(ReadWordMethod, ActiveMusicConfig).AsInt64();
+                if (config == 0) return -1;
+                long word = _sandbox.Call(ReadWordMethod, (long)config + 124).AsInt64();
+                return (short)(word & 0xFFFF);
+            }
         }
     }
 
@@ -224,94 +293,121 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void PlaySound(string name, byte[] bank, int id, int group, int pan, int volume)
     {
-        if (!DriverReady || !HasSound(bank, id)) return;
-        try
+        lock (_audioGate)
         {
-            if (!_banks.TryGetValue(name, out long at))
+            if (!DriverReady || !HasSound(bank, id)) return;
+            try
             {
-                // Banks are laid side by side; when RAM runs out they start again from the first.
-                if (_nextBank + bank.Length > BanksEnd) { _banks.Clear(); _nextBank = Banks; }
-                at = _nextBank;
-                _nextBank = (_nextBank + bank.Length + 3) & ~3L;
-                _sandbox!.Call(WriteMemoryMethod, at, bank);
-                _banks[name] = at;
+                if (!_banks.TryGetValue(name, out long at))
+                {
+                    // Banks are laid side by side; when RAM runs out they start again from the first.
+                    if (_nextBank + bank.Length > BanksEnd) { _banks.Clear(); _nextBank = Banks; }
+                    at = _nextBank;
+                    _nextBank = (_nextBank + bank.Length + 3) & ~3L;
+                    _sandbox!.Call(WriteMemoryMethod, at, bank);
+                    _banks[name] = at;
+                }
+                Call(PlaySfxBlob, at + BitConverter.ToInt32(bank, 4 + id * 4), Voices(group), pan, Math.Clamp(volume, 0, 127));
             }
-            Call(PlaySfxBlob, at + BitConverter.ToInt32(bank, 4 + id * 4), Voices(group), pan, Math.Clamp(volume, 0, 127));
+            catch (InvalidDataException error) { _failure = error.Message; }
         }
-        catch (InvalidDataException error) { Failure = error.Message; }
     }
 
     /// <summary>Plays a resident sound (from the boot-time effect blob) on a group's voices.</summary>
     public void PlayResident(int id, int group, int pan, int volume)
     {
-        if (!DriverReady) return;
-        try { Call(PlaySfxById, id, Voices(group), pan, Math.Clamp(volume, 0, 127)); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(PlaySfxById, id, Voices(group), pan, Math.Clamp(volume, 0, 127)); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Stops the sounds on a group's voices (StopSfx with no sound named, as the game's 0x80045D64 does for id 0).</summary>
     public void StopSounds(int group)
     {
-        if (!DriverReady) return;
-        try { Call(StopSfx, 0, Groups[Math.Clamp(group, 0, Groups.Length - 1)]); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(StopSfx, 0, Groups[Math.Clamp(group, 0, Groups.Length - 1)]); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Releasing the selected event bank: StopSfx of -2, then of group 3's voices (the game's 0x800460C0).</summary>
     public void ReleaseEventBank()
     {
-        if (!DriverReady) return;
-        try
+        lock (_audioGate)
         {
-            Call(StopSfx, -2, 0);
-            Call(StopSfx, 0, Groups[3]);
+            if (!DriverReady) return;
+            try
+            {
+                Call(StopSfx, -2, 0);
+                Call(StopSfx, 0, Groups[3]);
+            }
+            catch (InvalidDataException error) { _failure = error.Message; }
         }
-        catch (InvalidDataException error) { Failure = error.Message; }
     }
 
     /// <summary>Sets the driver's reverb (driver command 0x92, event opcode a8).</summary>
     public void Reverb(int value)
     {
-        if (!DriverReady) return;
-        try { Call(SetReverb, value); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(SetReverb, value); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Starts an effect's sound sequence (an AKAO block) at full volume.</summary>
     public void PlaySequence(byte[] sequence)
     {
-        if (!DriverReady || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
-        try
+        lock (_audioGate)
         {
-            _sandbox!.Call(WriteMemoryMethod, EffectSequence, sequence);
-            Call(SequenceVolume, 0, 127);
-            Call(StartSequence, EffectSequence, 128, 1);
+            if (!DriverReady || sequence.Length == 0 || EffectSequence + sequence.Length > Banks) return;
+            try
+            {
+                _sandbox!.Call(WriteMemoryMethod, EffectSequence, sequence);
+                Call(SequenceVolume, 0, 127);
+                Call(StartSequence, EffectSequence, 128, 1);
+            }
+            catch (InvalidDataException error) { _failure = error.Message; }
         }
-        catch (InvalidDataException error) { Failure = error.Message; }
     }
 
     /// <summary>Stops the effect's sound sequence.</summary>
     public void StopSequence()
     {
-        if (!DriverReady) return;
-        try { Call(StopSequenceCommand); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(StopSequenceCommand); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Takes the driver's music snapshot (driver command 0x40, event opcode 98).</summary>
     public void Snapshot()
     {
-        if (!DriverReady) return;
-        try { Call(SnapshotMusic); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(SnapshotMusic); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>Stops every sound (driver command 0xf1, as the game's 0x80045DC0 does).</summary>
     public void StopAllSounds()
     {
-        if (!DriverReady) return;
-        try { Call(StopAllSfx); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(StopAllSfx); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>
@@ -320,9 +416,12 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void StopSound(string bankName, byte[]? bank, int id)
     {
-        if (!DriverReady || Target(bankName, bank, id) is not long target) return;
-        try { Call(StopSfx, target, 0); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady || Target(bankName, bank, id) is not long target) return;
+            try { Call(StopSfx, target, 0); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     /// <summary>
@@ -331,7 +430,10 @@ public sealed partial class SoundDriver : Node
     /// </summary>
     public void SlideSound(string bankName, byte[]? bank, int id, bool pan, int value, int frames)
     {
-        if (Target(bankName, bank, id) is long target) Slide(target, 0, pan, value, frames);
+        lock (_audioGate)
+        {
+            if (Target(bankName, bank, id) is long target) Slide(target, 0, pan, value, frames);
+        }
     }
 
     /// <summary>Slides the volume or pan of every voice of a group, as an id of 0 asks the driver.</summary>
@@ -340,9 +442,12 @@ public sealed partial class SoundDriver : Node
     /// <summary>The driver's volume or pan slide (0x8001264C, 0x80012738) of a sound (by program or id) or of a group's voices.</summary>
     private void Slide(long target, long voices, bool pan, int value, int frames)
     {
-        if (!DriverReady) return;
-        try { Call(pan ? PanSfx : FadeSfx, target, voices, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
-        catch (InvalidDataException error) { Failure = error.Message; }
+        lock (_audioGate)
+        {
+            if (!DriverReady) return;
+            try { Call(pan ? PanSfx : FadeSfx, target, voices, frames & 0xFF, Math.Clamp(value, 0, pan ? 255 : 127)); }
+            catch (InvalidDataException error) { _failure = error.Message; }
+        }
     }
 
     private long? Target(string bankName, byte[]? bank, int id)

@@ -66,6 +66,8 @@ public partial class RetailContent : Node
         // engine is whole: one left to the finalizer thread can run during the engine's teardown and lock a mutex
         // that is already gone, which crashed the process at exit after its work was done.
         _field = null;
+        _effectData.Clear();
+        _effectTextures.Clear();
         foreach (var rig in _rigs.Values) rig.Free();
         _rigs.Clear();
         GC.Collect();
@@ -134,8 +136,17 @@ public partial class RetailContent : Node
         return parsed.AsGodotDictionary();
     }
 
+    // Effects are immutable for an installation. Reuse their parsed documents and GPU atlases across hits.
+    private readonly Dictionary<string, Godot.Collections.Dictionary> _effectData = new();
+    private readonly Dictionary<string, Texture2D> _effectTextures = new();
+
     /// <summary>Loads an installed image as a texture.</summary>
-    public Texture2D Texture(string name) => LoadTexture(name);
+    public Texture2D Texture(string name)
+    {
+        if (!name.StartsWith("effect_", StringComparison.Ordinal)) return LoadTexture(name);
+        if (!_effectTextures.TryGetValue(name, out var texture)) _effectTextures[name] = texture = LoadTexture(name);
+        return texture;
+    }
 
     /// <summary>A document decoded from the disc, such as a room's event.</summary>
     /// <summary>The HUD's hand-lettered alphabet on its labels page, made once; null when the installation lacks it.</summary>
@@ -143,8 +154,13 @@ public partial class RetailContent : Node
         ? new HudLettering(ScreenTexture("hud_labels", true), font) : null;
     private HudLettering? _hudLettering;
 
-    public Godot.Collections.Dictionary Data(string name) =>
-        Parse((Field.Data(name) ?? throw new InvalidDataException($"The disc has no {name}.")).ToJsonString());
+    public Godot.Collections.Dictionary Data(string name)
+    {
+        if (name.StartsWith("effect_", StringComparison.Ordinal) && _effectData.TryGetValue(name, out var known)) return known;
+        var document = Parse((Field.Data(name) ?? throw new InvalidDataException($"The disc has no {name}.")).ToJsonString());
+        if (name.StartsWith("effect_", StringComparison.Ordinal)) _effectData[name] = document;
+        return document;
+    }
 
     /// <summary>An installed full-screen overlay's layer images, in layer order.</summary>
     public (Texture2D Texture, Color? Fill)[] Overlay(int id)
@@ -326,6 +342,8 @@ public partial class RetailContent : Node
     public void Reload()
     {
         _field = null;
+        _effectData.Clear();
+        _effectTextures.Clear();
         foreach (var rig in _rigs.Values) rig.Free();
         _rigs.Clear();
         try
@@ -374,6 +392,8 @@ public partial class RetailContent : Node
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or NullReferenceException or InvalidOperationException or FormatException)
         {
             _field = null;
+            _effectData.Clear();
+            _effectTextures.Clear();
             Failure = error.Message;
         }
     }
