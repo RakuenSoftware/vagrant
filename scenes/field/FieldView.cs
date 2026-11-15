@@ -370,7 +370,13 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         CharacterQuality.Changed += RedrawCharacters;
         _driver = new SoundDriver { Name = "SoundDriver" };
         AddChild(_driver);
-        try { _content.Boot(_driver); }
+        try
+        {
+            _content.Boot(_driver);
+            // E000 supplies every ordinary hit/miss. Prepare its shared atlas while loading the field.
+            var resident = _content.Data("effect_000");
+            if (resident.ContainsKey("atlas")) _content.Texture(resident["atlas"].AsString());
+        }
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { Fail(error.Message); }
         _rain = new EventRain();
         _hud = new CanvasLayer { Layer = 7, Name = "Hud" };

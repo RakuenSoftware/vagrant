@@ -22,6 +22,18 @@ verify each against the current owner before treating that historical list as a 
 
 ## Confirmed defects and remaining gaps
 
+- **Audio starvation during combat/render stalls, repaired.** The output producer formerly ran in
+  `SoundDriver._Process`, so a long game frame could drain its short playback buffer. Device audio now
+  has an independent producer, with serialized access to its interpreter/SPU and joined teardown;
+  Dummy-audio checks retain their simulation clock. Hit effects reuse parsed documents and GPU atlases,
+  with E000 prepared while loading the field. A real-backend test routes output to a silent sink, builds
+  repeated hit effects and blocks the main thread for 600 ms: the old producer accumulated underruns;
+  the new one continues mixing nonzero audio without additional underruns. It also exercises commands
+  during production and repeated start/stop/free. The focused combat/chain contract passes headless and
+  on an isolated rendered display with real audio output. This establishes the repaired stall mechanism
+  on Linux; Windows listening confirmation and complete retail audiovisual comparison remain separate.
+
+
 - **Key and sigil story flags, fixed.** Successful gadget-bag collection now sets the native possession flag; a full bag leaves it unset. Gates inspect owned items before the recorded flag so a collected sigil is consumed and advances to its used state. The focused bag test fails before the change and passes headless and rendered afterward. The earned Aster return now triggers Neesa/Tieger's introduction and victory sequence.
 - **Body contact, fixed.** Contact uses the SHP collision radius/height rather than a constant horizontal circle, with native vertical contact, square bounds and movement away from overlap. Separate-floor, boundary, corner and exclusion fixtures pass headless and rendered; pit and Cloudstone checks pass, followed by 385 room checks. One cold-cache room timed out initially and passed on retry.
 - **Awaited system-message input, fixed.** A single display-frame Circle/Cross edge could be missed by a 30 Hz event wait. The field now consumes its existing buffered input, clearing earlier edges when the message opens. The missed-phase fixture fails before the change; both display phases and a rendered check pass afterward.
