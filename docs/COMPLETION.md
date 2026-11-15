@@ -22,13 +22,15 @@ verify each against the current owner before treating that historical list as a 
 
 ## Confirmed defects and remaining gaps
 
-- **Intro sword prop attachment, repaired.** A static prop retained the standalone resting lift/hip turn
-  after being attached to another actor's bone. The intro's separate rapier could consequently miss its
-  intended position in the corpse. Attached static props now take the mounting frame without that extra
-  resting pose, and are placed after the parent's animation advances. Standalone props and ordinary held
-  weapons retain their existing poses. The expanded synthetic regression fails on the previous code and
-  passes after the repair, including restoration of the standalone pose after detachment. The owned-disc
-  intro was checked on an isolated rendered display, with the sword visible again.
+- **Intro sword prop attachment, repaired.** The previous check established visibility but missed the
+  inverted placement of grip and embedded blade. Attached actors kept a separate position while scripted
+  glides moved the engine's actor node; drawing then replaced that node's transform and discarded the
+  script's offsets. Position and heading now stay in the engine's motion state, while only the drawing
+  follows the mounting bone. The static standalone rest animation stops while attached and resumes on
+  detachment. A synthetic field verifies the tip at the mounting point, the raised grip at the hand,
+  instant and timed relative glides, handoff and detachment, without retail content. The owned-disc intro
+  was replayed on an isolated display through the corpse close-up, raised grip, withdrawal and subsequent
+  hand attachment. This is focused placement verification, not complete cutscene equivalence.
 
 - **Attached weapon geometry during close-ups, repaired.** The close-camera projector walked all skinned
   meshes in an actor but evaluated their binds through the body's skeleton, including a weapon's separate

@@ -2,6 +2,7 @@
 using System;
 using Godot;
 using Wol.Games.Vagrant.Scenes.Field;
+using Wol.Engine.World;
 namespace Wol.Games.Vagrant.Tests;
 
 /// <summary>Synthetic attached rigs must keep their own skeleton when projected near the eye; no game data.</summary>
@@ -84,10 +85,61 @@ public partial class ActorProjectionContracts : Node
             if(!propBones.GetBonePose(0).IsEqualApprox(Transform3D.Identity)
                 || !propBones.GetBonePose(1).IsEqualApprox(Transform3D.Identity))
                 throw new InvalidOperationException("Attached prop added its standalone lift/turn to the mounting frame.");
-            standalone.Parent=null; player.Advance(0);
+            player.Advance(0);
+            if(!propBones.GetBonePose(0).IsEqualApprox(Transform3D.Identity) || !propBones.GetBonePose(1).IsEqualApprox(Transform3D.Identity))
+                throw new InvalidOperationException("The standalone rest animation overwrote the attached prop's pose.");
+            standalone.Parent=null; standalone.Apply();
             if(propBones.GetBonePosePosition(0).Y!=3) throw new InvalidOperationException("Detaching a prop did not restore its standalone pose.");
             root.Free(); root=null;
-            GD.Print("ACTOR_PROJECTION_CONTRACTS_OK: numeric/named skin binds, body independence, moving and hidden attachments, static prop attachment pose");
+            root = new FieldScene(); AddChild(root);
+            var field = (FieldScene)root;
+            field.SetProcess(false); field.SetPhysicsProcess(false);
+            using var source = Json.ParseString("""{"schema":1,"models":[],"objects":[{"id":0,"model":-1,"position":[0,0,0]},{"id":1,"model":-1,"position":[0,0,0]}],"walkmeshes":[]}""").AsGodotDictionary();
+            if(field.LoadField(source,new())!=Error.Ok) throw new InvalidOperationException("Cannot load the synthetic prop motion field.");
+            var mount = new Skeleton3D {Transform=new Transform3D(new Basis(Vector3.Back,-Mathf.Pi/2).Scaled(Vector3.One/128),new Vector3(3,1,-4))};
+            field.Actors["0"].AddChild(mount);
+            mount.AddBone("b0"); mount.AddBone("b1"); mount.SetBoneParent(1,0);
+            mount.SetBoneRest(0,Transform3D.Identity);
+            mount.SetBoneRest(1,new Transform3D(Basis.Identity,new Vector3(-100,0,0))); mount.ResetBonePoses();
+            var swordBones = new Skeleton3D {Transform=EventActor.ModelSpace}; field.Actors["1"].AddChild(swordBones);
+            swordBones.AddBone("b0"); swordBones.AddBone("b1"); swordBones.AddBone("b2");
+            swordBones.SetBoneParent(1,0); swordBones.SetBoneParent(2,1);
+            swordBones.SetBoneRest(0,Transform3D.Identity); swordBones.SetBoneRest(1,Transform3D.Identity);
+            swordBones.SetBoneRest(2,new Transform3D(Basis.Identity,new Vector3(50,0,0))); swordBones.ResetBonePoses();
+            var mounted = new EventActor("1",0,field.Actors["1"]) {Scene=field,Parent=new EventActor("0",0,field.Actors["0"]) {Scene=field},Visible=true};
+            var offset = new Vector3(-100,0,0);
+            if(field.Present(default,new ActorGlide("1",EventActor.RetailSpace*offset,true,0) {FrameRate=30},_=>{})!=Error.Ok)
+                throw new InvalidOperationException("Cannot place the synthetic sword with a relative glide.");
+            mounted.Apply();
+            var grip=swordBones.GlobalTransform*swordBones.GetBoneGlobalPose(1).Origin;
+            var tip=swordBones.GlobalTransform*swordBones.GetBoneGlobalPose(2)*new Vector3(50,0,0);
+            var hand=mount.GlobalTransform*mount.GetBoneGlobalPose(1).Origin;
+            if(grip.DistanceTo(hand)>.0001f || tip.DistanceTo(mount.GlobalPosition)>.0001f || grip.Y<=tip.Y)
+                throw new InvalidOperationException("The scripted offset did not embed the tip with the grip at the raised hand.");
+            if(mounted.Position.DistanceTo(offset)>.0001f || field.Actors["1"].Position.DistanceTo(EventActor.RetailSpace*offset)>.0001f)
+                throw new InvalidOperationException("Drawing an attachment overwrote its logical glide position.");
+            if(field.Present(default,new ActorGlide("1",EventActor.RetailSpace*new Vector3(0,0,128),true,8) {FrameRate=30},_=>{})!=Error.Ok)
+                throw new InvalidOperationException("Cannot start the attached sword's timed glide.");
+            field.AdvancePresentation(); mounted.Apply();
+            if(mounted.Position.Z<=0 || mounted.Position.Z>=128) throw new InvalidOperationException("The attached glide did not advance over time.");
+            for(int tick=0;tick<32;tick++) {field.AdvancePresentation(); mounted.Apply();}
+            if(mounted.Position.DistanceTo(offset+new Vector3(0,0,128))>.0001f)
+                throw new InvalidOperationException("An attached relative glide lost its destination across drawing updates.");
+            if(field.Present(default,new ActorFace("1",Mathf.Pi/2),_=>{})!=Error.Ok)
+                throw new InvalidOperationException("Cannot turn an attached sword.");
+            mounted.Apply();
+            grip=swordBones.GlobalTransform*swordBones.GetBoneGlobalPose(1).Origin;
+            tip=swordBones.GlobalTransform*swordBones.GetBoneGlobalPose(2)*new Vector3(50,0,0);
+            if(tip.DistanceTo(grip+mount.GlobalBasis*new Vector3(0,0,100))>.0001f)
+                throw new InvalidOperationException("The attachment ignored its scripted heading.");
+            field.Present(default,new ActorFace("1",0),_=>{});
+            mounted.ParentBone=1; mounted.Position=Vector3.Zero; mounted.Apply();
+            grip=swordBones.GlobalTransform*swordBones.GetBoneGlobalPose(1).Origin;
+            if(grip.DistanceTo(hand)>.0001f) throw new InvalidOperationException("Reattachment did not place the grip at the grabbing hand.");
+            mounted.Parent=null; mounted.Apply();
+            if(!swordBones.Transform.IsEqualApprox(EventActor.ModelSpace)) throw new InvalidOperationException("Detaching retained the mounting frame in the drawing.");
+            root.Free(); root=null;
+            GD.Print("ACTOR_PROJECTION_CONTRACTS_OK: numeric/named skin binds, body independence, moving and hidden attachments, static prop attachment pose, embedded tip/grip, instant/timed relative glides and handoff");
             GetTree().Quit();
         }
         catch(Exception error){root?.Free();camera?.Free();GD.PrintErr("ACTOR_PROJECTION_CONTRACTS_FAILED: "+error);GetTree().Quit(1);}

@@ -21,25 +21,27 @@ public sealed class EventActor
     public readonly Node3D Node;
     public readonly Skeleton3D? Skeleton;
     public readonly AnimationPlayer? Player;
+    private readonly Transform3D _skeletonSpace;
+    private bool _attached;
     /// <summary>The engine's field the actor stands in, which places, turns and shapes it.</summary>
     public Wol.Engine.World.FieldScene? Scene { get; init; }
 
     /// <summary>
     /// Where the actor stands, in map units: the engine's place for it, turned into retail space (bone-local, and kept
-    /// here, while it is attached to another actor).
+    /// in the engine's motion node while attached to another actor).
     /// </summary>
     public Vector3 Position
     {
-        get => Parent == null && Scene != null && Scene.Actors.TryGetValue(Id, out var node) ? RetailSpace.AffineInverse() * node.Position : _position;
-        set { if (Parent == null && Scene != null && Scene.Actors.ContainsKey(Id)) Scene.SetActorPosition(Id, RetailSpace * value); else _position = value; }
+        get => Scene != null && Scene.Actors.TryGetValue(Id, out var node) ? RetailSpace.AffineInverse() * node.Position : _position;
+        set { if (Scene != null && Scene.Actors.ContainsKey(Id)) Scene.SetActorPosition(Id, RetailSpace * value); else _position = value; }
     }
     private Vector3 _position;
 
     /// <summary>The way it faces, 4096 a turn about retail's (downward) y: the engine's heading, which turns the other way.</summary>
     public float Facing
     {
-        get => Parent == null && Scene != null && Scene.ActorHeadings.TryGetValue(Id, out float heading) ? Mathf.PosMod(-heading * 4096 / Mathf.Tau, 4096) : _facing;
-        set { if (Parent == null && Scene != null && Scene.Actors.ContainsKey(Id)) Scene.UpdateCharacterDirection(Id, false, Mathf.Wrap(-value * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi)); else _facing = value; }
+        get => Scene != null && Scene.ActorHeadings.TryGetValue(Id, out float heading) ? Mathf.PosMod(-heading * 4096 / Mathf.Tau, 4096) : _facing;
+        set { if (Scene != null && Scene.Actors.ContainsKey(Id)) Scene.UpdateCharacterDirection(Id, false, Mathf.Wrap(-value * Mathf.Tau / 4096, -Mathf.Pi, Mathf.Pi)); else _facing = value; }
     }
     private float _facing;
     /// <summary>Its extra angles (4096 a turn about retail's x, y and z): the engine's body shape, turned back into retail space.</summary>
@@ -92,6 +94,7 @@ public sealed class EventActor
         Character = character;
         Node = node;
         Skeleton = node.FindChildren("*", "Skeleton3D", true, false) is { Count: > 0 } skeletons ? (Skeleton3D)skeletons[0] : null;
+        _skeletonSpace = Skeleton?.Transform ?? Transform3D.Identity;
         Player = node.FindChildren("*", "AnimationPlayer", true, false) is { Count: > 0 } players ? (AnimationPlayer)players[0] : null;
     }
 
@@ -575,14 +578,23 @@ public sealed class EventActor
             // first two bones inherit the mounting frame instead of adding the humanoid rest turn/lift.
             if (Player?.AssignedAnimation == "rest" && Skeleton is { } own)
             {
+                Player.Stop(true);
                 own.ResetBonePose(0);
                 if (own.GetBoneCount() > 1) own.ResetBonePose(1);
             }
             var bone = skeleton.GlobalTransform * skeleton.GetBoneGlobalPose(held);
-            Scene?.UpdateCharacterDirection(Id, false, 0);
-            Scene?.SetActorBody(Id, Basis.Identity);
-            Node.GlobalTransform = bone * Local() * ModelSpace.AffineInverse();
+            // Keep the actor node in the engine's motion space. Glides and turns continue there,
+            // including the script's offset that places a prop's grip above its embedded tip.
+            // Only the drawing follows the mounting bone; overwriting Node lost those glides.
+            if (Skeleton is { } drawing) drawing.GlobalTransform = bone * Local();
+            _attached = true;
             return;
+        }
+        if (_attached && Skeleton is { } detached)
+        {
+            detached.Transform = _skeletonSpace;
+            if (Player?.AssignedAnimation == "rest") { Player.Play("rest"); Player.Advance(0); }
+            _attached = false;
         }
         if (Scene == null || !Scene.Actors.ContainsKey(Id)) { Node.Transform = RetailSpace * Local() * RetailSpace.AffineInverse(); return; }
         Node.Basis = Basis.Identity;

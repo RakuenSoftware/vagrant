@@ -109,6 +109,13 @@ The room sub-section after the geometry is the collision map.
 
 ## Characters
 
+Attached actors retain their bone-local position and heading in the engine's actor motion state, so
+scripted glides and turns continue to apply. `EventActor.Apply` places only the drawing skeleton in the
+parent bone's frame; it never replaces the motion node with that world transform. Static props stop
+their standalone `rest` animation while attached and restore it and their original drawing frame on
+detachment. The synthetic projection contract exercises the embedded tip, raised grip and handoff,
+including instant and timed relative glides.
+
 Close-camera projection resolves the skeleton bound to each skinned mesh. Attached weapons can
 have their own skeleton and global attachment transform; their numeric or named skin binds must
 never be evaluated through the body skeleton. Hidden attachment parents remain hidden during
