@@ -119,9 +119,9 @@ public sealed class RetailInstallation
         string ffmpeg = Executable("ffmpeg"), ffprobe = Executable("ffprobe"), stream = Path.Combine(DiscPath, "MOV", "TITLE.STR");
         Directory.CreateDirectory(CachePath);
         string partVideo = video + ".partial.ogv", partMusic = music + ".partial.ogg";
-        var picture = System.Threading.Tasks.Task.Run(() => Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", stream,
+        var picture = System.Threading.Tasks.Task.Run(() => Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
             "-map", "0:v:0", "-an", "-c:v", "libtheora", "-q:v", "8", "-pix_fmt", "yuv420p", partVideo));
-        Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", stream, "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", partMusic);
+        Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream, "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", partMusic);
         picture.GetAwaiter().GetResult();
         var shape = JsonNode.Parse(Run(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", partVideo))!["streams"]![0]!;
@@ -230,8 +230,52 @@ public sealed class RetailInstallation
         if (!decoders.Contains(" mdec ", StringComparison.Ordinal) || !decoders.Contains(" adpcm_xa ", StringComparison.Ordinal))
             throw new InvalidDataException("The bundled media tool cannot decode PlayStation video and XA audio.");
         string temporary = Path.Combine(Path.GetTempPath(), "project-vagrant-media-" + Guid.NewGuid().ToString("N") + ".ogv");
+        string xa = temporary + ".str", decoded = temporary + ".wav";
         try
         {
+            // Eight independently constructed Mode 2 XA sectors encode stereo silence:
+            // 18 sound groups per sector, 112 samples per channel per group at 37.8 kHz.
+            // This exercises real STR probing, demuxing and ADPCM decoding without game data.
+            using (var fixture = File.Create(xa))
+            {
+                for (int index = 0; index < 8; index++)
+                {
+                    var sector = new byte[2352];
+                    for (int sync = 1; sync <= 10; sync++) sector[sync] = 0xFF;
+                    sector[13] = 2; sector[14] = (byte)index; sector[15] = 2;
+                    sector[18] = sector[22] = index == 7 ? (byte)0xE4 : (byte)0x64;
+                    sector[19] = sector[23] = 1; // Stereo, 37.8 kHz, four-bit ADPCM.
+                    fixture.Write(sector);
+                }
+            }
+            var input = JsonNode.Parse(Run(ffprobe, "-v", "error", "-show_entries", "format=format_name:stream=codec_name,channels,sample_rate", "-of", "json", xa))!;
+            if ((string?)input["format"]?["format_name"] != "psxstr"
+                || (string?)input["streams"]?[0]?["codec_name"] != "adpcm_xa")
+                throw new InvalidDataException("The bundled tools cannot recognize a PlayStation STR/XA stream.");
+            Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", xa,
+                "-map", "0:a:0", "-c:a", "pcm_s16le", decoded);
+            using (var wave = new BinaryReader(File.OpenRead(decoded)))
+            {
+                if (new string(wave.ReadChars(4)) != "RIFF") throw new InvalidDataException("XA decode did not produce PCM audio.");
+                wave.ReadUInt32();
+                if (new string(wave.ReadChars(4)) != "WAVE") throw new InvalidDataException("XA decode did not produce a WAVE stream.");
+                bool samples = false;
+                while (wave.BaseStream.Position + 8 <= wave.BaseStream.Length)
+                {
+                    string chunk = new(wave.ReadChars(4));
+                    uint length = wave.ReadUInt32();
+                    if (chunk == "data")
+                    {
+                        if (length != 8 * 18 * 112 * 2 * 2) throw new InvalidDataException("XA decode produced an unexpected sample count.");
+                        for (uint i = 0; i < length; i++)
+                            if (wave.ReadByte() != 0) throw new InvalidDataException("The synthetic XA silence did not decode correctly.");
+                        samples = true;
+                        break;
+                    }
+                    wave.BaseStream.Seek(length + (length & 1), SeekOrigin.Current);
+                }
+                if (!samples) throw new InvalidDataException("The XA decoder produced no PCM samples.");
+            }
             Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "lavfi", "-i", "color=size=32x32:rate=15:duration=0.2",
                 "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=37800:duration=0.2",
@@ -245,7 +289,11 @@ public sealed class RetailInstallation
             }
             if (!video || !audio) throw new InvalidDataException("The bundled tools did not produce playable Theora video and stereo Vorbis audio.");
         }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        finally
+        {
+            foreach (string file in new[] { temporary, xa, decoded })
+                if (File.Exists(file)) File.Delete(file);
+        }
     }
 
     private static string Run(string executable, params string[] arguments)
