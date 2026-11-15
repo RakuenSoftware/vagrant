@@ -77,10 +77,8 @@ Those checks use deliberate envelope inputs and recorded output, never a physica
 controller or disc content. They reject non-.NET gameplay assembly dependencies.
 CI runs them on Linux, Windows and macOS in sparse checkouts containing only
 this library, its tests and the pinned .NET version, with no engine SDK present.
-Native player builds wait for those checks. Draft PRs run the gameplay checks;
-marking them ready starts the full native package checks. Exported players also
-require the separate gameplay assembly and reject Godot or wol-engine references
-from it.
+Native player builds wait for those checks. Exported players also require the
+separate gameplay assembly and reject Godot or wol-engine references from it.
 Other game systems still contain host-specific dependencies and remain to be
 extracted; this library establishes the boundary for that work.
 
