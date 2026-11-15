@@ -463,8 +463,12 @@ public sealed class EventActor
     public int ClipFrame(string clip)
     {
         if (Player == null) return 0;
-        double position = !Player.CurrentAnimation.IsEmpty ? Player.CurrentAnimationPosition : Player.HasAnimation(clip) ? Player.GetAnimation(clip).Length : 0;
-        return (int)(position * Installation.CharacterConversion.FramesPerSecond);
+        bool ended = Player.CurrentAnimation.IsEmpty;
+        double position = !ended ? Player.CurrentAnimationPosition : Player.HasAnimation(clip) ? Player.GetAnimation(clip).Length : 0;
+        // Animation.Length is a float: 31/30 comes back as 30.999999 SEQ frames.
+        // An ended clip has reached its declared integer frame, including commands on that tick.
+        double frame = position * Installation.CharacterConversion.FramesPerSecond;
+        return ended ? (int)Math.Round(frame) : (int)frame;
     }
 
     /// <summary>Adds an animation set (an event's "esqnnn", Ashley's "btn" and "artna") to the actor's rig.</summary>

@@ -28,16 +28,16 @@ public partial class AnimationScriptContracts : Node
             Array.Fill(seq,(byte)255,start,slots);seq[start+13]=0;seq[start+14]=1;
             for(int i=0;i<2;i++)
             {
-                int h=16+i*stride;BitConverter.TryWriteBytes(seq.AsSpan(h),(ushort)4);seq[h+2]=255;
+                int h=16+i*stride;BitConverter.TryWriteBytes(seq.AsSpan(h),(ushort)31);seq[h+2]=255;
                 BitConverter.TryWriteBytes(seq.AsSpan(h+4),(ushort)(16+i*4));
                 BitConverter.TryWriteBytes(seq.AsSpan(h+10),(ushort)9);
-                seq[streams+16+i*4]=4;seq[streams+17+i*4]=(byte)(i==0?24:23);
+                seq[streams+16+i*4]=31;seq[streams+17+i*4]=(byte)(i==0?24:23);
             }
             seq[streams+6]=0x82;seq[streams+7]=2; // Three ticks of root velocity: final x=3, then hold.
             var lengths=new byte[65];lengths[23]=lengths[24]=1;
             decoder=new CharacterConversion("synthetic",model,Array.Empty<(string,byte[],int)>()){ScriptLengths=lengths};decoder.Prepare();
             var events=new JsonObject();var clips=decoder.Clips("base",seq,0,events);
-            if(clips.Count!=2 || clips.Any(c=>c.Animation.LoopMode!=Animation.LoopModeEnum.None || Math.Abs(c.Animation.Length-4/30.0)>.00001))
+            if(clips.Count!=2 || clips.Any(c=>c.Animation.LoopMode!=Animation.LoopModeEnum.None || Math.Abs(c.Animation.Length-31/30.0)>.00001))
                 throw new InvalidOperationException("The decoder looped a half-stride or dropped its final script tick.");
             if(events["base_13"]![0]![1]!.GetValue<int>()!=24 || events["base_14"]![0]![1]!.GetValue<int>()!=23)
                 throw new InvalidOperationException("Adjacent-animation script commands were discarded.");
@@ -76,7 +76,7 @@ public partial class AnimationScriptContracts : Node
                 actor.ScriptClip="";actor.ScriptFrame=-1;
                 if(!actor.Animate("base_13",0))throw new InvalidOperationException("Cannot start the first walking phase.");
                 var phases=new List<string>{"base_13"};
-                for(int tick=0;tick<64;tick++)
+                for(int tick=0;tick<480;tick++)
                 {
                     field.AdvancePresentation();step.Invoke(adapter,new object[]{actor});
                     string current=actor.Player!.AssignedAnimation;
