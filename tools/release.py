@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import plistlib
 import shutil
+import sys
 import subprocess
 import tempfile
 import tarfile
@@ -36,12 +37,76 @@ class DesktopRelease:
         print("+", " ".join(map(str, command)), flush=True)
         subprocess.run(list(map(str, command)), cwd=cwd or self.root, check=True)
 
+    def preflight(self, *, managed=False, media=False, source=False):
+        """Check build inputs before downloads, exports or output-directory creation."""
+        errors = []
+        host = platform.system()
+        target = {"Linux": "linux-x64", "Windows": "windows-x64", "Darwin": "macos-universal"}.get(host)
+        if self.args.target != target:
+            errors.append(f"Build {self.args.target} on its native host (this host is {host}).")
+        if sys.version_info < (3, 12):
+            errors.append("Install Python 3.12 or newer.")
+        if managed:
+            requested = json.loads((self.root / "global.json").read_text())["sdk"]["version"]
+            dotnet = shutil.which("dotnet")
+            if not dotnet:
+                errors.append(f"Install .NET SDK {requested} and put dotnet on PATH (required by global.json).")
+            else:
+                # Let the SDK resolver enforce global.json, including its roll-forward policy.
+                result = subprocess.run([dotnet, "--version"], cwd=self.root, capture_output=True, text=True)
+                if result.returncode:
+                    installed = subprocess.run([dotnet, "--list-sdks"], cwd=self.root, capture_output=True, text=True)
+                    versions = ", ".join(line.split()[0] for line in installed.stdout.splitlines() if line.strip()) or "none"
+                    errors.append(f"Install .NET SDK {requested}, as required by global.json. Installed SDKs: {versions}.")
+        if media:
+            if host == "Windows":
+                root = Path(os.environ.get("MSYS2_ROOT") or "C:/msys64")
+                self.media_bash = (root / "usr/bin/bash.exe").as_posix()
+                required = ["usr/bin/bash.exe", "usr/bin/make.exe", "usr/bin/pkgconf.exe", "usr/bin/diff.exe",
+                            "mingw64/bin/gcc.exe", "mingw64/bin/ar.exe", "mingw64/bin/ranlib.exe"]
+                missing = [name for name in required if not (root / name).is_file()]
+                if missing:
+                    errors.append(f"MSYS2/MINGW64 is incomplete at {root}: missing {', '.join(missing)}. "
+                                  "Install MSYS2, then run in its MINGW64 terminal: "
+                                  "pacman -S --needed make pkgconf diffutils mingw-w64-x86_64-gcc. "
+                                  "Set MSYS2_ROOT if MSYS2 is installed elsewhere.")
+            else:
+                self.media_bash = "bash"
+                required = ["bash", "make", "pkg-config", "ar", "ranlib", "diff"]
+                required += ["clang", "xcrun", "lipo", "codesign"] if host == "Darwin" else ["cc"]
+                missing = [name for name in required if not shutil.which(name)]
+                if missing:
+                    install = "Install Xcode Command Line Tools (xcode-select --install) and pkg-config." if host == "Darwin" else "Install build-essential, pkg-config and diffutils (or your distribution's equivalents)."
+                    errors.append(f"Missing media build tools: {', '.join(missing)}. {install}")
+                if host == "Darwin" and shutil.which("xcrun"):
+                    compiler = subprocess.run(["xcrun", "--find", "clang"], capture_output=True, text=True)
+                    if compiler.returncode:
+                        errors.append("Activate Xcode Command Line Tools before building media (xcode-select --install).")
+            if not shutil.which("curl"):
+                errors.append("Install curl and put it on PATH; it downloads the checksummed media sources.")
+        identity = {"game_source": "archive", "game_commit": None, "game_worktree_dirty": None}
+        if source and (self.root / ".git").exists():
+            git = shutil.which("git")
+            if not git:
+                errors.append("Install Git and put it on PATH to record this checkout's revision, or build from a source ZIP.")
+            else:
+                revision = subprocess.run([git, "rev-parse", "--verify", "HEAD"], cwd=self.root, capture_output=True, text=True)
+                status = subprocess.run([git, "status", "--porcelain", "--ignore-submodules=all"], cwd=self.root, capture_output=True, text=True)
+                if revision.returncode or status.returncode:
+                    errors.append("Cannot read this checkout's Git revision/status. Repair the checkout or use a source ZIP.")
+                else:
+                    identity = {"game_source": "git", "game_commit": revision.stdout.strip(), "game_worktree_dirty": bool(status.stdout)}
+        if errors:
+            raise RuntimeError("Build prerequisites are not ready:\n- " + "\n- ".join(errors))
+        return identity
+
     def verify_projection(self):
+        self.preflight(managed=True)
         editor, _ = self.prepare()
         # Editor import creates UID metadata beside scripts. Keep those writes out of the immutable SDK.
         with tempfile.TemporaryDirectory(prefix="vagrant-projection-", dir=self.cache) as temporary:
             stage = Path(temporary)
-            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg",
+            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "Directory.Build.props", "export_presets.cfg",
                          "installation", "runtime", "gameplay", "scenes", "tests"):
                 source = self.root / name
                 if source.is_dir():
@@ -140,7 +205,7 @@ class DesktopRelease:
                             data = b"\n"
                         if path.suffix in (".txt", ".md", ".svg", ".uid", ".tscn", ".gdextension", ".props", ".json"):
                             data = data.replace(b"\r\n", b"\n")
-                        if name.startswith(("managed/", ".dependencies/")) or name in ("GodotApi.props", "WolEngine.props"):
+                        if name.startswith(("managed/", "portable/", ".dependencies/")) or name in ("GodotApi.props", "WolEngine.props"):
                             destination = stage / "platforms" / target / path
                         else:
                             destination = stage / path
@@ -214,9 +279,7 @@ class DesktopRelease:
         return editor, api
 
     def bundle_media(self, output):
-        host = {"Linux": "linux-x64", "Windows": "windows-x64", "Darwin": "macos-universal"}[platform.system()]
-        if host != self.args.target:
-            raise RuntimeError("Build media tools on their native CI runner.")
+        self.preflight(media=True)
         output.mkdir(parents=True, exist_ok=True)
         sources = json.loads((self.root / "distribution/media-sources.json").read_text())["sources"]
         downloaded = []
@@ -244,8 +307,7 @@ class DesktopRelease:
                     packed.extractall(work / "sources", filter="data")
                 if not (work / "sources" / name / "configure").is_file():
                     raise RuntimeError("Missing media configure script: " + name)
-            bash = (Path(os.environ.get("MSYS2_ROOT") or "C:/msys64") / "usr/bin/bash.exe").as_posix() if platform.system() == "Windows" else "bash"
-            command = [bash, (self.root / "tools/build_media.sh").as_posix(), self.args.target, work.as_posix(), output.as_posix()]
+            command = [self.media_bash, (self.root / "tools/build_media.sh").as_posix(), self.args.target, work.as_posix(), output.as_posix()]
             print("+", " ".join(command), flush=True)
             subprocess.run(command, check=True, env={**os.environ, "MSYSTEM": "MINGW64"})
             notices = output / "licenses"
@@ -308,24 +370,25 @@ class DesktopRelease:
             if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected for p in libraries):
                 raise RuntimeError("The player did not retain the pinned Release library: " + name)
 
-        expected_core = hashlib.sha256((self.engine / "portable/Release/WolEngine.Core.dll").read_bytes()).hexdigest()
+        expected_core = hashlib.sha256((self.sdk / "portable/Release/WolEngine.Core.dll").read_bytes()).hexdigest()
         libraries = list(output.rglob("WolEngine.Core.dll"))
         if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected_core for p in libraries):
             raise RuntimeError("The player did not retain the pinned portable core library")
 
     def build(self):
-        editor, api = self.prepare()
         output = Path(self.args.output or self.root / "dist" / self.args.target).resolve()
         if output.exists() and any(output.iterdir()):
             raise RuntimeError("Choose an empty output directory; existing files are not removed.")
-        output.mkdir(parents=True, exist_ok=True)
         version = self.args.version
         if not version or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in version):
             raise RuntimeError("Version must contain only letters, digits, dots, hyphens or underscores.")
+        identity = self.preflight(managed=True, media=True, source=True)
+        editor, api = self.prepare()
+        output.mkdir(parents=True, exist_ok=True)
         # A whitelist prevents local discs, caches, test assets and unrelated engine content entering the exporter.
         with tempfile.TemporaryDirectory(prefix="vagrant-export-", dir=self.cache) as temp:
             stage = Path(temp)
-            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg", "installation", "runtime", "gameplay", "scenes"):
+            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "Directory.Build.props", "export_presets.cfg", "installation", "runtime", "gameplay", "scenes"):
                 source = self.root / name
                 if source.is_dir():
                     shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("bin", "obj"))
@@ -333,12 +396,12 @@ class DesktopRelease:
                     shutil.copy2(source, stage / name)
             addon = stage / "addons/wol_engine"
             shutil.copytree(self.engine / "runtime", addon / "runtime")
-            shutil.copytree(self.engine / "portable", addon / "portable")
             sdk = addon / "platforms" / self.args.target
             sdk.mkdir(parents=True)
             shutil.copy2(self.sdk / "GodotApi.props", sdk / "GodotApi.props")
             shutil.copy2(self.sdk / "WolEngine.props", sdk / "WolEngine.props")
             shutil.copytree(self.sdk / "managed", sdk / "managed")
+            shutil.copytree(self.sdk / "portable", sdk / "portable")
             (addon / "native/bin").mkdir(parents=True)
             shutil.copy2(self.engine / "native/spatial.gdextension", addon / "native/spatial.gdextension")
             suffix = {"linux": "so", "windows": "dll", "macos": "dylib"}[self.native_platform]
@@ -397,11 +460,10 @@ class DesktopRelease:
         native = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in output.rglob("*spatial*") if p.is_file()}
         manifest = {
             "version": version, "target": self.args.target,
-            "game_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip(),
+            **identity,
             "engine_commit": self.runtime["commit"],
             "engine_binary_commit": self.runtime.get("binary_commit", self.runtime["commit"]),
             "godot": self.VERSION, "native_sha256": native,
-            "game_worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain", "--ignore-submodules=all"], cwd=self.root)),
             "engine_package_sha256": self.runtime["targets"][self.args.target]["sha256"],
             "disc_content_included": False, "engine_source_included": False,
         }
@@ -438,20 +500,23 @@ if __name__ == "__main__":
     parser.add_argument("--audit", type=Path, help="Audit an existing player directory without building")
     args = parser.parse_args()
     release = DesktopRelease(args)
-    if args.vendor_runtime:
-        release.vendor()
-    elif not args.target:
-        parser.error("a desktop target is required")
-    elif args.media_only:
-        release.bundle_media(Path(args.output or "dist/media").resolve())
-    elif args.verify_projection:
-        release.verify_projection()
-    elif args.prepare:
-        editor, _ = release.prepare()
-        print("QUALIFIED_EDITOR:", editor)
-    elif args.audit:
-        release.prepare()
-        release.audit(args.audit.resolve())
-        print("PACKAGE_FILES_OK")
-    else:
-        release.build()
+    try:
+        if args.vendor_runtime:
+            release.vendor()
+        elif not args.target:
+            parser.error("a desktop target is required")
+        elif args.media_only:
+            release.bundle_media(Path(args.output or "dist/media").resolve())
+        elif args.verify_projection:
+            release.verify_projection()
+        elif args.prepare:
+            editor, _ = release.prepare()
+            print("QUALIFIED_EDITOR:", editor)
+        elif args.audit:
+            release.prepare()
+            release.audit(args.audit.resolve())
+            print("PACKAGE_FILES_OK")
+        else:
+            release.build()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, "BUILD_FAILED: " + str(error) + "\n")

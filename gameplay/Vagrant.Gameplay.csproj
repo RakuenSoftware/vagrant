@@ -7,7 +7,6 @@
     <Optimize>true</Optimize>
     <RootNamespace>Wol.Games.Vagrant</RootNamespace>
     <AssemblyName>Vagrant.Gameplay</AssemblyName>
-    <WolEngineCoreRoot Condition="'$(WolEngineCoreRoot)' == ''">$(MSBuildThisFileDirectory)../addons/wol_engine/portable</WolEngineCoreRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
     <DebugType>none</DebugType>

@@ -6,11 +6,7 @@
     <RootNamespace>Wol.Games.Vagrant</RootNamespace>
     <AssemblyName>Vagrant</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <WolEngineTarget Condition="'$(WolEngineTarget)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">windows-x64</WolEngineTarget>
-    <WolEngineTarget Condition="'$(WolEngineTarget)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">macos-universal</WolEngineTarget>
-    <WolEngineTarget Condition="'$(WolEngineTarget)' == ''">linux-x64</WolEngineTarget>
     <WolEngineSdkRoot>$(MSBuildProjectDirectory)/addons/wol_engine/platforms/$(WolEngineTarget)</WolEngineSdkRoot>
-    <WolEngineCoreRoot Condition="'$(WolEngineCoreRoot)' == ''">$(MSBuildProjectDirectory)/addons/wol_engine/portable</WolEngineCoreRoot>
     <GodotApiConfiguration Condition="'$(Configuration)' == 'Release'">Release</GodotApiConfiguration>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release' or '$(Configuration)' == 'ExportRelease'">

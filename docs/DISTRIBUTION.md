@@ -24,16 +24,18 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-dcb5145dfeb3906830c0c6dc6b6d1f22ad1b4950`. Native Linux, Windows and
+`runtime-a66481a4008acb84091ab9f9049437efb81f8fc5`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK adds the host-neutral `WolEngine.Core` pixel contracts and the backend
-image/PNG codec API used by the portable content decoders. Its portable DLLs are
-byte-identical across the three platform archives. It retains controller motor
+This SDK adds portable disc/content-pack owners and the `IMediaTools` boundary,
+with Godot media execution in the backend. Type forwarders preserve the previous
+SDK’s disc/content-pack identities. It retains the host-neutral pixel contracts
+and image/PNG codec API used by the portable content decoders. Its portable DLLs are
+retained byte for byte from their respective platform archives. It retains controller motor
 output, the reused-dialogue sizing fix and the four painted shader programs
 in their existing compiled C# owners. There are no loose shader
 implementations or owned debug symbols in the dependency update. Earlier
@@ -91,7 +93,8 @@ dotnet run --project tests/gameplay/GameplayContracts.csproj -c Release
 ```
 
 CI runs these checks on Linux, Windows and macOS in sparse checkouts containing
-only this library, its tests, the pinned .NET version and `portable` binaries.
+only this library, its tests, the pinned .NET version, target-selection props
+and each SDK’s `portable` binaries.
 Godot, the backend SDK, native libraries and a disc installation are absent.
 The checks reject backend dependencies both in gameplay and transitively in the
 portable core, and exercise palette keys, transparency passes, indexed/direct
@@ -99,7 +102,10 @@ art, save-picture palette columns, glyph metrics, controller envelopes, install 
 files/cache, explicit STR input arguments, media-output validation and XA
 integrity despite a cached decode.
 Native player builds wait for these checks and retain the published core DLL
-byte for byte. Vendoring rejects differing portable bytes across target SDKs.
+byte for byte. Vendoring preserves each target’s portable core bytes, alongside its other
+managed/API assemblies. `Directory.Build.props` selects the native target for
+both the host and the plain gameplay project. The core has no Godot dependency;
+platform SDKs may differ in .NET generator build metadata.
 
 The host still prepares the installation’s decoded room/rig cache with the
 existing orchestration; this step constructs rendering resources. No renderer is
@@ -111,8 +117,32 @@ incremental boundary, not a claim that the whole application is portable yet.
 
 ## Build and CI
 
-Use Python 3.12+ and .NET SDK 10.0.403. No engine credentials, SCons or C++
-compiler are needed. On the native host:
+Use Python 3.12+ and the pinned .NET SDK 10.0.403 (`global.json` uses
+`latestPatch`; earlier 10.0 feature bands do not qualify). No engine credentials,
+SCons or C++ compiler are needed. Bundled media is compiled with a C toolchain:
+
+- Windows: [MSYS2](https://www.msys2.org/) at `C:/msys64` or the root specified by
+  `MSYS2_ROOT`. In its MINGW64 terminal install
+  `pacman -S --needed make pkgconf diffutils mingw-w64-x86_64-gcc`.
+- Linux: a C compiler/binutils, Bash, make, pkg-config, diff and curl; on
+  Debian/Ubuntu use `build-essential pkg-config diffutils curl`.
+- macOS: Xcode Command Line Tools (`xcode-select --install`) and pkg-config;
+  Bash, make, curl, lipo and codesign must be available.
+
+The preflight asks the .NET resolver to select the SDK in the project directory
+and checks media tools before downloading Godot, creating player output,
+exporting or compiling FFmpeg. It reports all missing prerequisites together.
+Synthetic projection checks need the managed SDK but not the media compiler.
+`--media-only` checks media prerequisites without requiring .NET.
+
+Both Git checkouts and GitHub source ZIPs are supported. Checkout provenance is
+read before the expensive work; missing Git or unreadable checkout metadata
+fails early. Archive builds use `game_source: "archive"`, `game_commit: null`
+and `game_worktree_dirty: null` rather than claiming a known revision or failing
+at the end. Git builds use `game_source: "git"`, their actual commit and a boolean
+dirty state. Source archives are not treated as their parent directory's checkout.
+
+On the native host:
 
 ```sh
 python tools/release.py linux-x64 --version development
@@ -159,8 +189,9 @@ allowed as metadata. These checks do not establish legal clearance or detect
 every possible modified/decoded asset. Each native CI job runs the actual exported executable's
 `--verify-package` check with an empty installation, verifies the separate
 compiled engine/native audio, and rejects test types and implementation source
-in the PCK. Archives contain BUILD.json with game/engine revisions, upstream SDK
-checksum, native hashes and game dirty state, plus a SHA-256 sidecar. These are
+in the PCK. Archives contain BUILD.json with source provenance, game/engine revisions, upstream
+SDK checksum, native hashes and game dirty state, plus a SHA-256 sidecar. Archive
+builds explicitly mark unknown game revision/dirty state with null values. These are
 provenance checks, not a bit-for-bit reproducibility claim.
 
 No retail assets, disc images, BIOS, installed files or decoded caches are
