@@ -24,15 +24,18 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-8fd3e8780c985721730855396de987e59e268fcf`. Native Linux, Windows and
+`runtime-dcb5145dfeb3906830c0c6dc6b6d1f22ad1b4950`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK includes the reused-dialogue sizing fix and moves four painted shader
-programs into their existing compiled C# owners. There are no loose shader
+This SDK adds the host-neutral `WolEngine.Core` pixel contracts and the backend
+image/PNG codec API used by the portable content decoders. Its portable DLLs are
+byte-identical across the three platform archives. It retains controller motor
+output, the reused-dialogue sizing fix and the four painted shader programs
+in their existing compiled C# owners. There are no loose shader
 implementations or owned debug symbols in the dependency update. Earlier
 versions distributed those four shader files; removing them here does not
 revoke existing downloads. Compiled assemblies, including their shader strings,
@@ -57,6 +60,40 @@ shared resources, rejects implementation source, and writes a new vendored tree.
 Dependency updates reject loose shader programs as implementation source.
 It refuses to overwrite an existing addon. Review and commit that directory and
 VENDOR.json together. CI never runs this maintainer operation.
+
+## Engine-independent gameplay
+
+`gameplay/Vagrant.Gameplay.csproj` is an ordinary .NET 10 library. It references
+only .NET and the host-neutral `WolEngine.Core` contracts. It does not reference
+Godot or the `WolEngine` backend assembly. The application composes these rules
+and decoded pixel planes with the host at its presentation boundary.
+
+Vagrant owns the controller's two-channel envelopes and timing, and the retail
+content decoders under `gameplay/installation`: title/loading art, fonts, HUD,
+manuals, overlays, effects, map geometry/textures/skies, inventory, save pictures,
+results, event-script translation and ending decompression. Images are decoded into byte-defined raster
+planes. wol-engine owns hardware controller output, native image creation and
+PNG cache encoding/decoding. There is one decoder per format and one owned image
+buffer; no parallel Godot decoder or second image cache remains.
+
+Run the deliberate-input contracts with the .NET SDK and vendored portable DLLs:
+
+```sh
+dotnet run --project tests/gameplay/GameplayContracts.csproj -c Release
+```
+
+CI runs these checks on Linux, Windows and macOS in sparse checkouts containing
+only this library, its tests, the pinned .NET version and `portable` binaries.
+Godot, the backend SDK, native libraries and a disc installation are absent.
+The checks reject backend dependencies both in gameplay and transitively in the
+portable core, and exercise palette keys, transparency passes, indexed/direct
+art, save-picture palette columns, glyph metrics and controller envelopes.
+Native player builds wait for these checks and retain the published core DLL
+byte for byte. Vendoring rejects differing portable bytes across target SDKs.
+
+Other game systems, including character rendering, audio playback and scenes,
+still contain Godot dependencies and remain to be extracted. This is an
+incremental boundary, not a claim that the whole application is portable yet.
 
 ## Build and CI
 

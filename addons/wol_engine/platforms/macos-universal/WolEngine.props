@@ -2,6 +2,7 @@
   <PropertyGroup>
     <WolEngineConfiguration Condition="'$(Configuration)' == 'Debug'">Debug</WolEngineConfiguration>
     <WolEngineConfiguration Condition="'$(Configuration)' != 'Debug'">Release</WolEngineConfiguration>
+    <WolEngineCoreRoot Condition="'$(WolEngineCoreRoot)' == ''">$(MSBuildThisFileDirectory)portable</WolEngineCoreRoot>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="addons/wol_engine/**/*.cs" />
@@ -10,4 +11,5 @@
       <Private>true</Private>
     </Reference>
   </ItemGroup>
+  <Import Project="$(WolEngineCoreRoot)/WolEngine.Core.props" />
 </Project>

@@ -16,16 +16,6 @@ namespace Wol.Games.Vagrant.Installation;
 /// </summary>
 public sealed class CharacterConversion
 {
-    /// <summary>
-    /// Retail animation frames per second: the animation interpreter (BATTLE.PRG 0x800AD714) steps a SEQ frame on each
-    /// tick of the 30 Hz event clock (at the 15 Hz frame step, f1 4, two). So the clips' strides match their glides:
-    /// the opening's knight walks 32 frames, a stride each half, in a second at his 130 units a second, and Ashley
-    /// runs her 10-frame cycle at 18 units a tick.
-    /// </summary>
-    public const float FramesPerSecond = 30f;
-    /// <summary>Event-clock ticks (30 Hz) per SEQ frame.</summary>
-    public const int TicksPerFrame = 1;
-
     private readonly string _name;
     private readonly byte[] _model;
     private readonly List<(string Set, byte[] Data, int Offset)> _sequences;
@@ -124,22 +114,6 @@ public sealed class CharacterConversion
         return scripts;
     }
 
-    /// <summary>
-    /// Writes a PS1 colour (0 transparent) as four bytes of RGBA, scaled by <paramref name="gain"/>. On semi-transparent
-    /// faces only texels with the mask bit (0x8000) blend, as on the rooms' polygons: <paramref name="mask"/> 1 gives those
-    /// half alpha and leaves the rest opaque, 2 keeps only the unmasked texels and 3 only the masked ones (the two draws
-    /// of an additive or subtractive face); 0 ignores the bit.
-    /// </summary>
-    public static void Put(byte[] data, int at, ushort colour, int mask, float gain)
-    {
-        bool masked = (colour & 0x8000) != 0;
-        var shown = TitleConversion.ToColor(colour, false);
-        data[at] = (byte)(shown.R8 * gain);
-        data[at + 1] = (byte)(shown.G8 * gain);
-        data[at + 2] = (byte)(shown.B8 * gain);
-        data[at + 3] = colour == 0 ? (byte)0 : mask switch { 1 => masked ? (byte)128 : (byte)255, 2 => masked ? (byte)0 : (byte)255, 3 => masked ? (byte)255 : (byte)0, _ => (byte)255 };
-    }
-
     private static short BigSigned(byte[] data, int offset) => (short)((data[offset] << 8) | data[offset + 1]);
 
     /// <summary>
@@ -197,7 +171,7 @@ public sealed class CharacterConversion
         if (names.Count == 0)
         {
             // glTF drops animations without tracks, so the rest pose holds the root bone explicitly.
-            var rest = new Animation { Length = 1 / FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
+            var rest = new Animation { Length = 1 / EventConversion.FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
             int track = rest.AddTrack(Animation.TrackType.Rotation3D);
             rest.TrackSetPath(track, "Space/Skeleton:b0");
             rest.RotationTrackInsertKey(track, 0, Quaternion.Identity);
@@ -547,7 +521,7 @@ public sealed class CharacterConversion
             {
                 int index = packed ? (_model[pixels + y * rowBytes + x / 2] >> (x & 1) * 4) & 15 : _model[pixels + y * rowBytes + x];
                 ushort colour = index < colours ? BitConverter.ToUInt16(_model, at + 8 + index * 2) : (ushort)0;
-                Put(data, (y * width + x) * 4, colour, mask, gain);
+                TitleConversion.WriteTexel(data, (y * width + x) * 4, colour, mask, gain);
             }
         return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
     }
@@ -565,7 +539,7 @@ public sealed class CharacterConversion
             : index < shared + own ? BitConverter.ToUInt16(_model, palettes + shared * 2 + (_weaponPalette * own + index - shared) * 2) : 0);
         var data = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
-            for (int x = 0; x < width; x++) Put(data, (y * width + x) * 4, Colour(_model[image + y * width + x]), mask, gain);
+            for (int x = 0; x < width; x++) TitleConversion.WriteTexel(data, (y * width + x) * 4, Colour(_model[image + y * width + x]), mask, gain);
         return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
     }
 
@@ -584,7 +558,7 @@ public sealed class CharacterConversion
             int header = 16 + index * stride;
             int frames = BitConverter.ToUInt16(seq, header);
             int other = (sbyte)seq[header + 2];
-            var animation = new Animation { Length = Math.Max(1, frames) / FramesPerSecond, LoopMode = Animation.LoopModeEnum.None };
+            var animation = new Animation { Length = Math.Max(1, frames) / EventConversion.FramesPerSecond, LoopMode = Animation.LoopModeEnum.None };
             // The translation stream places the root bone above the actor's floor position: its first value in map
             // units, and its keyed deltas in half units. An animation built on a base animation starts from the base's
             // first value, as its rotations do.
@@ -601,7 +575,7 @@ public sealed class CharacterConversion
                 {
                     position += velocity * span / 2;
                     frame += span;
-                    animation.PositionTrackInsertKey(track, frame / FramesPerSecond, position);
+                    animation.PositionTrackInsertKey(track, frame / EventConversion.FramesPerSecond, position);
                 }
             }
             // The movement stream (header +8, the clip's own; BATTLE.PRG 0x800AFA28) moves the actor itself: it opens with a
@@ -639,7 +613,7 @@ public sealed class CharacterConversion
                 {
                     rotation += velocity * span;
                     frame += span;
-                    animation.RotationTrackInsertKey(track, frame / FramesPerSecond, Rotation(rotation));
+                    animation.RotationTrackInsertKey(track, frame / EventConversion.FramesPerSecond, Rotation(rotation));
                 }
             }
             // Each bone's scale (64 is whole), after its rotation streams (BATTLE.PRG 0x800ACFA0 sets it as the clip
@@ -670,7 +644,7 @@ public sealed class CharacterConversion
                 {
                     scale += velocity * span;
                     frame += span;
-                    animation.ScaleTrackInsertKey(track, frame / FramesPerSecond, (scale / 64).Max(Vector3.One / 4096));
+                    animation.ScaleTrackInsertKey(track, frame / EventConversion.FramesPerSecond, (scale / 64).Max(Vector3.One / 4096));
                 }
             }
             // glTF derives duration from the last key, discarding a trailing held frame. Keep the

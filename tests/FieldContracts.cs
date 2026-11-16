@@ -5659,7 +5659,7 @@ public partial class FieldContracts : Node
         // The second channel clips their combined level; stopping event tag 2 leaves effect tag 1 running.
         bool vibrationEnabled = VibrationDriver.Enabled;
         VibrationDriver.Enabled = false;
-        var vibration = new VibrationDriver();
+        var vibration = new VibrationDriver((_, _) => { });
         try
         {
             byte[] source = { 5, 2, 1, 0, 0, 2, 100, 2, 200, 0, 0, 99 };

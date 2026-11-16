@@ -3,8 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
-using Godot;
-using Wol.Engine.Install;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -36,7 +35,7 @@ public sealed class OverlayConversion
         pathAt(BitConverter.ToUInt32(battle, FileTableOffset + id * 4) >> 8);
 
     /// <summary>Puts each layer's image into <paramref name="images"/> and returns their definitions.</summary>
-    public JsonObject Export(IDictionary<string, Image> images)
+    public JsonObject Export(IDictionary<string, RasterImage> images)
     {
         var layers = new List<(int Columns, int Rows, int Type, int Tiles)>();
         int at = 0, extra = _words[3];
@@ -94,10 +93,10 @@ public sealed class OverlayConversion
                             ushort value = clut + colour < _words.Length ? _words[clut + colour] : (ushort)0;
                             int pixel = ((row * TileHeight + y) * imageWidth + column * TileWidth + x) * 4;
                             var shown = TitleConversion.ToColor(value, true);
-                            (data[pixel], data[pixel + 1], data[pixel + 2], data[pixel + 3]) = ((byte)shown.R8, (byte)shown.G8, (byte)shown.B8, (byte)shown.A8);
+                            (data[pixel], data[pixel + 1], data[pixel + 2], data[pixel + 3]) = ((byte)shown.Red, (byte)shown.Green, (byte)shown.Blue, (byte)shown.Alpha);
                         }
                 }
-            images[$"{_name}.{index}"] = Image.CreateFromData(imageWidth, rows * TileHeight, false, Image.Format.Rgba8, data);
+            images[$"{_name}.{index}"] = new RasterImage(imageWidth, rows * TileHeight, RasterFormat.Rgba8, data);
             // Colour 0 of the layer's palette fills the cells without a tile in the credits' wipe (BATTLE.PRG 0x800C8060).
             ushort fill = clut < _words.Length ? _words[clut] : (ushort)0;
             definitions.Add(new JsonObject { ["image"] = $"{_name}.{index}", ["width"] = columns * TileWidth, ["height"] = rows * TileHeight, ["fill"] = fill });

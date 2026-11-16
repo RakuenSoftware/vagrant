@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using System.Text.Json.Nodes;
 
+using Wol.Engine.Imaging;
+
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
@@ -93,10 +95,10 @@ public static class AreaMapConversion
     }
 
     /// <summary>The map screen's backdrop, MENU/MAPBG.BIN: a 256-colour palette (15-bit, 512 bytes), then the 8-bit picture, 320 by 240.</summary>
-    public static Godot.Image Backdrop(byte[] file)
+    public static RasterImage Backdrop(byte[] file)
     {
         if (file.Length < 0x200 + 320 * 240) throw new InvalidDataException("MAPBG.BIN is truncated.");
-        var image = Godot.Image.CreateEmpty(320, 240, false, Godot.Image.Format.Rgba8);
+        var image = new RasterImage(320, 240);
         for (int i = 0; i < 320 * 240; i++)
         {
             ushort colour = BitConverter.ToUInt16(file, file[0x200 + i] * 2);

@@ -3,7 +3,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
+using System.Numerics;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -70,7 +71,7 @@ public sealed class MapConversion
         _skyLayout = layout;
     }
 
-    private Image Sky(out int width, out int height)
+    private RasterImage Sky(out int width, out int height)
     {
         byte[] tim = _sky!, far = _skyLayout!;
         // TIM files start with id 0x10; some carry a version byte above it.
@@ -82,7 +83,7 @@ public sealed class MapConversion
         const int Cell = 32;
         width = Math.Max(1, columns * Cell);
         height = Math.Max(1, rows * Cell);
-        // Pixels are written to a buffer and handed to Godot whole: one call, not one per pixel.
+        // The decoded sky keeps its original byte-defined pixels until the host creates an image.
         var data = new byte[width * height * 4];
         for (int cell = 0; cell < columns * rows; cell++)
         {
@@ -99,7 +100,8 @@ public sealed class MapConversion
                     int index = tim[pixels + 12 + sy * imageWidth + sx];
                     ushort colour = index < colours ? BitConverter.ToUInt16(tim, 20 + index * 2) : (ushort)0;
                     float fx = u / (float)(Cell - 1), fy = v / (float)(Cell - 1);
-                    float shade = Mathf.Lerp(Mathf.Lerp(corners[0], corners[1], fx), Mathf.Lerp(corners[2], corners[3], fx), fy);
+                    float top = corners[0] + (corners[1] - corners[0]) * fx, bottom = corners[2] + (corners[3] - corners[2]) * fx;
+                    float shade = top + (bottom - top) * fy;
                     int r = colour & 31, g = (colour >> 5) & 31, b = (colour >> 10) & 31;
                     int at4 = ((row * Cell + v) * width + column * Cell + u) * 4;
                     data[at4] = (byte)Math.Clamp(Math.Round(r / 31f * shade * 255), 0, 255);
@@ -108,11 +110,11 @@ public sealed class MapConversion
                     data[at4 + 3] = 255;
                 }
         }
-        return Image.CreateFromData(width, height, false, Image.Format.Rgba8, data);
+        return new RasterImage(width, height, RasterFormat.Rgba8, data);
     }
 
     /// <summary>Returns the room's field document, putting its textures into <paramref name="images"/> by the names the document gives them.</summary>
-    public JsonObject Export(IDictionary<string, Image> images)
+    public JsonObject Export(IDictionary<string, RasterImage> images)
     {
         int room = (int)BitConverter.ToUInt32(_map, 0), roomLength = (int)BitConverter.ToUInt32(_map, 4);
         if (room + roomLength > _map.Length || roomLength < RoomHeaderSize + 4) throw new InvalidDataException("The room section is malformed.");
@@ -732,7 +734,7 @@ public sealed class MapConversion
     /// down each time and wrapping round. For every room texture whose page the copies touch, the frames of the
     /// touched area are rendered into one image, a frame a row, for the field to show in turn.
     /// </summary>
-    private JsonArray TextureFrames(int room, SortedDictionary<string, (int Page, int Clut, int Mask)> textures, IDictionary<string, Image> images)
+    private JsonArray TextureFrames(int room, SortedDictionary<string, (int Page, int Clut, int Mask)> textures, IDictionary<string, RasterImage> images)
     {
         var result = new JsonArray();
         int at = SubSection(room, 11, out int length);
@@ -793,7 +795,7 @@ public sealed class MapConversion
                 if (maxU < 0) continue;
                 int width = maxU - minU, height = maxV - minV;
                 var vram = (ushort[])_vram.Clone();
-                var strip = Image.CreateEmpty(width, height * steps.Count, false, Image.Format.Rgba8);
+                var strip = new RasterImage(width, height * steps.Count);
                 for (int i = 0; i < steps.Count; i++)
                 {
                     foreach (var (sx, sy, cw, ch, dx, dy) in steps[i])
@@ -803,7 +805,7 @@ public sealed class MapConversion
                         for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) source[r * cw + c] = vram[((sy + r) & 511) * 1024 + ((sx + c) & 1023)];
                         for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) vram[((dy + r) & 511) * 1024 + ((dx + c) & 1023)] = source[r * cw + c];
                     }
-                    strip.BlitRect(Page(vram, page, clut, mask), new Rect2I(minU, minV, width, height), new Vector2I(0, height * i));
+                    strip.CopyFrom(Page(vram, page, clut, mask), minU, minV, width, height, 0, height * i);
                 }
                 string name = $"{_name}_{key}_frames{index}";
                 images[name] = strip;
@@ -1343,12 +1345,12 @@ public sealed class MapConversion
             var (ax, ay, az) = position[0];
             var u = new Vector3(position[1].X - ax, position[1].Y - ay, position[1].Z - az);
             var v = new Vector3(position[2].X - ax, position[2].Y - ay, position[2].Z - az);
-            var normal = u.Cross(v);
+            var normal = new Vector3(u.Y * v.Z - u.Z * v.Y, u.Z * v.X - u.X * v.Z, u.X * v.Y - u.Y * v.X);
             var placed = new (int, int, int)[corners];
             for (int corner = 0; corner < corners; corner++) placed[corner] = (origin.X + position[corner].X, origin.Y + position[corner].Y, origin.Z + position[corner].Z);
             Array.Sort(placed);
             string face = $"{string.Join(';', placed)}/{Math.Sign(normal.X)}{Math.Sign(normal.Y)}{Math.Sign(normal.Z)}";
-            if ((_map[at + 15] & 0x02) == 0 && !_opaqueFaces.Add(face) && normal != Vector3.Zero) behind = normal.Normalized() * 0.5f;
+            if ((_map[at + 15] & 0x02) == 0 && !_opaqueFaces.Add(face) && normal != Vector3.Zero) behind = normal / MathF.Sqrt(normal.X * normal.X + normal.Y * normal.Y + normal.Z * normal.Z) * 0.5f;
         }
         int[] colourOffsets = { 12, 16, 20, 36 };
         // Texture coordinates are stored rotated by one corner relative to positions: p1 uses the second pair.
@@ -1489,9 +1491,9 @@ public sealed class MapConversion
     /// alpha (exactly the hardware's half-and-half mode) and leaves the rest opaque; 2 keeps only the unmasked texels
     /// and 3 only the masked ones, for the two draws of an additive or subtractive polygon; 0 ignores the bit.
     /// </summary>
-    private Image Page(int page, int clut, int mask) => Page(_vram, page, clut, mask);
+    private RasterImage Page(int page, int clut, int mask) => Page(_vram, page, clut, mask);
 
-    private static Image Page(ushort[] vram, int page, int clut, int mask)
+    private static RasterImage Page(ushort[] vram, int page, int clut, int mask)
     {
         int pageX = (page & 15) * 64, pageY = ((page >> 4) & 1) * 256, depth = (page >> 7) & 3;
         int clutX = (clut & 63) * 16, clutY = (clut >> 6) & 0x1FF;
@@ -1504,8 +1506,8 @@ public sealed class MapConversion
                     ? (vram[(pageY + v) * 1024 + Math.Min(1023, pageX + u / 4)] >> ((u & 3) * 4)) & 15
                     : (vram[(pageY + v) * 1024 + Math.Min(1023, pageX + u / 2)] >> ((u & 1) * 8)) & 255;
                 ushort colour = vram[clutY * 1024 + Math.Min(1023, clutX + index)];
-                CharacterConversion.Put(data, (v * 256 + u) * 4, colour, mask, 1);
+                TitleConversion.WriteTexel(data, (v * 256 + u) * 4, colour, mask, 1);
             }
-        return Image.CreateFromData(256, 256, false, Image.Format.Rgba8, data);
+        return new RasterImage(256, 256, RasterFormat.Rgba8, data);
     }
 }

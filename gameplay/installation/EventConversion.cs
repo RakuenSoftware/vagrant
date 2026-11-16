@@ -17,6 +17,17 @@ namespace Wol.Games.Vagrant.Installation;
 /// </summary>
 public sealed class EventConversion
 {
+    /// <summary>
+    /// Retail animation frames per second: the animation interpreter (BATTLE.PRG 0x800AD714) steps a SEQ frame on each
+    /// tick of the 30 Hz event clock (at the 15 Hz frame step, f1 4, two). So the clips' strides match their glides:
+    /// the opening's knight walks 32 frames, a stride each half, in a second at his 130 units a second, and Ashley
+    /// runs her 10-frame cycle at 18 units a tick.
+    /// </summary>
+    public const float FramesPerSecond = 30f;
+    /// <summary>Event-clock ticks (30 Hz) per SEQ frame.</summary>
+    public const int TicksPerFrame = 1;
+
+
     private const int LengthTableOffset = 0x81430;  // BATTLE.PRG: bytes per script opcode.
     private const int CameraPitches = 0x81400;    // BATTLE.PRG 0x800E9C00: halfword pitch presets for b7 0a.
     private const int FamilySounds = 0x80890;       // BATTLE.PRG 0x800E9090: the first resident sound of each animation set's family.
@@ -524,7 +535,7 @@ public sealed class EventConversion
     private JsonObject Clip(int pc, int bank, int number, int blend, int skip = 0)
     {
         var args = new JsonObject { ["actor"] = Actor(pc + 1), ["clip"] = $"{AnimationSet(pc, bank)}_{number}", ["blend_seconds"] = blend >= 2 ? blend / (float)EventRate : 0 };
-        if (skip > 0) args["start_seconds"] = skip / CharacterConversion.FramesPerSecond;
+        if (skip > 0) args["start_seconds"] = skip / FramesPerSecond;
         return args;
     }
 

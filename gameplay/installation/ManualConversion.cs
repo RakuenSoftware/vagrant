@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -29,7 +29,7 @@ public static class ManualConversion
     /// Records with a nonzero first halfword blink (0x80104c30: a 16-bit mask at 2, stepped every halfword-4 frames);
     /// they are drawn still.
     /// </summary>
-    public static JsonObject Export(byte[] help, byte[] pictures, string name, IDictionary<string, Image> images)
+    public static JsonObject Export(byte[] help, byte[] pictures, string name, IDictionary<string, RasterImage> images)
     {
         var topic = Export(help);
         var list = new JsonArray();
@@ -51,7 +51,7 @@ public static class ManualConversion
                 int palette = BitConverter.ToInt16(help, record + 0x1C), tile = deep ? 8 : 16;
                 if (width <= 0 || height <= 0 || width > 512 || height > 512) continue;
                 int columns = (width + tile - 1) / tile, rows = (height + 15) / 16;
-                var image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+                var image = new RasterImage(width, height);
                 for (int r = 0; r < rows; r++)
                     for (int c = 0; c < columns; c++)
                     {

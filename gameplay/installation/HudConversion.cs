@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
-using Godot;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
@@ -48,11 +48,11 @@ public sealed class HudConversion
     }
 
     /// <summary>The HUD page (256 by 224 texels) through the palette at (<paramref name="clut"/>, 223).</summary>
-    public Image Page(int clut)
+    public RasterImage Page(int clut)
     {
         int page = (int)BitConverter.ToUInt32(_system, 0) + 8;
         if (page + 64 * 224 * 2 > _system.Length || clut < 832 || clut > 1008) throw new InvalidDataException("SYSTEM.DAT's HUD page is truncated.");
-        var image = Image.CreateEmpty(256, 224, false, Image.Format.Rgba8);
+        var image = new RasterImage(256, 224);
         for (int y = 0; y < 224; y++)
             for (int u = 0; u < 256; u++)
             {
@@ -68,13 +68,13 @@ public sealed class HudConversion
     /// (<paramref name="clutX"/>, <paramref name="clutY"/>) in section 7's third block (x 960 to 1023, rows 66 to 223).
     /// The map screen's compass is drawn from it.
     /// </summary>
-    public Image SecondPage(int clutX, int clutY)
+    public RasterImage SecondPage(int clutX, int clutY)
     {
         int second = (int)BitConverter.ToUInt32(_system, 4) + 8;
         int fonts = (int)BitConverter.ToUInt32(_system, 28), third = fonts + 2 * 64 * 224 * 2;
         if (second + 64 * 240 * 2 > _system.Length || third + 64 * 158 * 2 > _system.Length) throw new InvalidDataException("SYSTEM.DAT's second HUD page is truncated.");
         if (clutX < 960 || clutX > 1008 || clutY < 66 || clutY > 223) throw new InvalidDataException("No palette of the second HUD page is there.");
-        var image = Image.CreateEmpty(256, 240, false, Image.Format.Rgba8);
+        var image = new RasterImage(256, 240);
         for (int y = 0; y < 240; y++)
             for (int x = 0; x < 256; x++)
             {
@@ -86,7 +86,7 @@ public sealed class HudConversion
     }
 
     /// <summary>Makes the HUD page through each palette, among the images, and returns the asset names by palette.</summary>
-    public JsonObject Export(IDictionary<string, Image> images)
+    public JsonObject Export(IDictionary<string, RasterImage> images)
     {
         var assets = new JsonObject();
         foreach (var (name, x) in new[] { ("digits", 832), ("labels", 864), ("cursor", 896) })
@@ -95,13 +95,13 @@ public sealed class HudConversion
             assets[name] = "hud_" + name;
         }
         // BATTLE MODE: 73 by 10 at (64, 0) of section 1's page, through the palette at (976, 220).
-        images["hud_battle_mode"] = SecondPage(976, 220).GetRegion(new Rect2I(64, 0, 73, 10));
+        images["hud_battle_mode"] = SecondPage(976, 220).Region(64, 0, 73, 10);
         // The chain timing's "!" (BATTLE.PRG 0x800970BC): 22 by 32 at (0xC0, 0) of the same page, through the palette at
         // (960, 221).
-        images["hud_chain_cue"] = SecondPage(960, 221).GetRegion(new Rect2I(0xC0, 0, 22, 32));
+        images["hud_chain_cue"] = SecondPage(960, 221).Region(0xC0, 0, 22, 32);
         // The enemies' balloons (BATTLE.PRG 0x80095C18): the page's top 64 rows through the palette at (992, 220), the
         // rounded and jagged balloons, the small one, their dots and marks.
-        images["hud_emotes"] = SecondPage(992, 220).GetRegion(new Rect2I(0, 0, 256, 64));
+        images["hud_emotes"] = SecondPage(992, 220).Region(0, 0, 256, 64);
         assets["emotes"] = "hud_emotes";
         assets["battle_mode"] = "hud_battle_mode";
         assets["chain_cue"] = "hud_chain_cue";

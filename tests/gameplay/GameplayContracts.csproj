@@ -1,0 +1,14 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WolEngineCoreRoot Condition="'$(WolEngineCoreRoot)' == ''">$(MSBuildThisFileDirectory)../../addons/wol_engine/portable</WolEngineCoreRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../gameplay/Vagrant.Gameplay.csproj" />
+  </ItemGroup>
+  <Import Project="$(WolEngineCoreRoot)/WolEngine.Core.props" />
+</Project>

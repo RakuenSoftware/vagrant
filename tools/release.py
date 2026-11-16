@@ -42,10 +42,10 @@ class DesktopRelease:
         with tempfile.TemporaryDirectory(prefix="vagrant-projection-", dir=self.cache) as temporary:
             stage = Path(temporary)
             for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg",
-                         "installation", "runtime", "scenes", "tests"):
+                         "installation", "runtime", "gameplay", "scenes", "tests"):
                 source = self.root / name
                 if source.is_dir():
-                    shutil.copytree(source, stage / name)
+                    shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("bin", "obj"))
                 else:
                     shutil.copy2(source, stage / name)
             shutil.copytree(self.engine, stage / "addons/wol_engine")
@@ -308,6 +308,11 @@ class DesktopRelease:
             if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected for p in libraries):
                 raise RuntimeError("The player did not retain the pinned Release library: " + name)
 
+        expected_core = hashlib.sha256((self.engine / "portable/Release/WolEngine.Core.dll").read_bytes()).hexdigest()
+        libraries = list(output.rglob("WolEngine.Core.dll"))
+        if not libraries or any(hashlib.sha256(p.read_bytes()).hexdigest() != expected_core for p in libraries):
+            raise RuntimeError("The player did not retain the pinned portable core library")
+
     def build(self):
         editor, api = self.prepare()
         output = Path(self.args.output or self.root / "dist" / self.args.target).resolve()
@@ -320,14 +325,15 @@ class DesktopRelease:
         # A whitelist prevents local discs, caches, test assets and unrelated engine content entering the exporter.
         with tempfile.TemporaryDirectory(prefix="vagrant-export-", dir=self.cache) as temp:
             stage = Path(temp)
-            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg", "installation", "runtime", "scenes"):
+            for name in ("project.godot", "Vagrant.csproj", "Vagrant.sln", "global.json", "export_presets.cfg", "installation", "runtime", "gameplay", "scenes"):
                 source = self.root / name
                 if source.is_dir():
-                    shutil.copytree(source, stage / name)
+                    shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("bin", "obj"))
                 else:
                     shutil.copy2(source, stage / name)
             addon = stage / "addons/wol_engine"
             shutil.copytree(self.engine / "runtime", addon / "runtime")
+            shutil.copytree(self.engine / "portable", addon / "portable")
             sdk = addon / "platforms" / self.args.target
             sdk.mkdir(parents=True)
             shutil.copy2(self.sdk / "GodotApi.props", sdk / "GodotApi.props")

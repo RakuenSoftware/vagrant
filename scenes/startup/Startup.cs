@@ -39,6 +39,15 @@ public partial class Startup : Control
                 if (!ClassDB.ClassExists("NativePs1AudioSandbox")) throw new InvalidOperationException("The compiled engine audio runtime is missing.");
                 if (typeof(Wol.Engine.World.FieldScene).Assembly == typeof(Startup).Assembly)
                     throw new InvalidOperationException("The engine must be a separately compiled binary dependency.");
+                var gameplay = typeof(Wol.Games.Vagrant.Runtime.VibrationDriver).Assembly;
+                if (gameplay == typeof(Startup).Assembly)
+                    throw new InvalidOperationException("Gameplay must be a separately compiled engine-independent assembly.");
+                foreach (var reference in gameplay.GetReferencedAssemblies())
+                    if (reference.Name is not { } name || !name.StartsWith("System", StringComparison.Ordinal) && name != "WolEngine.Core")
+                        throw new InvalidOperationException("The gameplay assembly depends on a host engine.");
+                foreach (var reference in typeof(Wol.Engine.Imaging.RasterImage).Assembly.GetReferencedAssemblies())
+                    if (reference.Name is not { } name || !name.StartsWith("System", StringComparison.Ordinal))
+                        throw new InvalidOperationException("The portable engine core depends on a host backend.");
                 foreach (var type in typeof(Startup).Assembly.GetTypes())
                     if (type.Namespace == "Wol.Games.Vagrant.Tests") throw new InvalidOperationException("Test code was compiled into the player.");
                 var retailHashes = new System.Collections.Generic.HashSet<string>(RetailDisc.Catalog.FileDigests.Values, StringComparer.OrdinalIgnoreCase);
