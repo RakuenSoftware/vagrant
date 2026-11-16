@@ -36,11 +36,11 @@ public partial class InstallContracts : Node
         }
     }
 
-    private static void Rejects(RetailInstallation installation, string image, string expected)
+    private void Rejects(RetailInstallation installation, string image, string expected)
     {
         try
         {
-            installation.Install(image, _ => { });
+            installation.Install(image, GetNode<RetailContent>("/root/RetailContent").MediaTools, _ => { });
         }
         catch (Exception error) when (error is IOException or InvalidDataException)
         {
@@ -67,11 +67,11 @@ public partial class InstallContracts : Node
         File.WriteAllBytes(chd, new byte[16]);
         Rejects(installation, chd, "chdman");
 
-        installation.Install(disc, _ => { });
+        content.Install(disc, _ => { });
         string before = File.ReadAllText(installation.RecordPath);
         if (new FileInfo(Path.Combine(installation.DiscPath, RetailInstallation.EndingStream)).Length != (long)RetailInstallation.EndingSectors * Wol.Engine.Install.PlayStationDisc.RawSectorSize)
             throw new InvalidOperationException("the installer omitted the unlisted XA sectors");
-        installation.EndingMusic();
+        installation.EndingMusic(content.MediaTools);
         foreach (string path in RetailDisc.Catalog.FileDigests.Keys)
             if (Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(installation.DiscPath, path)))) != RetailDisc.Catalog.FileDigests[path])
                 throw new InvalidOperationException($"the installed {path} is not the disc's file byte for byte");

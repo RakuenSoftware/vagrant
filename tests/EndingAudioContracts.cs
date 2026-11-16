@@ -24,7 +24,7 @@ public partial class EndingAudioContracts : Node
             var content = GetNode<RetailContent>("/root/RetailContent");
             var installation = new RetailInstallation(content.GlobalRoot);
             installation.InstallEndingMusic(disc);
-            string decoded = installation.EndingMusic();
+            string decoded = installation.EndingMusic(content.MediaTools);
             using var music = AudioStreamOggVorbis.LoadFromFile(decoded);
             if (Math.Abs(music.GetLength() - 443.52) > 0.05) throw new InvalidOperationException("XA duration is not 443.52 seconds");
             string raw = Path.Combine(installation.DiscPath, RetailInstallation.EndingStream);
@@ -46,9 +46,9 @@ public partial class EndingAudioContracts : Node
         }
         catch (Exception error) { GD.PrintErr("ENDING_AUDIO_CONTRACTS_FAILED: " + error.Message); GetTree().Quit(1); }
     }
-    private static void Reject(RetailInstallation installation, string expected)
+    private void Reject(RetailInstallation installation, string expected)
     {
-        try { installation.EndingMusic(); }
+        try { installation.EndingMusic(GetNode<RetailContent>("/root/RetailContent").MediaTools); }
         catch (InvalidDataException error) when (error.Message.Contains(expected)) { return; }
         throw new InvalidOperationException("damaged XA was accepted: " + expected);
     }

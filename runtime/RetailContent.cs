@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using Godot;
 using Wol.Engine.Display;
 using Wol.Engine.Ui;
+using Wol.Engine.Install;
 using Wol.Games.Vagrant.Installation;
 
 namespace Wol.Games.Vagrant.Runtime;
@@ -43,7 +44,7 @@ public partial class RetailContent : Node
     public VideoStream IntroVideo { get; private set; } = null!;
     public AudioStream IntroMusic { get; private set; } = null!;
     /// <summary>The ending's verified XA stream, decoded on first use from the owned installation.</summary>
-    public AudioStream EndingMusic() => AudioStreamOggVorbis.LoadFromFile(new RetailInstallation(GlobalRoot).EndingMusic());
+    public AudioStream EndingMusic() => AudioStreamOggVorbis.LoadFromFile(new RetailInstallation(GlobalRoot).EndingMusic(MediaTools));
 
     public override void _Ready()
     {
@@ -74,6 +75,28 @@ public partial class RetailContent : Node
         GC.WaitForPendingFinalizers();
         GC.Collect();
         GC.WaitForPendingFinalizers();
+    }
+
+    /// <summary>The backend owns bundled-tool discovery, process arguments and the exported-player environment.</summary>
+    public IMediaTools MediaTools { get; } = new MediaTools("Project Vagrant");
+
+    /// <summary>Installs verified files, then prepares the host resources play needs before leaving the installer.</summary>
+    public void Install(string disc, Action<string> progress)
+    {
+        var installation = new RetailInstallation(GlobalRoot);
+        installation.Install(disc, MediaTools, progress);
+        progress("Preparing the game…");
+        var movie = System.Threading.Tasks.Task.Run(() => installation.IntroMovie(MediaTools));
+        var ending = System.Threading.Tasks.Task.Run(() => installation.EndingMusic(MediaTools));
+        FieldContent Content() => new FieldContent(installation.Root);
+        var rooms = Content().RoomNames();
+        System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
+            (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
+        Content().Character("character_00");
+        movie.GetAwaiter().GetResult();
+        ending.GetAwaiter().GetResult();
+        progress($"Prepared {rooms.Count} rooms.");
+        progress("Installation complete.");
     }
 
     public string GlobalRoot => ProjectSettings.GlobalizePath(Root);
@@ -389,7 +412,7 @@ public partial class RetailContent : Node
                 TitleGlowOrigins[i] = new Vector2I((int)glow["x"]!, (int)glow["y"]!);
             }
             Field.DiscFile("MOV/TITLE.STR");
-            var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie();
+            var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie(MediaTools);
             IntroVideo = new VideoStreamTheora { File = video };
             IntroMusic = AudioStreamOggVorbis.LoadFromFile(music);
             if (!System.IO.File.Exists(System.IO.Path.Combine(GlobalRoot, "disc", RetailInstallation.EndingStream)))

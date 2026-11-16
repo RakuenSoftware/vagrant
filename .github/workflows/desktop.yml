@@ -25,6 +25,25 @@ env:
   BUILD_VERSION: ${{ (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || inputs.version || (github.event_name == 'pull_request' && format('pr-{0}', github.event.number)) || (github.ref == 'refs/heads/main' && format('v0.1.0-preview.main.{0}', github.run_number)) || github.ref_name }}
 
 jobs:
+  build_tools:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/release.py
+            /tests/release/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check release preflight and source-ZIP provenance without exporting
+        run: python -m unittest discover -s tests/release -v
   gameplay:
     strategy:
       fail-fast: false
@@ -38,16 +57,17 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /global.json
+            /Directory.Build.props
             /gameplay/
             /tests/gameplay/
-            /addons/wol_engine/portable/
+            /addons/wol_engine/platforms/*/portable/
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.403'
       - name: Check gameplay with only the portable core and no Godot backend
         run: dotnet run --project tests/gameplay/GameplayContracts.csproj -c Release
   player:
-    needs: gameplay
+    needs: [gameplay, build_tools]
     strategy:
       fail-fast: false
       matrix:

@@ -96,7 +96,7 @@ public partial class Startup : Control
                     if (texture == null || texture.GetWidth() == 0 || texture.GetHeight() == 0)
                         throw new InvalidOperationException("Missing shared WoL branding image: " + image);
                 }
-                RetailInstallation.VerifyMediaTools();
+                RetailInstallation.VerifyMediaTools(_content.MediaTools);
                 GD.Print("MEDIA_TOOLS_OK: bundled STR/XA decoding, video/audio conversion and probe work with no PATH dependencies");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
                 GetTree().Quit();
@@ -228,7 +228,7 @@ public partial class Startup : Control
     {
         try
         {
-            new RetailInstallation(_content.GlobalRoot).Install(disc, progress);
+            _content.Install(disc, progress);
             _content.CallDeferred(RetailContent.MethodName.Reload);
             return "";
         }

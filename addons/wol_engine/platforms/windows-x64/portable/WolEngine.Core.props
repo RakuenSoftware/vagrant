@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <WolEngineCoreConfiguration Condition="'$(Configuration)' == 'Debug'">Debug</WolEngineCoreConfiguration>
+    <WolEngineCoreConfiguration Condition="'$(Configuration)' != 'Debug'">Release</WolEngineCoreConfiguration>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="WolEngine.Core">
+      <HintPath>$(MSBuildThisFileDirectory)$(WolEngineCoreConfiguration)/WolEngine.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
