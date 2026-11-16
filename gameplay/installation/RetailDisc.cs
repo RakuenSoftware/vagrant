@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System.Collections.Generic;
+using System.Text.Json;
 using Wol.Engine.Install;
 
 namespace Wol.Games.Vagrant.Installation;
@@ -13,17 +14,17 @@ public static class RetailDisc
     public const string VolumeIdentifier = "SLUS-01040";
 
     /// <summary>
-    /// SHA-256 of every Form 1 file on the retail US disc (installation/retail_digests.json), so the installer can
+    /// SHA-256 of every Form 1 file on the retail US disc (gameplay/installation/retail_digests.json), so the installer can
     /// verify whatever it consumes.
     /// </summary>
     private static readonly Dictionary<string, string> RetailFileDigests = LoadDigests();
 
     private static Dictionary<string, string> LoadDigests()
     {
-        var parsed = Godot.Json.ParseString(Godot.FileAccess.GetFileAsString("res://installation/retail_digests.json"));
-        var digests = new Dictionary<string, string>(System.StringComparer.Ordinal);
-        foreach (var (path, digest) in parsed.AsGodotDictionary()) digests[path.AsString()] = digest.AsString();
-        if (digests.Count == 0) throw new System.InvalidOperationException("The retail digest catalog is missing.");
+        using var source = typeof(RetailDisc).Assembly.GetManifestResourceStream("Wol.Games.Vagrant.Installation.RetailDigests")
+            ?? throw new System.InvalidOperationException("The retail digest catalog is missing.");
+        var digests = JsonSerializer.Deserialize<Dictionary<string, string>>(source);
+        if (digests is not { Count: > 0 }) throw new System.InvalidOperationException("The retail digest catalog is missing.");
         return digests;
     }
 

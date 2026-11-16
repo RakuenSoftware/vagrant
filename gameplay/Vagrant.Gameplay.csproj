@@ -14,5 +14,8 @@
     <DebugSymbols>false</DebugSymbols>
     <EmbedAllSources>false</EmbedAllSources>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="installation/retail_digests.json" LogicalName="Wol.Games.Vagrant.Installation.RetailDigests" />
+  </ItemGroup>
   <Import Project="$(WolEngineCoreRoot)/WolEngine.Core.props" />
 </Project>

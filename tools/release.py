@@ -281,7 +281,7 @@ class DesktopRelease:
 
     def audit(self, output):
         # Inspect loose files as well as the PCK, whose contents the exported player checks below.
-        retail = json.loads((self.root / "installation/retail_digests.json").read_text())
+        retail = json.loads((self.root / "gameplay/installation/retail_digests.json").read_text())
         retail_hashes = set(retail.values())
         retail_formats = {Path(name).suffix.lower() for name in retail} | {".str", ".xa", ".cue", ".iso", ".chd", ".img"}
         forbidden = {".cs", ".cpp", ".hpp", ".h", ".pdb", ".mdb", ".csproj", ".sln", ".cue", ".iso", ".chd", ".xml"}

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
@@ -36,11 +35,11 @@ public sealed class RetailInstallation
     public string CachePath => Path.Combine(Root, "cache");
 
     /// <summary>Installs from <paramref name="discPath"/> (BIN or CUE). Throws with a player-facing message on rejection.</summary>
-    public void Install(string discPath, Action<string> progress)
+    public void Install(string discPath, IMediaTools media, Action<string> progress)
     {
         // Fail before copying the disc if an incomplete player package omitted its tools.
-        _ = Executable("ffmpeg");
-        _ = Executable("ffprobe");
+        _ = media.Executable("ffmpeg");
+        _ = media.Executable("ffprobe");
         Directory.CreateDirectory(Root);
         string stage = Path.Combine(Root, "staging");
         if (Directory.Exists(stage)) Directory.Delete(stage, true);
@@ -84,50 +83,29 @@ public sealed class RetailInstallation
         {
             if (Directory.Exists(stage)) Directory.Delete(stage, true);
         }
-        progress("Preparing the game…");
-        Prepare(progress);
-        progress("Installation complete.");
     }
 
     /// <summary>
-    /// Fills the cache with what takes long to decode, so play does not wait for it: the intro movie, every room
-    /// and Ashley's rig.
-    /// </summary>
-    private void Prepare(Action<string> progress)
-    {
-        var movie = System.Threading.Tasks.Task.Run(IntroMovie);
-        var ending = System.Threading.Tasks.Task.Run(EndingMusic);
-        Runtime.FieldContent Content() => new Runtime.FieldContent(Root);
-        var rooms = Content().RoomNames();
-        System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, Content,
-            (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
-        Content().Character("character_00");
-        movie.GetAwaiter().GetResult();
-        ending.GetAwaiter().GetResult();
-        progress($"Prepared {rooms.Count} rooms.");
-    }
-
-    /// <summary>
-    /// The intro movie's picture and sound as Godot plays them (Theora and Vorbis), made from the disc's MOV/TITLE.STR
+    /// The intro movie's picture and sound (Theora and Vorbis), made from the disc's MOV/TITLE.STR
     /// into the cache the first time they are asked for. The retail intro's picture ends long before its audio, which
     /// continues as the title music, so they are separate tracks.
     /// </summary>
-    public (string Video, string Music) IntroMovie()
+    public (string Video, string Music) IntroMovie(IMediaTools media)
     {
         string video = Path.Combine(CachePath, "intro_video.ogv"), music = Path.Combine(CachePath, "intro_music.ogg");
         if (File.Exists(video) && File.Exists(music)) return (video, music);
-        string ffmpeg = Executable("ffmpeg"), ffprobe = Executable("ffprobe"), stream = Path.Combine(DiscPath, "MOV", "TITLE.STR");
+        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe"), stream = Path.Combine(DiscPath, "MOV", "TITLE.STR");
         Directory.CreateDirectory(CachePath);
         string partVideo = video + ".partial.ogv", partMusic = music + ".partial.ogg";
-        var picture = System.Threading.Tasks.Task.Run(() => Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
+        var picture = System.Threading.Tasks.Task.Run(() => media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
             "-map", "0:v:0", "-an", "-c:v", "libtheora", "-q:v", "8", "-pix_fmt", "yuv420p", partVideo));
-        Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream, "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", partMusic);
+        media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream, "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", partMusic);
         picture.GetAwaiter().GetResult();
-        var shape = JsonNode.Parse(Run(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+        var shape = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", partVideo))!["streams"]![0]!;
         if ((int)shape["width"]! != 320 || (int)shape["height"]! != 224 || int.Parse((string)shape["nb_read_frames"]!) != IntroVideoFrames)
             throw new InvalidDataException("The opening movie could not be decoded as the retail picture.");
-        var audio = JsonNode.Parse(Run(ffprobe, "-v", "error", "-show_entries", "stream=channels", "-of", "json", partMusic))!["streams"]![0]!;
+        var audio = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "stream=channels", "-of", "json", partMusic))!["streams"]![0]!;
         if ((int)audio["channels"]! != 2) throw new InvalidDataException("The title music could not be decoded in stereo.");
         File.Move(partVideo, video, true);
         File.Move(partMusic, music, true);
@@ -167,7 +145,7 @@ public sealed class RetailInstallation
     }
 
     /// <summary>Decodes the owned disc's unlisted XA music, leaving its raw sectors byte for byte in disc/.</summary>
-    public string EndingMusic()
+    public string EndingMusic(IMediaTools media)
     {
         string raw = Path.Combine(DiscPath, EndingStream);
         if (!File.Exists(raw)) throw new InvalidDataException("This older installation omits the ending music. Install again from your US disc.");
@@ -194,9 +172,9 @@ public sealed class RetailInstallation
         }
         if (File.Exists(music)) return music;
         string part = music + ".partial.ogg";
-        Run(Executable("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
+        media.Run(media.Executable("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
             "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", part);
-        var audio = JsonNode.Parse(Run(Executable("ffprobe"), "-v", "error", "-show_entries", "stream=channels,sample_rate,duration", "-of", "json", part))!["streams"]![0]!;
+        var audio = JsonNode.Parse(media.Run(media.Executable("ffprobe"), "-v", "error", "-show_entries", "stream=channels,sample_rate,duration", "-of", "json", part))!["streams"]![0]!;
         if ((int)audio["channels"]! != 2 || int.Parse((string)audio["sample_rate"]!) != 37800
             || Math.Abs(double.Parse((string)audio["duration"]!, System.Globalization.CultureInfo.InvariantCulture) - 443.52) > 0.05)
             throw new InvalidDataException("The ending music could not be decoded as the retail stereo stream.");
@@ -205,28 +183,11 @@ public sealed class RetailInstallation
         return music;
     }
 
-    private static string Executable(string name)
-    {
-        string bundled = Path.Combine(Path.GetDirectoryName(Godot.OS.GetExecutablePath())!, "media", name + (OperatingSystem.IsWindows() ? ".exe" : ""));
-        if (File.Exists(bundled)) return bundled;
-        if (!Godot.OS.HasFeature("editor"))
-            throw new FileNotFoundException($"The player package is missing its bundled {name}. Extract the complete Project Vagrant archive again.");
-        foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-        {
-            foreach (string candidate in new[] { name, name + ".exe" })
-            {
-                string path = Path.Combine(directory, candidate);
-                if (File.Exists(path)) return path;
-            }
-        }
-        throw new FileNotFoundException($"Playing the opening movie requires {name} (FFmpeg) on PATH.");
-    }
-
     /// <summary>Exercises the packaged encoders, probe, and game-input decoder availability without retail assets.</summary>
-    public static void VerifyMediaTools()
+    public static void VerifyMediaTools(IMediaTools media)
     {
-        string ffmpeg = Executable("ffmpeg"), ffprobe = Executable("ffprobe");
-        string decoders = Run(ffmpeg, "-hide_banner", "-decoders");
+        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe");
+        string decoders = media.Run(ffmpeg, "-hide_banner", "-decoders");
         if (!decoders.Contains(" mdec ", StringComparison.Ordinal) || !decoders.Contains(" adpcm_xa ", StringComparison.Ordinal))
             throw new InvalidDataException("The bundled media tool cannot decode PlayStation video and XA audio.");
         string temporary = Path.Combine(Path.GetTempPath(), "project-vagrant-media-" + Guid.NewGuid().ToString("N") + ".ogv");
@@ -248,11 +209,11 @@ public sealed class RetailInstallation
                     fixture.Write(sector);
                 }
             }
-            var input = JsonNode.Parse(Run(ffprobe, "-v", "error", "-show_entries", "format=format_name:stream=codec_name,channels,sample_rate", "-of", "json", xa))!;
+            var input = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "format=format_name:stream=codec_name,channels,sample_rate", "-of", "json", xa))!;
             if ((string?)input["format"]?["format_name"] != "psxstr"
                 || (string?)input["streams"]?[0]?["codec_name"] != "adpcm_xa")
                 throw new InvalidDataException("The bundled tools cannot recognize a PlayStation STR/XA stream.");
-            Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", xa,
+            media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", xa,
                 "-map", "0:a:0", "-c:a", "pcm_s16le", decoded);
             using (var wave = new BinaryReader(File.OpenRead(decoded)))
             {
@@ -276,11 +237,11 @@ public sealed class RetailInstallation
                 }
                 if (!samples) throw new InvalidDataException("The XA decoder produced no PCM samples.");
             }
-            Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "lavfi", "-i", "color=size=32x32:rate=15:duration=0.2",
                 "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=37800:duration=0.2",
                 "-c:v", "libtheora", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-ac", "2", temporary);
-            var streams = JsonNode.Parse(Run(ffprobe, "-v", "error", "-show_entries", "stream=codec_name,channels,width,height", "-of", "json", temporary))!["streams"]!.AsArray();
+            var streams = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "stream=codec_name,channels,width,height", "-of", "json", temporary))!["streams"]!.AsArray();
             bool video = false, audio = false;
             foreach (var stream in streams)
             {
@@ -296,16 +257,4 @@ public sealed class RetailInstallation
         }
     }
 
-    private static string Run(string executable, params string[] arguments)
-    {
-        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        if (!Godot.OS.HasFeature("editor")) start.Environment["PATH"] = "";
-        foreach (string argument in arguments) start.ArgumentList.Add(argument);
-        using var process = Process.Start(start) ?? throw new IOException($"Could not start {executable}.");
-        var error = process.StandardError.ReadToEndAsync();
-        string output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0) throw new IOException($"{Path.GetFileName(executable)} failed: {error.Result.Trim()}");
-        return output;
-    }
 }

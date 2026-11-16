@@ -71,9 +71,17 @@ and decoded pixel planes with the host at its presentation boundary.
 Vagrant owns the controller's two-channel envelopes and timing, and the retail
 content decoders under `gameplay/installation`: title/loading art, fonts, HUD,
 manuals, overlays, effects, map geometry/textures/skies, inventory, save pictures,
-results, event-script translation and ending decompression. Images are decoded into byte-defined raster
+results, event-script translation, disc installation/media validation and ending
+decompression. The retail digest catalog is embedded in the gameplay assembly
+from `gameplay/installation/retail_digests.json`; it does not use Godot resource
+loading. Images are decoded into byte-defined raster
 planes. wol-engine owns hardware controller output, native image creation and
-PNG cache encoding/decoding. There is one decoder per format and one owned image
+PNG cache encoding/decoding. Its portable core also owns generic disc reading,
+digest verification and data-only content-pack installation. The game supplies
+its retail catalog, conversion arguments and output expectations through
+`IMediaTools`; the Godot backend owns bundled-tool discovery and child-process
+execution. The exported player still requires its bundled ffmpeg/ffprobe and
+clears PATH for child processes. There is one decoder per format and one owned image
 buffer; no parallel Godot decoder or second image cache remains.
 
 Run the deliberate-input contracts with the .NET SDK and vendored portable DLLs:
@@ -87,9 +95,15 @@ only this library, its tests, the pinned .NET version and `portable` binaries.
 Godot, the backend SDK, native libraries and a disc installation are absent.
 The checks reject backend dependencies both in gameplay and transitively in the
 portable core, and exercise palette keys, transparency passes, indexed/direct
-art, save-picture palette columns, glyph metrics and controller envelopes.
+art, save-picture palette columns, glyph metrics, controller envelopes, install rejection preserving previous
+files/cache, explicit STR input arguments, media-output validation and XA
+integrity despite a cached decode.
 Native player builds wait for these checks and retain the published core DLL
 byte for byte. Vendoring rejects differing portable bytes across target SDKs.
+
+The host still prepares the installation’s decoded room/rig cache with the
+existing orchestration; this step constructs rendering resources. No renderer is
+needed to verify/copy disc files or validate media in the portable installer.
 
 Other game systems, including character rendering, audio playback and scenes,
 still contain Godot dependencies and remain to be extracted. This is an
