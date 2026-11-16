@@ -8,6 +8,12 @@ Project Vagrant runs Vagrant Story on the shared C# [wol-engine](https://github.
 
 **You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files and the ending's unlisted XA sectors byte for byte; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
 
+## Acknowledgements
+
+Thanks to [ser-pounce/rood-reverse](https://github.com/ser-pounce/rood-reverse) and
+its contributors for documenting Vagrant Story's data structures and file formats.
+Their work provides a reference for Project Vagrant's independent implementations.
+
 ## Current state
 
 The title presents the publisher and developer logos, opening movie, title screen and menu wheel. New Game enters the prologue and then field play; Continue loads a memory-card save. The retail Sound and Vibration options and the added Settings panel control audio, controller vibration, display and graphics settings.
