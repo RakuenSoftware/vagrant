@@ -1,12 +1,53 @@
 # Project Vagrant
 
-An independent, unofficial project, not affiliated with or endorsed by Square Enix.
-Vagrant Story and its original content and branding belong to their respective
-rights holders. This project's code licence grants no rights to the original game.
+Project Vagrant is a clean-room reimplementation of Vagrant Story's gameplay,
+with independently written code and content read from the player's own verified
+disc. Its purpose is to preserve the game while making the technology used to
+run and present it replaceable.
 
-Project Vagrant runs Vagrant Story on the shared C# [wol-engine](https://github.com/RakuenSoftware/wol-engine), vendored as compiled binaries and runtime resources at `addons/wol_engine`.
+## Why this project exists
 
-**You need your own US copy of Vagrant Story (SLUS-01040).** The game contains nothing from the disc. On first run it asks for your disc image (BIN/CUE), checks every file against the retail US disc, and copies the files and the ending's unlisted XA sectors byte for byte; the game decodes everything from them as it plays. Without a verified disc it does not start. Modified, patched or other-region discs are rejected.
+The game being preserved is its rules, combat, progression, events and behavior.
+Rendering, audio, input and platform integration are responsibilities of the
+underlying engine. The aim is for anyone to be able to implement a host engine
+around the independently written gameplay, so that the game can outlive any
+particular engine or generation of rendering technology.
+
+A Godot implementation, an Unreal Engine 5 implementation, or a future custom
+engine should be able to supply those engine capabilities without requiring
+another independent reconstruction of Vagrant Story's gameplay. Better lighting,
+higher-resolution rendering, new hardware and future graphics techniques should
+be improvements to the engine hosting the game, with the game's behavior
+preserved across those changes.
+
+The intention is to keep that option open a year from now or a decade from now.
+Project Vagrant is part of a broader effort to take the same approach to favorite
+PS1 and PS2 games: preserve what makes each game itself, and let its engine evolve.
+
+## Independent implementation and original content
+
+The clean-room approach means writing new implementations of the game's behavior
+and data formats. The project does not redistribute the original game executable,
+decompiled game code or retail assets. Original content remains separate from
+the implementation and comes from the player's own copy.
+
+**You need your own US copy of Vagrant Story (SLUS-01040).** On first run the game
+asks for your disc image (BIN/CUE), checks every file against the retail US disc,
+and copies the files and the ending's unlisted XA sectors byte for byte. The game
+decodes that content as it plays. Without a verified disc it does not start.
+Modified, patched or other-region discs are rejected.
+
+## Current engine implementation
+
+The playable implementation currently uses C#/.NET on Godot 4.7.2 through the
+shared wol-engine. Its compiled [engine SDK](https://github.com/RakuenSoftware/wol-engine-release)
+binaries and runtime resources are vendored at `addons/wol_engine`.
+
+Engine independence is the architectural direction. The current code still has
+Godot-specific types and engine interfaces that another host would need to adapt
+or port. A separate Unreal Engine 5 backend is not currently supplied. The work
+here establishes the gameplay behavior that future engine implementations can
+preserve and reuse.
 
 ## Acknowledgements
 
@@ -146,4 +187,9 @@ Run checks sharing an installation one at a time: each build replaces that insta
 
 ## License
 
-AGPL-3.0-only. See [LICENSE](LICENSE). Vagrant Story is © Square Enix; this project contains none of its data.
+AGPL-3.0-only. See [LICENSE](LICENSE).
+
+Project Vagrant is independent and unofficial, and is not affiliated with or
+endorsed by Square Enix. Vagrant Story and its original content and branding
+belong to their respective rights holders. This project's code licence grants
+no rights to the original game or its assets.
