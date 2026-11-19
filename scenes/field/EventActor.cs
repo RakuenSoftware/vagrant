@@ -105,6 +105,8 @@ public sealed class EventActor
         public required MeshInstance3D Instance;
         public required Skeleton3D Skeleton;
         public Transform3D[] Poses = Array.Empty<Transform3D>();
+        // The skeleton's frame in the world this frame, which turns its bones' poses into the world's.
+        public Transform3D Rig;
         public required Godot.Collections.Array[] Arrays;
         public required Vector3[][] Vertices;
         public required int[][] Bones, Faces;
@@ -118,11 +120,19 @@ public sealed class EventActor
         public int[] BindBones = Array.Empty<int>();
         public Transform3D[] BindPoses = Array.Empty<Transform3D>();
         public Vector3[][]? Turned;
+        // This frame's corners in the camera's frame and on the screen, and where the stand-in draws them, kept from
+        // frame to frame (each surface's are as many as its corners); and whether the surfaces were worked this frame.
+        public Vector3[][]? Locals, Placed;
+        public Vector2[][]? Screen;
+        public bool Shown;
         // Whether this hid the mesh (for the stand-in, or the whole model), so it gives back only what it took.
         public bool Hidden;
     }
 
     private System.Collections.Generic.List<Surfaces>? _surfaces;
+
+    /// <summary>The channels a stand-in takes from the rig's surface as they are.</summary>
+    private static readonly Mesh.ArrayType[] StandInChannels = { Mesh.ArrayType.Color, Mesh.ArrayType.TexUV, Mesh.ArrayType.TexUV2 };
 
     /// <summary>
     /// A corner as retail's GTE projects it: <paramref name="local"/> is in the camera's frame in retail units. The GTE
@@ -254,34 +264,46 @@ public sealed class EventActor
         float nearest = float.MaxValue;
         // An attached model can have its own skeleton. Its skin indices name that skeleton's bones,
         // and its global frame includes the attachment transform; they never index the body skeleton.
+        // Only the bones' places are needed to know whether the rig is near; their whole frames are made after that.
         foreach (var entry in _surfaces)
         {
             int boneCount = entry.Skeleton.GetBoneCount();
             if (entry.Poses.Length != boneCount) entry.Poses = new Transform3D[boneCount];
-            var rig = entry.Skeleton.GlobalTransform;
+            entry.Rig = entry.Skeleton.GlobalTransform;
             for (int b = 0; b < boneCount; b++)
             {
-                entry.Poses[b] = rig * entry.Skeleton.GetBoneGlobalPose(b);
-                nearest = Math.Min(nearest, -(eye * entry.Poses[b].Origin).Z * units);
+                entry.Poses[b] = entry.Skeleton.GetBoneGlobalPose(b);
+                nearest = Math.Min(nearest, -(eye * (entry.Rig * entry.Poses[b].Origin)).Z * units);
             }
         }
         if (nearest > least + 160) { Restore(); return; }
+        foreach (var entry in _surfaces)
+            for (int b = 0; b < entry.Poses.Length; b++) entry.Poses[b] = entry.Rig * entry.Poses[b];
         // Every corner in the camera's frame (retail units) through the current pose.
-        var locals = new System.Collections.Generic.List<Vector3[][]>();
         bool any = false, front = false, below = false;
         foreach (var entry in _surfaces)
         {
             var instance = entry.Instance;
-            var surfaces = new Vector3[entry.Arrays.Length][];
-            entry.Turned = new Vector3[entry.Arrays.Length][];
-            bool shown = instance.IsInsideTree() && (instance.Visible || entry.Hidden)
+            if (entry.Locals == null)
+            {
+                entry.Locals = new Vector3[entry.Arrays.Length][];
+                entry.Turned = new Vector3[entry.Arrays.Length][];
+                entry.Placed = new Vector3[entry.Arrays.Length][];
+                entry.Screen = new Vector2[entry.Arrays.Length][];
+                for (int surface = 0; surface < entry.Arrays.Length; surface++)
+                {
+                    int corners = entry.Vertices[surface].Length;
+                    (entry.Locals[surface], entry.Turned[surface], entry.Placed[surface], entry.Screen[surface]) = (new Vector3[corners], new Vector3[corners], new Vector3[corners], new Vector2[corners]);
+                }
+            }
+            entry.Shown = instance.IsInsideTree() && (instance.Visible || entry.Hidden)
                 && (instance.GetParent() is not Node3D parent || parent.IsVisibleInTree());
-            for (int surface = 0; shown && surface < entry.Arrays.Length; surface++)
+            for (int surface = 0; entry.Shown && surface < entry.Arrays.Length; surface++)
             {
                 var vertices = entry.Vertices[surface];
-                var local = surfaces[surface] = new Vector3[vertices.Length];
+                var local = entry.Locals[surface];
                 var normals = entry.Normals[surface];
-                var turned = entry.Turned[surface] = new Vector3[vertices.Length];
+                var turned = entry.Turned![surface];
                 for (int v = 0; v < vertices.Length; v++)
                 {
                     int bind = entry.Bones[surface][v];
@@ -294,7 +316,6 @@ public sealed class EventActor
                     below |= -local[v].Z < least;
                 }
             }
-            locals.Add(surfaces);
         }
         if (!any) { Restore(); return; }
         // With every corner behind the eye the model is not drawn (the corners' depths, ORed, come back 0); nor is one
@@ -302,37 +323,44 @@ public sealed class EventActor
         if (!front || Inside(from)) { Hide(); return; }
         if (!below) { Restore(); return; }
         float nearClip = Math.Max(camera.Near * units * 1.05f, 1);
+        var view = camera.GlobalTransform;
+        var kept = new System.Collections.Generic.List<int>();
         for (int m = 0; m < _surfaces.Count; m++)
         {
             var entry = _surfaces[m];
             var instance = entry.Instance;
-            if (!instance.IsInsideTree() || !(instance.Visible || entry.Hidden) || System.Array.IndexOf(locals[m], null) >= 0) continue;
+            if (!instance.IsInsideTree() || !(instance.Visible || entry.Hidden) || !entry.Shown && entry.Arrays.Length > 0) continue;
             var mesh = new ArrayMesh();
             for (int surface = 0; surface < entry.Arrays.Length; surface++)
             {
-                var local = locals[m][surface];
-                var placed = new Vector3[local.Length];
-                var screen = new Vector2[local.Length];
+                var local = entry.Locals![surface];
+                var placed = entry.Placed![surface];
+                var screen = entry.Screen![surface];
                 for (int v = 0; v < local.Length; v++)
                 {
                     (screen[v], var drawn) = GteProjection(local[v], projection, least, nearClip);
-                    placed[v] = camera.GlobalTransform * (drawn / units);
+                    placed[v] = view * (drawn / units);
                 }
-                var kept = new System.Collections.Generic.List<int>(entry.Faces[surface].Length);
+                kept.Clear();
                 var faces = entry.Faces[surface];
                 for (int f = 0; f + 2 < faces.Length; f += 3)
                 {
                     if (GpuDrops(screen[faces[f]], screen[faces[f + 1]], screen[faces[f + 2]])) continue;
                     kept.Add(faces[f]); kept.Add(faces[f + 1]); kept.Add(faces[f + 2]);
                 }
-                var arrays = new Godot.Collections.Array();
+                // Freed as soon as the surface is made from it, not left to the collector (it is made every frame).
+                using var arrays = new Godot.Collections.Array();
                 arrays.Resize((int)Mesh.ArrayType.Max);
                 var source = entry.Arrays[surface];
                 arrays[(int)Mesh.ArrayType.Vertex] = placed;
-                foreach (var kind in new[] { Mesh.ArrayType.Color, Mesh.ArrayType.TexUV, Mesh.ArrayType.TexUV2 })
-                    arrays[(int)kind] = source[(int)kind];
+                foreach (var kind in StandInChannels)
+                {
+                    using var channel = source[(int)kind];
+                    arrays[(int)kind] = channel;
+                }
                 // The stand-in stands in the world as posed, so its normals are the posed ones.
-                if (source[(int)Mesh.ArrayType.Normal].VariantType != Variant.Type.Nil && entry.Turned?[surface] is { } posedNormals) arrays[(int)Mesh.ArrayType.Normal] = posedNormals;
+                using var sourceNormals = source[(int)Mesh.ArrayType.Normal];
+                if (sourceNormals.VariantType != Variant.Type.Nil) arrays[(int)Mesh.ArrayType.Normal] = entry.Turned![surface];
                 arrays[(int)Mesh.ArrayType.Index] = kept.Count > 0 ? kept.ToArray() : new[] { 0, 0, 0 };
                 mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
                 mesh.SurfaceSetMaterial(surface, instance.GetActiveMaterial(surface));

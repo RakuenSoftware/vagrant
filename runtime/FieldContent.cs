@@ -919,6 +919,9 @@ public sealed class FieldContent
     }
     private readonly Dictionary<(int, string), List<(string, Animation)>> _setClips = new();
 
+    /// <summary>How many sets have been loaded whose clips may have joined a character's definition: what was read from a definition before it moved may be out of date.</summary>
+    public int DefinitionChanges { get; private set; }
+
     /// <summary>
     /// An animation set's clips for a character, loaded as the game loads it rather than with the rig. Ashley can
     /// take up any weapon: each category's battle set is OBJ/00_BTn.SEQ ("btn") and its Break Arts OBJ/00BTnB0a.SEQ
@@ -932,6 +935,7 @@ public sealed class FieldContent
         if (_setClips.TryGetValue((character, set), out var known)) return known;
         var clips = new List<(string, Animation)>();
         _setClips[(character, set)] = clips;
+        DefinitionChanges++;
         if (Character($"character_{character:X2}") == null) return clips;
         if (character == 0 && set.Length == 3 && set.StartsWith("bt", StringComparison.Ordinal) || character == 0 && set.Length == 5 && set.StartsWith("art", StringComparison.Ordinal))
         {
