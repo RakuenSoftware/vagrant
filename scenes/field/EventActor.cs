@@ -594,7 +594,7 @@ public sealed class EventActor
         if (Head == null) return;
         if (HeldYaw is { } held) { Head.Yaw = held; return; }
         string clip = Player?.CurrentAnimation ?? "";
-        bool free = clip == $"base_{FieldPlayer.Idle}" || clip == $"base_{FieldPlayer.Walk}";
+        bool free = clip == $"base_{FieldPlayer.Idle}" || clip == $"base_{FieldPlayer.Walk}" || clip == $"base_{FieldPlayer.Walk + 1}";
         var point = LookTarget?.Position ?? LookPoint;
         float want = 0;
         if (free && point is { } target && (target - Position) is { } offset && new Vector2(offset.X, offset.Z).Length() > 1)

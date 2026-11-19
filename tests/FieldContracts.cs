@@ -6150,7 +6150,7 @@ public partial class FieldContracts : Node
                 {
                     string clip = ashley.Actor.Player?.AssignedAnimation ?? "";
                     GD.Print($"FIELD: after the battle Ashley moves in {clip} at speed {ashley.Actor.Player?.SpeedScale}, playing {ashley.Actor.Player?.IsPlaying()}, weapon {(battle.Drawn ? "drawn" : "sheathed")}, in {_view.Rooms[^1]}");
-                    if (!(clip.EndsWith("_13", StringComparison.Ordinal) || clip.EndsWith("_19", StringComparison.Ordinal)) || ashley.Actor.Player?.SpeedScale != 1 || ashley.Actor.Player?.IsPlaying() != true) { Finish($"after the battle Ashley moves in {clip}, not her walk or run"); return; }
+                    if (!Striding(clip) || ashley.Actor.Player?.SpeedScale != 1 || ashley.Actor.Player?.IsPlaying() != true) { Finish($"after the battle Ashley moves in {clip}, not her walk or run"); return; }
                     if (_strideFrames == 165 && (battle.Drawn == _strideDrawn || clip.StartsWith("base_", StringComparison.Ordinal) == battle.Drawn)) { Finish($"after {(_strideDrawn ? "sheathing" : "drawing")} Ashley moves in {clip} with her weapon {(battle.Drawn ? "drawn" : "sheathed")}"); return; }
                 }
                 if (_strideFrames == 165) { Steer(Vector2.Zero); _strideFrames = 200; }
@@ -6274,13 +6274,24 @@ public partial class FieldContracts : Node
         if (elapsed % 60 == 0) Tap("ps_cross");
         // After the battle she must still walk or run as she goes, not glide in another pose.
         string clip = ashley.Actor.Player?.AssignedAnimation ?? "";
-        bool striding = clip.EndsWith("_13", StringComparison.Ordinal) || clip.EndsWith("_19", StringComparison.Ordinal);
-        if (ashley.Actor.Position.DistanceTo(_lastDoorStep) > 2 && !striding && ++_glides == 30) { Finish($"Ashley moves to the door in {clip}, not her walk or run"); return; }
+        if (ashley.Actor.Position.DistanceTo(_lastDoorStep) > 2 && !Striding(clip) && ++_glides == 30) { Finish($"Ashley moves to the door in {clip}, not her walk or run"); return; }
         _lastDoorStep = ashley.Actor.Position;
     }
 
     private Vector3 _lastDoorStep;
     private int _glides;
+
+    /// <summary>
+    /// Whether a clip is one of Ashley's walking or running half-strides in any set: walk 13 and 14, run 19 and 20.
+    /// Her SEQ clip scripts hand each half to the other: 13 and 19 carry operation 24 (the next slot) at frames 13 and
+    /// 10, 14 and 20 carry 23 (the previous slot), in the base and battle sets alike.
+    /// </summary>
+    private static bool Striding(string clip)
+    {
+        int split = clip.LastIndexOf('_');
+        return split >= 0 && int.TryParse(clip[(split + 1)..], out int number)
+            && number is FieldPlayer.Walk or FieldPlayer.Walk + 1 or FieldPlayer.Run or FieldPlayer.Run + 1;
+    }
 
     /// <summary>Closes on the nearest enemy along a route round obstacles and attacks it through the sphere.</summary>
     private void Fight(FieldBattle battle, FieldBattle.Combatant ashley, int elapsed)
