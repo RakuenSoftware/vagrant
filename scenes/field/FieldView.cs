@@ -4213,7 +4213,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         ApplyCamera();
         ShowRoomGroups();
         Field!.AdvancePresentation();
-        // Enhanced lighting blooms what is bright.
+        // Enhanced lighting blooms what is bright, except while the screen echo is drawn.
         if (FieldLighting.Enhanced || Field.FieldEnvironment?.Environment.GlowEnabled == true)
         {
             if (Field.FieldEnvironment == null)
@@ -4221,7 +4221,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 Field.FieldEnvironment = new WorldEnvironment { Environment = new Godot.Environment { BackgroundMode = Godot.Environment.BGMode.ClearColor } };
                 Field.AddChild(Field.FieldEnvironment);
             }
-            FieldLighting.Apply(Field.FieldEnvironment.Environment);
+            FieldLighting.Apply(Field.FieldEnvironment.Environment, FieldLighting.Enhanced && Field.Echo().Visible);
         }
         // Enhanced characters are shaded by a light that turns with the camera.
         if (CharacterQuality.Enhanced || _characterLight != null)
