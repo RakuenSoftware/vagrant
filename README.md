@@ -159,6 +159,9 @@ godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/body_collision_contracts.tscn -- --install-root=/path/to/installation
 # Pit height threshold: crossing above a pit and falling without changing tiles.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/pit_contracts.tscn -- --install-root=/path/to/installation
+# Ashley's jump arc (30 a frame up, 3 a frame of gravity, 19 frames aloft at 30 Hz), landing over no floor, low ceilings,
+# platforms overhead and climbs; rendered under gamescope with --capture=DIR it saves the jump's frames.
+godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/jump_contracts.tscn -- --install-root=/path/to/installation
 # Cloudstone height limit and a running ledge grab across Revelation Shaft.
 godot-dotnet --headless --fixed-fps 60 --audio-driver Dummy --path . res://tests/platform_contracts.tscn -- --install-root=/path/to/installation
 # Isolated earthquake scene: enemy-only actor flags must leave Ashley's animation running.
