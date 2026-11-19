@@ -42,12 +42,14 @@ public partial class ActorProjectionContracts : Node
                 }
                 camera = new Camera3D { Near=0.01f }; AddChild(camera);
                 var actor = new EventActor("synthetic",0,root);
+                // The stand-ins hold screen places, so the camera carries them (its drawn pose is interpolated between ticks).
+                MeshInstance3D? Stand(MeshInstance3D piece) => camera.GetNodeOrNull<MeshInstance3D>($"RetailView{piece.GetInstanceId()}") is { } stand && !stand.IsQueuedForDeletion() ? stand : null;
                 actor.ProjectAsRetail(camera,512,4096);
-                var projected = weapon.GetNode<MeshInstance3D>("RetailView");
+                var projected = Stand(weaponMesh) ?? throw new InvalidOperationException("The attachment near the eye has no stand-in on the camera.");
                 var vertices = projected.Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
                 foreach (var vertex in vertices)
                     if(vertex.X<0.8f) throw new InvalidOperationException("The attachment was projected through the body's skeleton instead of its own.");
-                var bodyVertices = body.GetNode<MeshInstance3D>("RetailView").Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                var bodyVertices = (Stand(bodyMesh) ?? throw new InvalidOperationException("The body near the eye has no stand-in on the camera.")).Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
                 foreach(var vertex in bodyVertices)
                     if(Math.Abs(vertex.X)>0.1f) throw new InvalidOperationException("Attachment placement changed the body's projection.");
                 attachment.Position=new Vector3(-2,0,0);
@@ -56,9 +58,14 @@ public partial class ActorProjectionContracts : Node
                 foreach(var vertex in vertices)
                     if(vertex.X>-0.8f) throw new InvalidOperationException("Projection retained the attachment's previous transform.");
                 attachment.Visible=false; actor.ProjectAsRetail(camera,512,4096);
-                if(projected.IsVisibleInTree()) throw new InvalidOperationException("A hidden attachment left projected geometry visible.");
+                if(Stand(weaponMesh) is { } hidden && hidden.IsVisibleInTree()) throw new InvalidOperationException("A hidden attachment left projected geometry visible.");
                 attachment.Visible=true; actor.ProjectAsRetail(camera,512,4096);
-                if(!projected.IsVisibleInTree()) throw new InvalidOperationException("A visible attachment did not return.");
+                if(Stand(weaponMesh) is not { } returned || !returned.IsVisibleInTree()) throw new InvalidOperationException("A visible attachment did not return.");
+                // Moving the camera after the projection (its presentation sample) keeps each corner where the screen had it.
+                var before = camera.UnprojectPosition(returned.GlobalTransform * returned.Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array()[0]);
+                camera.GlobalPosition += new Vector3(0.3f,0,0);
+                var after = camera.UnprojectPosition(returned.GlobalTransform * returned.Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array()[0]);
+                if(before.DistanceTo(after)>0.01f) throw new InvalidOperationException("A stand-in left in the world slid across the screen as the drawn camera moved.");
                 root.Free(); root=null; camera.Free();camera=null;
             }
             root = new Node3D(); AddChild(root);

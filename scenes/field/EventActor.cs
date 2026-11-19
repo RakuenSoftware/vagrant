@@ -161,7 +161,7 @@ public sealed class EventActor
     /// projected as if it stood there, and its screen place is held within -1024 to 1023; the GPU then drops a face more
     /// than 1023 pixels across or 511 down (the stand in MAP023's wine cellar, 20 units from the eye at H 288, shows only
     /// a dark sliver at the frame's left). Each corner goes through the rig's current pose; a stand-in mesh with each
-    /// corner where retail puts it on the screen, at its own depth, is drawn in the rig's place while any corner is that
+    /// corner where retail puts it on the screen, at its own depth, is drawn on the camera while any corner is that
     /// near. Faces facing away on the screen are culled as retail's normal clip does, by their materials. A model the
     /// eye stands inside is not drawn at all (footage: with the camera in the stand, nothing of it shows in the
     /// frame's middle, where its nearer faces would fall, while close-ups from outside a character show it; how
@@ -216,6 +216,12 @@ public sealed class EventActor
                         : arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
                 }
                 entry.Source = whole;
+                // Its stand-in, carried by the camera, goes with the piece it stands in for.
+                instance.TreeExiting += () =>
+                {
+                    if (entry.Stand != null && GodotObject.IsInstanceValid(entry.Stand)) entry.Stand.QueueFree();
+                    entry.Stand = null;
+                };
                 entry.Normals = new Vector3[]?[count];
                 for (int i = 0; i < count; i++)
                     entry.Normals[i] = entry.Arrays[i][(int)Mesh.ArrayType.Normal].VariantType == Variant.Type.Nil ? null : entry.Arrays[i][(int)Mesh.ArrayType.Normal].AsVector3Array();
@@ -323,13 +329,17 @@ public sealed class EventActor
         if (!front || Inside(from)) { Hide(); return; }
         if (!below) { Restore(); return; }
         float nearClip = Math.Max(camera.Near * units * 1.05f, 1);
-        var view = camera.GlobalTransform;
         var kept = new System.Collections.Generic.List<int>();
         for (int m = 0; m < _surfaces.Count; m++)
         {
             var entry = _surfaces[m];
             var instance = entry.Instance;
-            if (!instance.IsInsideTree() || !(instance.Visible || entry.Hidden) || !entry.Shown && entry.Arrays.Length > 0) continue;
+            if (!instance.IsInsideTree() || !(instance.Visible || entry.Hidden) || !entry.Shown && entry.Arrays.Length > 0)
+            {
+                // A piece not shown (a hidden attachment) shows no stand-in either.
+                if (entry.Stand != null) entry.Stand.Visible = false;
+                continue;
+            }
             var mesh = new ArrayMesh();
             for (int surface = 0; surface < entry.Arrays.Length; surface++)
             {
@@ -339,7 +349,7 @@ public sealed class EventActor
                 for (int v = 0; v < local.Length; v++)
                 {
                     (screen[v], var drawn) = GteProjection(local[v], projection, least, nearClip);
-                    placed[v] = view * (drawn / units);
+                    placed[v] = drawn / units;
                 }
                 kept.Clear();
                 var faces = entry.Faces[surface];
@@ -358,20 +368,32 @@ public sealed class EventActor
                     using var channel = source[(int)kind];
                     arrays[(int)kind] = channel;
                 }
-                // The stand-in stands in the world as posed, so its normals are the posed ones.
+                // The stand-in is in the camera's frame, so its normals are the posed ones turned into that frame (in
+                // place: they are made again each frame and only the stand-in reads them).
                 using var sourceNormals = source[(int)Mesh.ArrayType.Normal];
-                if (sourceNormals.VariantType != Variant.Type.Nil) arrays[(int)Mesh.ArrayType.Normal] = entry.Turned![surface];
+                if (sourceNormals.VariantType != Variant.Type.Nil)
+                {
+                    var turned = entry.Turned![surface];
+                    for (int v = 0; v < turned.Length; v++) turned[v] = (eye.Basis * turned[v]).Normalized();
+                    arrays[(int)Mesh.ArrayType.Normal] = turned;
+                }
                 arrays[(int)Mesh.ArrayType.Index] = kept.Count > 0 ? kept.ToArray() : new[] { 0, 0, 0 };
                 mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
                 mesh.SurfaceSetMaterial(surface, instance.GetActiveMaterial(surface));
             }
-            if (entry.Stand == null)
+            // The corners are screen places, so the stand-in is carried by the camera: drawn at the camera's interpolated
+            // pose between event ticks (the engine's presentation sample), a stand-in left in the world would be seen
+            // from somewhere else, and corners held just past the eye smeared across the frame (the bolt's flight past
+            // Sydney in evt0004, the camera tracking at 30 units a tick; the summoning shots over Ashley in evt0006).
+            if (entry.Stand == null || entry.Stand.GetParent() != camera)
             {
-                entry.Stand = new MeshInstance3D { Name = "RetailView", TopLevel = true, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
-                instance.AddSibling(entry.Stand);
+                entry.Stand?.QueueFree();
+                var stand = entry.Stand = new MeshInstance3D { Name = $"RetailView{instance.GetInstanceId()}", CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+                camera.AddChild(stand);
             }
-            entry.Stand.GlobalTransform = Transform3D.Identity;
+            entry.Stand.Transform = Transform3D.Identity;
             entry.Stand.Mesh = mesh;
+            entry.Stand.Visible = true;
             if (instance.Visible) { instance.Visible = false; entry.Hidden = true; }
         }
     }
