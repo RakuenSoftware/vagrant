@@ -6,17 +6,22 @@ namespace Wol.Games.Vagrant.Runtime;
 
 /// <summary>
 /// How the fields are lit: Original (the rooms' and effects' colours as the disc has them) or Enhanced (bright things
-/// bloom, so torches, burning windows and spells glow into the dark round them; added effects such as fire and magic
-/// are drawn brighter than white, which an HDR display shows brighter still; and they cast a flickering light on the
-/// characters near them, when characters are drawn enhanced and so take light). The choice is a saved preference.
+/// bloom, so torches, burning windows and spells glow into the dark round them; on an HDR display added effects such
+/// as fire and magic are drawn brighter than white; and they cast a flickering light on the characters near them, when
+/// characters are drawn enhanced and so take light). The choice is a saved preference.
 /// </summary>
 public partial class FieldLighting : Node
 {
     /// <summary>Whether the fields are lit enhanced.</summary>
     public static bool Enhanced { get; private set; }
 
-    /// <summary>How much brighter added effects are drawn, enhanced.</summary>
-    public const float EffectBoost = 3f;
+    /// <summary>
+    /// How much brighter added effects are drawn: enhanced, as far above white as the display shows, at most three
+    /// times; else, and on a display that shows nothing above white, as the disc has them (a brighter colour there only
+    /// flattens the effect's colours and shapes to white, and its bloom to a white disc).
+    /// </summary>
+    public static float EffectBoost(Node node) =>
+        Enhanced && node.GetNodeOrNull<Wol.Engine.Display.DisplaySettings>("/root/DisplaySettings") is { } display ? (float)Math.Clamp(display.HdrHeadroom, 1, 3) : 1;
 
     public override void _Ready()
     {
@@ -33,7 +38,8 @@ public partial class FieldLighting : Node
 
     /// <summary>
     /// Sets a field's environment as chosen: enhanced, what is brighter than about nine tenths of white blooms,
-    /// softly and wide, added over the picture; original, nothing does. Nothing blooms either while the screen echo
+    /// softly and wide, added over the picture, its levels averaged (summed, a bright surface's own bloom laid back
+    /// over it four times over washed it to a white disc); original, nothing does. Nothing blooms either while the screen echo
     /// is drawn (<paramref name="echoing"/>): the echo lays the drawn frame back over the next, so bloom would be bloomed
     /// again frame on frame until the picture washes out; the disc's frames have no bloom for it to replay.
     /// </summary>
@@ -45,7 +51,8 @@ public partial class FieldLighting : Node
         if (!glow) return;
         environment.GlowHdrThreshold = 0.9f;
         environment.GlowHdrScale = 2;
-        environment.GlowIntensity = 1.3f;
+        environment.GlowIntensity = 2;
+        environment.GlowNormalized = true;
         environment.GlowStrength = 1.2f;
         environment.GlowBloom = 0.02f;
         environment.GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive;

@@ -1217,8 +1217,8 @@ public sealed partial class FieldEffect : Node3D
         CastLight();
         MostQuads = Math.Max(MostQuads, quads + _triangles.Count / 2 - quads);
         // The engine draws them: a PS1 blend's add (1, and a quarter add, 3, its colour already a quarter) adds, 2
-        // subtracts, half and half (0, at half alpha) and opaque (4) mix; enhanced lighting draws added sprites
-        // brighter than white, to bloom (FieldLighting).
+        // subtracts, half and half (0, at half alpha) and opaque (4) mix; enhanced lighting on an HDR display draws added
+        // sprites brighter than white (FieldLighting).
         var drawn = new Wol.Engine.World.FieldTriangle[_triangles.Count];
         for (int i = 0; i < drawn.Length; i++)
         {
@@ -1227,7 +1227,7 @@ public sealed partial class FieldEffect : Node3D
             var blend = t.Mode is 1 or 3 ? Wol.Engine.World.FieldBlend.Add : t.Mode == 2 ? Wol.Engine.World.FieldBlend.Subtract : Wol.Engine.World.FieldBlend.Mix;
             drawn[i] = new(texture, blend, t.A, t.B, t.C, t.Ua, t.Ub, t.Uc, t.Ca, t.Cb, t.Cc, t.Pull, t.Layer > 0);
         }
-        Scene?.DrawTriangles(_key, drawn, FieldView.EffectLayer, Runtime.FieldLighting.Enhanced ? Runtime.FieldLighting.EffectBoost : 1f);
+        Scene?.DrawTriangles(_key, drawn, FieldView.EffectLayer, Runtime.FieldLighting.EffectBoost(this));
     }
 
     public override void _ExitTree()
