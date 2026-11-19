@@ -142,8 +142,21 @@ public partial class RetailContent : Node
     /// <summary>An effect's sound sequence (its block 13), empty when it has none.</summary>
     public byte[] EffectSequence(int effect) => Field.EffectSequence(effect);
 
-    public Godot.Collections.Dictionary Character(int character) =>
-        Field.Character($"character_{character:X2}") is { } built ? Parse(built.Definition.ToJsonString()) : new Godot.Collections.Dictionary();
+    public Godot.Collections.Dictionary Character(int character)
+    {
+        // Read once (spawns, blows and clip scripts ask for it again and again) until a loaded set adds clips to it.
+        if (_charactersOf.Field != Field || _charactersOf.Changes != Field.DefinitionChanges)
+        {
+            _characters.Clear();
+            _charactersOf = (Field, Field.DefinitionChanges);
+        }
+        if (!_characters.TryGetValue(character, out var definition))
+            _characters[character] = definition = Field.Character($"character_{character:X2}") is { } built ? Parse(built.Definition.ToJsonString()) : new Godot.Collections.Dictionary();
+        return definition;
+    }
+
+    private readonly Dictionary<int, Godot.Collections.Dictionary> _characters = new();
+    private (FieldContent? Field, int Changes) _charactersOf;
 
     /// <summary>The weapons' swing sounds, by category.</summary>
     public int[] SwingSounds => Field.SwingSoundIds();

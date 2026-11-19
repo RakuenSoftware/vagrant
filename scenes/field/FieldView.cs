@@ -736,6 +736,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 return;
             }
             Document = document;
+            _roomGroups = null;
+            _lightMap = null;
             LoadTrapPanels(document, textures);
             // The room's own weather starts with it, over its weather rectangle, drawn in the room's field (made below).
             _rain.Scene = null;
@@ -2013,6 +2015,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 if (firstHidden) _hiddenGroups.Add(second); else _hiddenGroups.Remove(second);
                 var groups = Document.GetValueOrDefault("room_groups", new GArray()).AsGodotArray();
                 if (first < groups.Count && second < groups.Count) (groups[first], groups[second]) = (groups[second], groups[first]);
+                _roomGroups = null;
                 return Error.Ok;
             }
             case "tile.block":
@@ -4084,6 +4087,8 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
 
 
     private Dictionary<(int, int), List<(int Y, Vector3 Color)>>? _floorLight;
+    /// <summary>The room's light map as <see cref="FloorLight"/> reads it: its records' words, and its own colour.</summary>
+    private (int[][] Records, Vector3 Colour)? _lightMap;
 
     /// <summary>
     /// The light on a character where it stands: the room's light map (BATTLE.PRG 0x80098b38) gives the colour of the
@@ -4096,14 +4101,26 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         if (!actor.RoomLit) return new Vector3(128, 128, 128);
         var position = actor.Position;
-        if (Document.GetValueOrDefault("light_map").VariantType == Variant.Type.Dictionary)
+        if (_lightMap == null && Document.GetValueOrDefault("light_map").VariantType == Variant.Type.Dictionary)
         {
+            // Read from the document once a room: characters ask for their light every event frame.
             var map = Document["light_map"].AsGodotDictionary();
-            int x = (int)position.X, z = (int)position.Z;
-            foreach (var value in map["records"].AsGodotArray())
+            var records = map["records"].AsGodotArray();
+            var colour = map["colour"].AsGodotArray();
+            _lightMap = (new int[records.Count][], new Vector3(colour[0].AsSingle(), colour[1].AsSingle(), colour[2].AsSingle()));
+            for (int i = 0; i < records.Count; i++)
             {
-                var r = value.AsGodotArray();
-                int V(int i) => r[i].AsInt32();
+                var record = records[i].AsGodotArray();
+                _lightMap.Value.Records[i] = new int[record.Count];
+                for (int k = 0; k < record.Count; k++) _lightMap.Value.Records[i][k] = record[k].AsInt32();
+            }
+        }
+        if (_lightMap is var (lightRecords, lightColour))
+        {
+            int x = (int)position.X, z = (int)position.Z;
+            foreach (var r in lightRecords)
+            {
+                int V(int i) => r[i];
                 if (x < V(0) || x > V(2) || z < V(1) || z > V(3)) continue;
                 // NCLIP of three screen points: the signed doubled area.
                 static long Nclip(long ax, long ay, long bx, long by, long cx, long cy) => ax * by + bx * cy + cx * ay - ax * cy - bx * ay - cx * by;
@@ -4118,8 +4135,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 float Mix(int channel) => (V(10 + channel) * w0 + V(13 + channel) * w1 + V(16 + channel) * w2) / (float)whole;
                 return new Vector3(Mix(0), Mix(1), Mix(2));
             }
-            var colour = map["colour"].AsGodotArray();
-            return new Vector3(colour[0].AsSingle(), colour[1].AsSingle(), colour[2].AsSingle());
+            return lightColour;
         }
         // A room without a light map lights characters plainly (0x80; 0x80098B38 keeps its 0x808080 when the room has
         // none: MAP172's dead men). Only an installation made before the map was kept has no key for it at all.
@@ -6525,7 +6541,12 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         public required MeshInstance3D View;
         public required ArrayMesh Mesh;
-        public required GArray[] Arrays;
+        /// <summary>Per surface, its corners as converted, read from the mesh once so each frame's test reads no arrays back.</summary>
+        public required Vector3[][] Vertices, Normals;
+        public required Vector2[][] Uv;
+        public required Color[][] Colors;
+        /// <summary>Per surface, its custom channels 1 to 3 (four floats a corner), or null where the surface has none.</summary>
+        public required float[]?[][] Custom;
         public required Material[] Materials;
         /// <summary>Per surface, the triangles of each face in turn (a quad's two).</summary>
         public required int[][] Faces;
@@ -6556,18 +6577,29 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                     faces.Add(surface["faces"].AsInt32Array());
                 }
             if (faces.Count != mesh.GetSurfaceCount()) continue;
-            var arrays = new GArray[faces.Count];
+            var vertices = new Vector3[faces.Count][];
+            var normals = new Vector3[faces.Count][];
+            var uv = new Vector2[faces.Count][];
+            var colors = new Color[faces.Count][];
+            var custom = new float[]?[faces.Count][];
             var materials = new Material[faces.Count];
             var dropped = new bool[faces.Count][];
             for (int i = 0; i < faces.Count; i++)
             {
-                arrays[i] = mesh.SurfaceGetArrays(i);
+                var arrays = mesh.SurfaceGetArrays(i);
+                vertices[i] = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                uv[i] = arrays[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+                colors[i] = arrays[(int)Mesh.ArrayType.Color].AsColorArray();
+                normals[i] = arrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
+                custom[i] = new float[]?[4];
+                for (int channel = 1; channel <= 3; channel++)
+                    if (arrays[(int)Mesh.ArrayType.Custom0 + channel] is { VariantType: not Variant.Type.Nil } corners) custom[i][channel] = corners.AsFloat32Array();
                 materials[i] = mesh.SurfaceGetMaterial(i);
                 int triangles = 0;
                 foreach (int count in faces[i]) triangles += count;
                 dropped[i] = new bool[triangles];
             }
-            _roomFaces.Add(new RoomFaces { View = view, Mesh = mesh, Arrays = arrays, Materials = materials, Faces = faces.ToArray(), Dropped = dropped });
+            _roomFaces.Add(new RoomFaces { View = view, Mesh = mesh, Vertices = vertices, Normals = normals, Uv = uv, Colors = colors, Custom = custom, Materials = materials, Faces = faces.ToArray(), Dropped = dropped });
         }
     }
 
@@ -6595,7 +6627,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             bool changed = false;
             for (int surface = 0; surface < room.Faces.Length; surface++)
             {
-                var vertices = room.Arrays[surface][(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                var vertices = room.Vertices[surface];
                 int at = 0, triangle = 0;
                 for (int face = 0; face < room.Faces[surface].Length; face++)
                 {
@@ -6622,17 +6654,16 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             room.Mesh.ClearSurfaces();
             for (int surface = 0; surface < room.Faces.Length; surface++)
             {
-                var source = room.Arrays[surface];
                 var kept = new List<int>();
                 for (int triangle = 0; triangle < room.Dropped[surface].Length; triangle++)
                     if (!room.Dropped[surface][triangle]) for (int v = triangle * 3; v < triangle * 3 + 3; v++) kept.Add(v);
                 if (kept.Count == 0) kept.AddRange(new[] { 0, 0, 0 });
-                var arrays = new GArray();
+                // Freed as soon as the surface is made from it, not left to the collector.
+                using var arrays = new GArray();
                 arrays.Resize((int)Mesh.ArrayType.Max);
-                var vertices = source[(int)Mesh.ArrayType.Vertex].AsVector3Array();
-                var uv = source[(int)Mesh.ArrayType.TexUV].AsVector2Array();
-                var colors = source[(int)Mesh.ArrayType.Color].AsColorArray();
-                var normals = source[(int)Mesh.ArrayType.Normal].AsVector3Array();
+                Vector3[] vertices = room.Vertices[surface], normals = room.Normals[surface];
+                var uv = room.Uv[surface];
+                var colors = room.Colors[surface];
                 arrays[(int)Mesh.ArrayType.Vertex] = kept.ConvertAll(v => vertices[v]).ToArray();
                 arrays[(int)Mesh.ArrayType.TexUV] = kept.ConvertAll(v => uv[v]).ToArray();
                 arrays[(int)Mesh.ArrayType.Color] = kept.ConvertAll(v => colors[v]).ToArray();
@@ -6641,8 +6672,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
                 for (int channel = 1; channel <= 3; channel++)
                 {
                     int type = (int)Mesh.ArrayType.Custom0 + channel;
-                    if (source[type].VariantType == Variant.Type.Nil) continue;
-                    var corners = source[type].AsFloat32Array();
+                    if (room.Custom[surface][channel] is not { } corners) continue;
                     var selected = new float[kept.Count * 4];
                     for (int v = 0; v < kept.Count; v++) Array.Copy(corners, kept[v] * 4, selected, v * 4, 4);
                     arrays[type] = selected;
@@ -6658,14 +6688,26 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     {
         var back = EventActor.RetailSpace.Basis.Inverse() * Field.Camera.GlobalBasis.Z;
         int octant = (int)Mathf.PosMod(Mathf.Round(Mathf.Atan2(back.X, -back.Z) / (Mathf.Pi / 4)), 8);
-        var groups = Document.GetValueOrDefault("room_groups", new GArray()).AsGodotArray();
-        for (int group = 0; group < groups.Count; group++)
+        if (_roomGroups == null)
         {
-            if (!Field.Actors.ContainsKey(group.ToString())) continue;
-            var entry = groups[group].AsGodotDictionary();
-            Field.SetActorVisible(group.ToString(), !_hiddenGroups.Contains(group) && !(_hideFirstPerson && entry["first_person"].AsBool()) && (!_cutaway || (entry["mask"].AsInt32() & (1 << octant)) != 0));
+            var groups = Document.GetValueOrDefault("room_groups", new GArray()).AsGodotArray();
+            _roomGroups = new (string, bool, int)[groups.Count];
+            for (int group = 0; group < groups.Count; group++)
+            {
+                var entry = groups[group].AsGodotDictionary();
+                _roomGroups[group] = (group.ToString(), entry["first_person"].AsBool(), entry["mask"].AsInt32());
+            }
+        }
+        for (int group = 0; group < _roomGroups.Length; group++)
+        {
+            var (name, firstPerson, mask) = _roomGroups[group];
+            if (!Field.Actors.ContainsKey(name)) continue;
+            Field.SetActorVisible(name, !_hiddenGroups.Contains(group) && !(_hideFirstPerson && firstPerson) && (!_cutaway || (mask & (1 << octant)) != 0));
         }
     }
+
+    /// <summary>The room's geometry groups as <see cref="ShowRoomGroups"/> reads them each frame (actor name, first-person only, octant mask), read from the document again after it changes.</summary>
+    private (string Name, bool FirstPerson, int Mask)[]? _roomGroups;
 
     public Task PrepareForPresentation()
     {
