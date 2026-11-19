@@ -197,7 +197,16 @@ public partial class Startup : Control
         _choose.Disabled = true;
         _message.Text = "Installing from your disc. This takes a minute…";
         string disc = _path.Text;
-        _worker = Task.Run(() => Install(disc, message => Callable.From(() => _message.Text = message).CallDeferred()));
+        _worker = Task.Run(() => Install(disc, message => Callable.From(() => { if (IsInstanceValid(_message)) _message.Text = message; }).CallDeferred()));
+    }
+
+    /// <summary>The install builds Godot resources on its own thread and needs the main loop running, so closing the window
+    /// during it keeps this scene alive (the scene manager quits only once it is freed) until the install is done.</summary>
+    public override void _Notification(int what)
+    {
+        if (what != NotificationPredelete || _worker is not { IsCompleted: false } worker) return;
+        CancelFree();
+        worker.ContinueWith(_ => Callable.From(QueueFree).CallDeferred());
     }
 
     public override void _Process(double delta)
