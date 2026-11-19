@@ -33,13 +33,16 @@ public partial class FieldLighting : Node
 
     /// <summary>
     /// Sets a field's environment as chosen: enhanced, what is brighter than about nine tenths of white blooms,
-    /// softly and wide, added over the picture; original, nothing does.
+    /// softly and wide, added over the picture; original, nothing does. Nothing blooms either while the screen echo
+    /// is drawn (<paramref name="echoing"/>): the echo lays the drawn frame back over the next, so bloom would be bloomed
+    /// again frame on frame until the picture washes out; the disc's frames have no bloom for it to replay.
     /// </summary>
-    public static void Apply(Godot.Environment environment)
+    public static void Apply(Godot.Environment environment, bool echoing)
     {
-        if (environment.GlowEnabled == Enhanced) return;
-        environment.GlowEnabled = Enhanced;
-        if (!Enhanced) return;
+        bool glow = Enhanced && !echoing;
+        if (environment.GlowEnabled == glow) return;
+        environment.GlowEnabled = glow;
+        if (!glow) return;
         environment.GlowHdrThreshold = 0.9f;
         environment.GlowHdrScale = 2;
         environment.GlowIntensity = 1.3f;
