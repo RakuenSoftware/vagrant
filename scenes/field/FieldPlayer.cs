@@ -19,8 +19,8 @@ namespace Wol.Games.Vagrant.Scenes.Field;
 /// <item>Square jumps: standing, she crouches (47) for 5 frames first; moving, she leaps at once at her walking or
 /// running speed. She leaves the ground at 30 units a frame, which gravity takes 3 from every frame, so she rises 135
 /// units in 9 frames. In the air the stick steers her at her ground speed (31 at most); a ledge she meets is climbed
-/// at once. The take-off, apex, fall and landing animations are 44, 49, 45, 46 standing, 48, 49, 50, 51 walking and
-/// 53, 54, 55, 56 running.</item>
+/// at once; rising, her head meeting the ceiling turns her back down. The take-off, apex, fall and landing animations
+/// are 44, 49, 45, 46 standing, 48, 49, 50, 51 walking and 53, 54, 55, 56 running.</item>
 /// </list>
 /// </summary>
 public sealed class FieldPlayer
@@ -65,6 +65,9 @@ public sealed class FieldPlayer
     /// +8 bit 23 or +0x5ac bit 3); to others they are walls.
     /// </summary>
     public bool Climbs = true;
+
+    /// <summary>The ceiling over a map position (y down; <see cref="FieldView.CeilingAt"/>), or none.</summary>
+    public Func<int, int, int>? Ceiling;
 
     /// <summary>Whether it plays its own walking, running, climbing and falling animations; a fighter's are the battle's.</summary>
     public bool Animates = true;
@@ -149,6 +152,7 @@ public sealed class FieldPlayer
         _velocity = velocity;
         _frames = 0;
         _airVertical = -30;
+        _airFloor = _actor.Position.Y;
         _airAnimation = 0;
         if (Animates) _actor.Animate($"{_set}_{JumpAnimations[type][0]}", 4, once: true);
         _animation = -1;
@@ -156,14 +160,24 @@ public sealed class FieldPlayer
 
     private float _airVertical;
 
+    /// <summary>The floor last found under her in the air: where she left the ground, until she passes over another.</summary>
+    private float _airFloor;
+
     /// <summary>
     /// A frame in the air: gravity, steering, a ledge met in flight (climbed at once if no more than 255 above), and
-    /// landing when she reaches the floor below her.
+    /// landing when she reaches the floor below her. Retail's air floor (BATTLE.PRG 0x800a6ee8) is the collision map's
+    /// height whatever the tile's blocking class, so she always comes down: where there is no floor to stand on (a
+    /// blocked tile, or off the map) she goes no further across, as on the ground, and falls to the floor she was last
+    /// over rather than stopping where she is.
     /// </summary>
     private void StepAir()
     {
         _airVertical += 3;
         var position = _actor.Position;
+        // Rising, her head (192 above her feet) meeting the ceiling turns her back down (0x800ac8f8); she keeps going
+        // across.
+        if (_airVertical < 0 && Ceiling != null && position.Y + _airVertical - 192 < Ceiling((int)position.X, (int)position.Z))
+            _airVertical = -_airVertical;
         var next = position + _velocity;
         if (_velocity != Vector3.Zero)
         {
@@ -175,7 +189,8 @@ public sealed class FieldPlayer
             }
         }
         next.Y = position.Y + _airVertical;
-        float floor = _floor(next) ?? position.Y;
+        if (_floor(next) == null) next = position with { Y = next.Y };
+        float floor = _airFloor = _floor(next) ?? _airFloor;
         int phase = Math.Abs(_airVertical) <= 9 ? 1 : _airVertical > 9 ? 2 : 0;
         if (phase != _airAnimation && phase > 0) { _airAnimation = phase; if (Animates) _actor.Animate($"{_set}_{JumpAnimations[_jumpType][phase]}", phase == 1 ? 16 : 8, once: true); }
         if (_airVertical > 0 && next.Y >= floor)
@@ -192,15 +207,25 @@ public sealed class FieldPlayer
 
     /// <summary>
     /// Starts climbing onto a ledge at <paramref name="ledge"/> ahead of <paramref name="at"/>: over 8 frames a 64-unit
-    /// level for a climb (36, or 39 for the third level), or a grab and pull-up for the fourth (41, then 39).
+    /// level for a climb (36, or 39 for the third level), or a grab and pull-up for the fourth (41, then 39). She
+    /// comes up a little past her radius, but only onto the ledge itself: retail places the climb by the ledge's tile
+    /// edge (0x800a9530) and gives up a grab with no room above it (0x800a6798), so she is set down on the point of the
+    /// ledge nearest that, and where none lies ahead of her within reach (only a blocked tile or the map's edge) she
+    /// does not climb.
     /// </summary>
     private bool Climb(Vector3 at, float ledge, Vector3 direction)
     {
         float rise = _actor.Position.Y - ledge;
         if (rise > 256 || !Climbs) return false;
+        // The point of the ledge nearest a little past her radius, no further than her reach over it.
+        float reach = 0;
+        for (float d = 0; d <= Radius + 4 && reach == 0; d += 4)
+            foreach (float r in new[] { Radius + 8 - d, Radius + 8 + d })
+                if (r > 0 && r <= Radius + 40 && _floor((at + direction * r) with { Y = ledge }) == ledge) { reach = r; break; }
+        if (reach == 0) return false;
         int level = (int)Math.Ceiling(rise / 64);
         _climbFrom = _actor.Position;
-        _climbTo = (at + direction * (Radius + 8)) with { Y = ledge };
+        _climbTo = (at + direction * reach) with { Y = ledge };
         _climbTotal = _climbFrames = level >= 4 ? 28 : level * 8;
         _state = State.Climb;
         if (Animates) _actor.Animate($"{_set}_{(level >= 4 ? 41 : level == 3 ? 39 : 36)}", 4, once: true);
@@ -287,17 +312,21 @@ public sealed class FieldPlayer
 
     /// <summary>
     /// Puts her on the floor: small rises she steps up over a few frames, small drops she steps down, and from 64
-    /// down she falls (her crouch, 47, as she drops).
+    /// down she falls (her crouch, 47, as she drops). A floor more than a step above her is overhead, not under her:
+    /// retail's floor (BATTLE.PRG 0x800a6ee8, through 0x800a9378) takes a platform up to 256 above the feet, but only as
+    /// a ledge she climbs or grabs (0x800a5280), so she is never lifted onto it where she stands.
     /// </summary>
     private void Settle()
     {
         if (_floor(_actor.Position) is not { } floor) return;
         float drop = floor - _actor.Position.Y;
+        if (-drop > StepHeight) return;
         if (drop >= FallHeight && !_stairs(_actor.Position))
         {
             _state = State.Air;
             _jumpType = Moving ? 2 : 0;
             _airVertical = 0;
+            _airFloor = floor;
             _airAnimation = 2;
             if (Animates) _actor.Animate($"{_set}_{Crouch}", 4, once: true);
             _animation = -1;

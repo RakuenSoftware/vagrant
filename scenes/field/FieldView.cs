@@ -3902,11 +3902,15 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
     /// <summary>By 32-unit sub-cell, the collision map's ceiling layer (y down).</summary>
     private int[] _ceilings = Array.Empty<int>();
 
-    /// <summary>The ceiling over a map position (BATTLE.PRG 0x8008dd0c, its 15 bits taken signed), 0 off the collision map.</summary>
+    /// <summary>
+    /// The ceiling over a map position (BATTLE.PRG 0x8008dd0c, its 15 bits taken signed), 0 off the collision map. A
+    /// ceiling layer height below the map's zero plane marks no ceiling, which reads as 0xF810: 2032 above the plane.
+    /// </summary>
     public int CeilingAt(int x, int z)
     {
         if (_ceilings.Length == 0 || (uint)(x >> 7) >= (uint)(_columns / 4) || (uint)(z >> 7) >= (uint)(_rows / 4)) return 0;
-        return _ceilings[(z >> 5) * _columns + (x >> 5)] << 17 >> 17;
+        int ceiling = _ceilings[(z >> 5) * _columns + (x >> 5)];
+        return ceiling > 0 ? -2032 : ceiling << 17 >> 17;
     }
 
     /// <summary>By 32-unit sub-cell, whether its floor byte has its flag (bit 7 of the collision block byte).</summary>
@@ -4335,7 +4339,7 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
             // An event's clip scripts show and hide held weapons only while it plays; in play the draw state does.
             foreach (var actor in Actors.Values) actor.WeaponOut = null;
             Battle?.EndSphere();
-            _control = new FieldPlayer(ashley, FloorAt, Stairs) { Set = Battle?.Drawn == true && Battle.Ashley != null ? Battle.Ashley.BattleSet : "base", Crowded = (mover, next) => Battle?.Crowded(mover, next) == true };
+            _control = new FieldPlayer(ashley, FloorAt, Stairs) { Set = Battle?.Drawn == true && Battle.Ashley != null ? Battle.Ashley.BattleSet : "base", Crowded = (mover, next) => Battle?.Crowded(mover, next) == true, Ceiling = CeilingAt };
             Gameplay.Place(ashley.Position);
             if (_eventCamera) Gameplay.LookAt = EventLookAt;
         }

@@ -265,12 +265,16 @@ When an event ends, the camera returns to the gameplay view around Ashley (`scen
   - Up to 64 units, she steps up over about 8 frames.
   - From 65 to 192, she climbs after pushing into it for 8 frames (animation 36, or 39 above 128), over 8 frames per 64-unit level.
   - From 193 to 256, she grabs the ledge and pulls herself up (41, then 39, 28 frames).
+  - A climb sets her down on the ledge a little past her radius, at the point of the ledge nearest that; with no ledge to stand on ahead (a blocked tile or the map's edge beyond it) she does not climb. Retail places the climb by the ledge tile's edge (0x800a9530) and gives up a grab with no room above (0x800a6798); the nearest-point rule is ours.
+  - A floor more than a step above her (a platform overhead, up to 256 above, which the floor rule takes as a ledge) never lifts her where she stands.
   - Anything higher is a wall. On stair tiles (attribute bit 5), rises are never walls.
   - A drop of 64 to 255 units she falls straight off; a deeper one only after pushing at the edge for 8 frames.
 - **Jumping.** Square jumps.
   - Standing, she crouches (47) for 5 frames first; moving, she leaps at once at her walking or running speed.
   - She leaves the ground at 30 units a frame, and gravity takes 3 from that every frame, so she rises 135 units in 9 frames.
   - In the air the stick steers her at her ground speed (31 at most), and a ledge she meets is climbed at once.
+  - Rising, when her head (192 above her feet) would pass the ceiling over her (0x8008dd0c), her vertical speed turns about; she keeps going across (0x800ac8f8). A ceiling layer height below the map's zero plane reads as none (0xF810, 2032 above it). Retail also takes a platform's underside (its top + 96, for a platform more than 256 above) as a ceiling (0x800a9378); that is not ported.
+  - She always comes down: the floor under her in the air is the collision map's height whatever the tile's blocking class (BATTLE.PRG 0x800a6ee8). Where there is no floor to stand on (a blocked tile, or off the map) she goes no further across, as her move routine (0x800a5280, which runs in the air too) stops her at walls, and falls to the floor she was last over; that fallback is ours, for a body already over such a spot.
   - Take-off, apex, fall and landing play 44, 49, 45 and 46 standing; 48, 49, 50 and 51 walking; 53, 54, 55 and 56 running.
 - **Blocking classes.** A tile's blocking class (attribute bits 10 to 12) is solid over the whole tile at 5. At 1 to 4 it is solid over the half beyond a diagonal or an edge: where fx + fz > 128, fx > fz, fx + fz < 128 or fx < fz, by the position within the tile.
 - **Floor and walls.** The collision map is her floor.
