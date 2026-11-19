@@ -2097,7 +2097,10 @@ public sealed partial class FieldBattle
     private bool StepAbilities()
     {
         if (_attacker == null || _victim == null || Ashley == null) return false;
-        bool chain = _attacker == Ashley && !_victim.Dead && _victim.Hp > 0 && Array.Exists(ChainSlots, slot => slot != 0);
+        // A chain answers a hit: a blow resolved as a miss, onto a crate or into the floor has nothing to link to, so
+        // no "!" shows and no press is graded. The blow is resolved as it starts, so this is known before it lands.
+        bool hits = _struck ? _landed : _blow is { Targets.Count: > 0 } blow && blow.Targets[0] is { Void: false, Kind: not 4, Who.Cube: false };
+        bool chain = _attacker == Ashley && hits && !_victim.Dead && _victim.Hp > 0 && Array.Exists(ChainSlots, slot => slot != 0);
         bool defense = _victim == Ashley && Array.Exists(DefenseSlots, slot => slot != 0);
         if (!chain && !defense) return false;
         int margin = Math.Max(2, 10 - _chain / 3), ticks = (_landAt - _frames) * 2;
@@ -3625,6 +3628,7 @@ public sealed partial class FieldBattle
     {
         var blow = _blow;
         _blow = null;
+        _landed = false;
         // The blow's entry; its line of fire may have turned it onto another fighter or a crate.
         if (blow == null || blow.Targets.Count == 0) return;
         var entry = blow.Targets[0];
@@ -3644,7 +3648,6 @@ public sealed partial class FieldBattle
         var first = blow.Record.Effects[0];
         _blowAction = blow.Record.Id;
         _blowAffinity = first.Affinity != 0 ? first.Affinity - 1 : attacker.Affinity;
-        _landed = false;
         // The blow's flash, a resident small effect at the struck limb (BATTLE.PRG 0x8006c84c): 1 for a hit, 0x27 otherwise.
         int bone = limb >= 0 && limb < target.Limbs.Count ? target.Limbs[limb].Bone : -1;
         if (entry.Kind == 4) { Number(target, "Miss"); _view.PlayResident(0x27, attacker.Actor, target.Actor, bone); return; }
