@@ -50,7 +50,11 @@ public partial class RetailContent : Node
     {
         Root = DefaultRoot;
         foreach (string argument in OS.GetCmdlineUserArgs())
+        {
             if (argument.StartsWith("--install-root=", StringComparison.Ordinal)) Root = argument["--install-root=".Length..];
+            if (argument.StartsWith("--pack-root=", StringComparison.Ordinal)) PackRoot = argument["--pack-root=".Length..];
+        }
+        ScanPacks(DisplaySettings.Preference("content", "packs", System.Array.Empty<string>()));
         Reload();
         // The display settings may be added after this node, so their signal is joined once both are in the tree.
         Callable.From(() => { if (GetNodeOrNull<DisplaySettings>("/root/DisplaySettings") is { } display) display.AssetScalingChanged += Rescale; }).CallDeferred();
@@ -86,7 +90,7 @@ public partial class RetailContent : Node
         var installation = new RetailInstallation(GlobalRoot);
         installation.Install(disc, MediaTools, progress);
         progress("Preparing the game…");
-        var movie = System.Threading.Tasks.Task.Run(() => installation.IntroMovie(MediaTools));
+        var movie = System.Threading.Tasks.Task.Run(() => installation.IntroMovie(MediaTools, System.IO.Path.Combine(installation.DiscPath, "MOV", "TITLE.STR")));
         var ending = System.Threading.Tasks.Task.Run(() => installation.EndingMusic(MediaTools));
         FieldContent Content() => new FieldContent(installation.Root);
         var rooms = Content().RoomNames();
@@ -100,6 +104,47 @@ public partial class RetailContent : Node
     }
 
     public string GlobalRoot => ProjectSettings.GlobalizePath(Root);
+
+    /// <summary>Where installed content packs live, each in its own folder, apart from the installation
+    /// (<c>--pack-root=</c> names another, for checks).</summary>
+    public string PackRoot { get; private set; } = "user://packs";
+
+    /// <summary>
+    /// The installed content packs and the ones enabled (a preference). An enabled pack's game files are read in place
+    /// of the installed ones; the installation is never changed, so disabling or removing a pack restores the disc's.
+    /// </summary>
+    public ContentPackSet Packs { get; private set; } = null!;
+
+    private static bool Picture(byte[] data) { using var image = new Image(); return image.LoadPngFromBuffer(data) == Error.Ok; }
+
+    private void ScanPacks(System.Collections.Generic.IEnumerable<string> enabled) =>
+        Packs = new ContentPackSet(ProjectSettings.GlobalizePath(PackRoot), RetailDisc.PackFormat, Picture, enabled);
+
+    /// <summary>Enables exactly <paramref name="ids"/> (in priority order, the last winning), saves the choice and reloads
+    /// the game's content through them.</summary>
+    public void EnablePacks(System.Collections.Generic.IReadOnlyList<string> ids)
+    {
+        DisplaySettings.SetPreference("content", "packs", System.Linq.Enumerable.ToArray(ids));
+        ScanPacks(ids);
+        Reload();
+    }
+
+    /// <summary>Installs a pack ZIP (disabled until the player enables it); returns its ID.</summary>
+    public string InstallPack(string zip)
+    {
+        string folder = ContentPackInstaller.Install(zip, ProjectSettings.GlobalizePath(PackRoot), RetailDisc.PackFormat, Picture);
+        ScanPacks(Packs.Enabled);
+        return System.IO.Path.GetFileName(folder);
+    }
+
+    /// <summary>Disables and deletes an installed pack's folder (the pack's own files only).</summary>
+    public void RemovePack(string id)
+    {
+        if (!System.Linq.Enumerable.Any(Packs.Packs, pack => pack.Id == id)) return;
+        var enabled = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Where(Packs.Enabled, known => known != id));
+        Directory.Delete(System.IO.Path.Combine(ProjectSettings.GlobalizePath(PackRoot), id), true);
+        EnablePacks(enabled);
+    }
 
     /// <summary>An image decoded from the disc, by the name the document that has it gives.</summary>
     public Image LoadImage(string name) =>
@@ -391,7 +436,7 @@ public partial class RetailContent : Node
         _rigs.Clear();
         try
         {
-            _field = new FieldContent(GlobalRoot);
+            _field = new FieldContent(GlobalRoot, Packs);
             Vector2I Point(JsonNode node) => new((int)node[0]!, (int)node[1]!);
 
             var layout = Field.Data("title_layout")!;
@@ -424,8 +469,7 @@ public partial class RetailContent : Node
                 var glow = layout["glows"]![i]!;
                 TitleGlowOrigins[i] = new Vector2I((int)glow["x"]!, (int)glow["y"]!);
             }
-            Field.DiscFile("MOV/TITLE.STR");
-            var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie(MediaTools);
+            var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie(MediaTools, Field.DiscFile("MOV/TITLE.STR"), Packs.Replacement("disc/MOV/TITLE.STR")?.Sha256 ?? "");
             IntroVideo = new VideoStreamTheora { File = video };
             IntroMusic = AudioStreamOggVorbis.LoadFromFile(music);
             if (!System.IO.File.Exists(System.IO.Path.Combine(GlobalRoot, "disc", RetailInstallation.EndingStream)))

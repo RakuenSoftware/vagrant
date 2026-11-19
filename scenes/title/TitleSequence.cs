@@ -154,6 +154,8 @@ public partial class TitleSequence : Control
         AddChild(_notice);
         _settings = new SettingsDialog { Name = "Settings" };
         AddChild(_settings);
+        // Switching packs reloads the content; the title starts again on it.
+        _settings.PacksApplied += () => GetTree().ReloadCurrentScene();
         // Continue's LOAD screens, over everything.
         var cardsLayer = new CanvasLayer { Layer = 20, Name = "CardsLayer" };
         AddChild(cardsLayer);

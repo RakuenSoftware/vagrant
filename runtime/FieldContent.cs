@@ -73,9 +73,14 @@ public sealed class FieldContent
     /// </summary>
     private readonly string? _cache;
 
-    /// <summary>The installation at <paramref name="root"/> (see <see cref="RetailInstallation"/>).</summary>
-    public FieldContent(string root)
+    /// <summary>The enabled content packs, whose game files the game reads in place of the installed ones; null for none.</summary>
+    private readonly Wol.Engine.Install.ContentPackSet? _packs;
+
+    /// <summary>The installation at <paramref name="root"/> (see <see cref="RetailInstallation"/>), read through the
+    /// enabled <paramref name="packs"/>.</summary>
+    public FieldContent(string root, Wol.Engine.Install.ContentPackSet? packs = null)
     {
+        _packs = packs;
         var installation = new RetailInstallation(root);
         if (!File.Exists(installation.RecordPath)) throw new FileNotFoundException("Vagrant Story has not been installed from your disc yet.");
         var record = JsonNode.Parse(File.ReadAllText(installation.RecordPath)) as JsonObject;
@@ -87,14 +92,18 @@ public sealed class FieldContent
             _paths[(long)sector!] = path;
         }
         _disc = installation.DiscPath;
-        _cache = Cache(installation.CachePath);
+        _cache = Cache(installation.CachePath, packs?.Fingerprint ?? "");
         _battle = Read("BATTLE/BATTLE.PRG");
         _executable = Read("SLUS_010.40");
         // Ashley fights with her weapon's battle set (she has every category's, below).
         _battleSets[0] = BattleSet(0, Data("player")!["weapon"]!);
     }
 
-    private static string? Cache(string root)
+    /// <summary>
+    /// Under the build's folder, one folder per enabled pack set (<c>disc</c> with none): what is decoded from a pack's
+    /// files is kept apart from what is decoded from the disc's, so enabling or disabling a pack never serves the other.
+    /// </summary>
+    private static string? Cache(string root, string packs)
     {
         try
         {
@@ -102,8 +111,12 @@ public sealed class FieldContent
                 + typeof(TitleConversion).Assembly.ManifestModule.ModuleVersionId.ToString("N")
                 + typeof(RasterImage).Assembly.ManifestModule.ModuleVersionId.ToString("N");
             Directory.CreateDirectory(Path.Combine(root, build));
-            foreach (string old in Directory.GetDirectories(root)) if (Path.GetFileName(old) != build) Directory.Delete(old, true);
-            return Path.Combine(root, build);
+            // Older builds' folders (named by their build identity, all hex) go; other folders here (a pack's intro movie) stay.
+            foreach (string old in Directory.GetDirectories(root))
+                if (Path.GetFileName(old) is var other && other != build && other.All(Uri.IsHexDigit)) Directory.Delete(old, true);
+            string folder = Path.Combine(root, build, packs.Length == 0 ? "disc" : "packs-" + packs);
+            Directory.CreateDirectory(folder);
+            return folder;
         }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
@@ -113,11 +126,15 @@ public sealed class FieldContent
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Length, DateTime Written)> Checked = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// A disc file as the installation keeps it, rejected unless it is still the retail file: a Form 1 file by its
-    /// digest, a streamed one (its raw sectors) by the digest of each sector past its address header.
+    /// A disc file as the game reads it: an enabled pack's file for that path, or the installation's, rejected unless it
+    /// is still the retail file: a Form 1 file by its digest, a streamed one (its raw sectors) by the digest of each
+    /// sector past its address header.
     /// </summary>
     public string DiscFile(string path)
     {
+        // An enabled pack's game file stands in for the installed one (the set verified it when it scanned the pack).
+        if (_packs?.Replacement("disc/" + path) is { } replacement)
+            return _sectors.ContainsKey(path) ? replacement.Path : throw new InvalidDataException($"The installation is missing {path}. Install from your disc again.");
         string file = Path.Combine(_disc, path);
         var info = new FileInfo(file);
         if (!_sectors.ContainsKey(path) || !info.Exists) throw new InvalidDataException($"The installation is missing {path}. Install from your disc again.");

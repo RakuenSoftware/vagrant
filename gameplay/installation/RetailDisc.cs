@@ -39,4 +39,14 @@ public static class RetailDisc
 
     /// <summary>The US disc as the shared engine verifies it: identity, boot line and the digests above.</summary>
     public static readonly PlayStationDisc.Catalog Catalog = new("Vagrant Story (US, SLUS-01040)", VolumeIdentifier, "BOOT = cdrom:\\SLUS_010.40;1", RetailFileDigests, RetailStreamDigests);
+
+    /// <summary>
+    /// The game's rule for content packs: a pack may stand in a whole game file for one the game reads, keyed
+    /// <c>disc/</c> and its disc path (<c>disc/MENU/ITEMHELP.BIN</c>, <c>disc/MOV/TITLE.STR</c> in raw sectors as the
+    /// installation keeps streams). The installed file is never changed; the game reads the pack's in its place while
+    /// the pack is enabled. Nothing else is replaceable.
+    /// </summary>
+    public static ContentFormat? PackFormat(string key) =>
+        key.StartsWith("disc/", System.StringComparison.Ordinal) && key[5..] is var path
+        && (RetailFileDigests.ContainsKey(path) || RetailStreamDigests.ContainsKey(path)) ? ContentFormat.File : null;
 }
