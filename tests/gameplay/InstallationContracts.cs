@@ -44,13 +44,13 @@ internal static class InstallationContracts
             // Cached movie tracks are usable without resolving or launching external tools.
             File.WriteAllText(Path.Combine(installation.CachePath, "intro_video.ogv"), "synthetic cached picture");
             File.WriteAllText(Path.Combine(installation.CachePath, "intro_music.ogg"), "synthetic cached audio");
-            _ = installation.IntroMovie(missing);
+            _ = installation.IntroMovie(missing, Path.Combine(installation.DiscPath, "MOV", "TITLE.STR"));
             if (missing.Resolved.Count != 1) throw new InvalidOperationException("A cached intro attempted media discovery.");
 
             // A conversion uses the explicit STR demuxer and publishes only validated video/audio tracks.
             var fresh = new RetailInstallation(Path.Combine(root, "movie conversion"));
             media = new RecordingMedia();
-            var tracks = fresh.IntroMovie(media);
+            var tracks = fresh.IntroMovie(media, Path.Combine(fresh.DiscPath, "MOV", "TITLE.STR"));
             if (!File.Exists(tracks.Video) || !File.Exists(tracks.Music) || media.Calls.Count != 4)
                 throw new InvalidOperationException("Media conversion did not validate and publish both tracks.");
             foreach (var call in media.Calls.Where(c => c.Executable == "ffmpeg"))
@@ -61,9 +61,18 @@ internal static class InstallationContracts
             }
             var invalid = new RetailInstallation(Path.Combine(root, "invalid conversion"));
             bool shapeRejected = false;
-            try { _ = invalid.IntroMovie(new RecordingMedia { VideoFrames = 592 }); } catch (InvalidDataException) { shapeRejected = true; }
+            try { _ = invalid.IntroMovie(new RecordingMedia { VideoFrames = 592 }, Path.Combine(invalid.DiscPath, "MOV", "TITLE.STR")); } catch (InvalidDataException) { shapeRejected = true; }
             if (!shapeRejected || File.Exists(Path.Combine(invalid.CachePath, "intro_video.ogv")) || File.Exists(Path.Combine(invalid.CachePath, "intro_music.ogg")))
                 throw new InvalidOperationException("A movie with the wrong retail frame count was published.");
+
+            // A pack's movie, read in place of the disc's, may run its own length and is kept apart from the disc's.
+            var packed = new RetailInstallation(Path.Combine(root, "pack movie"));
+            string packMovie = Path.Combine(root, "pack", "MOV", "TITLE.STR"), packDigest = new string('a', 64);
+            media = new RecordingMedia { VideoFrames = 592 };
+            var packTracks = packed.IntroMovie(media, packMovie, packDigest);
+            if (Path.GetDirectoryName(packTracks.Video) != Path.Combine(packed.CachePath, "pack-" + packDigest[..16]) || !File.Exists(packTracks.Music)
+                || !media.Calls.Where(c => c.Executable == "ffmpeg").All(c => c.Arguments[Array.IndexOf(c.Arguments, "-i") + 1] == packMovie))
+                throw new InvalidOperationException("A pack's movie must be decoded from the pack's file into its own cache.");
 
             // Cached audio cannot hide missing, truncated or corrupt raw XA. The full-size fixture is sparse zeros.
             var ending = new RetailInstallation(Path.Combine(root, "ending"));

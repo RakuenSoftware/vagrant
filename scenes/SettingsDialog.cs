@@ -10,7 +10,9 @@ namespace Wol.Games.Vagrant.Scenes;
 /// The settings window the title's Settings item and the field menu's Options open: the shared graphics panel, master
 /// volume and the shared controls panel for the pad's buttons. Graphics and volume are saved when it closes, controls
 /// as they change. Opened from the field it also holds retail's own OPTIONS settings the port keeps (MENU8.PRG): WEAPON
-/// STATUS and ARMOR STATUS, named, explained and chosen ON or OFF in retail's words.
+/// STATUS and ARMOR STATUS, named, explained and chosen ON or OFF in retail's words. Its Packs tab lists the installed
+/// content packs: each is switched on or off (or removed), and a pack ZIP can be installed; the choice applies when the
+/// window closes, from the title only (<see cref="PacksApplied"/>: the title starts again on the content as the packs leave it).
 /// </summary>
 public sealed partial class SettingsDialog : AcceptDialog
 {
@@ -25,6 +27,15 @@ public sealed partial class SettingsDialog : AcceptDialog
     private TabContainer _tabs = null!;
     /// <summary>Retail's OPTIONS settings, shown only when the window is opened from the field.</summary>
     private VBoxContainer _game = null!;
+    private RetailContent _content = null!;
+    private VBoxContainer _packList = null!;
+    private Label _packStatus = null!;
+    private Button _installPack = null!;
+    private FileDialog _packFile = null!;
+    /// <summary>The packs the player has switched on in this window, in priority order; null while unchanged.</summary>
+    private System.Collections.Generic.List<string>? _enabling;
+    private readonly System.Collections.Generic.List<string> _removing = new();
+    private bool _fromField;
 
     /// <summary>
     /// The OPTIONS settings shown: the bit each sets in the options word ([0x80060020]), the string of its name (its
@@ -102,9 +113,37 @@ public sealed partial class SettingsDialog : AcceptDialog
             Actions = new[] { "ps_up", "ps_down", "ps_left", "ps_right", "ps_circle", "ps_cross", "ps_triangle", "ps_square", "ps_l1", "ps_r1", "ps_l2", "ps_r2", "ps_r3", "ps_start", "ps_select" },
             Labels = new[] { "Up", "Down", "Left", "Right", "○ Circle", "× Cross", "△ Triangle", "□ Square", "L1", "R1", "L2", "R2", "R3", "Start", "Select" },
         });
+        _content = GetNode<RetailContent>("/root/RetailContent");
+        var packsScroll = new ScrollContainer { Name = "Packs", HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        _tabs.AddChild(packsScroll);
+        var packs = new VBoxContainer { Name = "Packs", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        packs.AddThemeConstantOverride("separation", 10);
+        packsScroll.AddChild(packs);
+        packs.AddChild(new Label
+        {
+            Text = "Content packs (a translation, say) give game files the game reads in place of your disc's. Your installation is never changed: switch a pack off, or remove it, and the game reads your disc's files again.",
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+        });
+        _packList = new VBoxContainer { Name = "List" };
+        packs.AddChild(_packList);
+        _installPack = new Button { Name = "Install", Text = "Install pack…", SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin };
+        packs.AddChild(_installPack);
+        _packStatus = new Label { Name = "Status", AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        packs.AddChild(_packStatus);
+        _packFile = new FileDialog { FileMode = FileDialog.FileModeEnum.OpenFile, Access = FileDialog.AccessEnum.Filesystem, Filters = new[] { "*.zip ; Content pack" }, UseNativeDialog = true };
+        AddChild(_packFile);
+        _installPack.Pressed += () => _packFile.PopupCentered(new Vector2I(900, 600));
+        _packFile.FileSelected += path =>
+        {
+            try { _packStatus.Text = "Installed pack: " + _content.InstallPack(path) + ". Switch it on to use it."; }
+            catch (System.Exception error) when (error is System.IO.InvalidDataException or System.IO.IOException or System.UnauthorizedAccessException or System.Text.Json.JsonException)
+            { _packStatus.Text = "The pack was not installed: " + error.Message; }
+            ShowPacks();
+        };
         VisibilityChanged += () =>
         {
             if (Visible) return;
+            ApplyPacks();
             _display.SavePreferences();
             _audio.SavePreferences();
             // The graphics panel's texture choice sets every field material, characters' too.
@@ -118,6 +157,11 @@ public sealed partial class SettingsDialog : AcceptDialog
     /// </summary>
     public void Open(Field.FieldView? field = null)
     {
+        _fromField = field != null;
+        _enabling = null;
+        _removing.Clear();
+        _packStatus.Text = "";
+        ShowPacks();
         foreach (var child in _game.GetChildren()) { _game.RemoveChild(child); child.QueueFree(); }
         _game.Visible = field != null && field.Content.Has("options_menu");
         if (_game.Visible) ShowOptions(field!);
@@ -129,6 +173,56 @@ public sealed partial class SettingsDialog : AcceptDialog
         _tabs.CurrentTab = 0;
         GetNode<Control>("Tabs/General/Options/Graphics/Fullscreen").GrabFocus();
     }
+
+    /// <summary>The installed packs, each with its switch and Remove; disabled (shown only) when opened from the field.</summary>
+    private void ShowPacks()
+    {
+        foreach (var child in _packList.GetChildren()) { _packList.RemoveChild(child); child.QueueFree(); }
+        var enabled = _enabling ?? new System.Collections.Generic.List<string>(_content.Packs.Enabled);
+        foreach (var pack in _content.Packs.Packs)
+        {
+            if (_removing.Contains(pack.Id)) continue;
+            var row = new HBoxContainer { Name = pack.Id };
+            var toggle = new CheckButton { Name = "Enabled", Text = $"{pack.Name} ({pack.Id})", ButtonPressed = enabled.Contains(pack.Id), Disabled = _fromField, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            string id = pack.Id;
+            toggle.Toggled += on =>
+            {
+                _enabling ??= new System.Collections.Generic.List<string>(_content.Packs.Enabled);
+                _enabling.Remove(id);
+                if (on) _enabling.Add(id);
+            };
+            row.AddChild(toggle);
+            var remove = new Button { Name = "Remove", Text = "Remove", Disabled = _fromField };
+            remove.Pressed += () =>
+            {
+                _removing.Add(id);
+                _enabling ??= new System.Collections.Generic.List<string>(_content.Packs.Enabled);
+                _enabling.Remove(id);
+                ShowPacks();
+            };
+            row.AddChild(remove);
+            _packList.AddChild(row);
+        }
+        if (_content.Packs.Packs.Count == _removing.Count) _packList.AddChild(new Label { Text = "No content packs installed." });
+        foreach (string error in _content.Packs.Errors) _packList.AddChild(new Label { Text = error, AutowrapMode = TextServer.AutowrapMode.WordSmart });
+        if (_fromField) _packList.AddChild(new Label { Text = "Packs are switched on and off from the title screen." });
+        _installPack.Disabled = _fromField;
+    }
+
+    /// <summary>On closing: removes the packs marked for removal and enables the chosen set; the title starts again on
+    /// the content as the packs now leave it.</summary>
+    private void ApplyPacks()
+    {
+        if (_fromField || (_enabling == null && _removing.Count == 0)) return;
+        foreach (string id in _removing) _content.RemovePack(id);
+        if (_enabling != null && !System.Linq.Enumerable.SequenceEqual(_enabling, _content.Packs.Enabled)) _content.EnablePacks(_enabling);
+        _enabling = null;
+        _removing.Clear();
+        PacksApplied?.Invoke();
+    }
+
+    /// <summary>Raised when the window closed with a changed set of packs, the content already reloaded through them.</summary>
+    public event System.Action? PacksApplied;
 
     /// <summary>
     /// Retail's OPTIONS settings (MENU8.PRG): each its name and help, as the options list and its help line show them,

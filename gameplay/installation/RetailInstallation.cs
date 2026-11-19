@@ -86,16 +86,18 @@ public sealed class RetailInstallation
     }
 
     /// <summary>
-    /// The intro movie's picture and sound (Theora and Vorbis), made from the disc's MOV/TITLE.STR
-    /// into the cache the first time they are asked for. The retail intro's picture ends long before its audio, which
-    /// continues as the title music, so they are separate tracks.
+    /// The intro movie's picture and sound (Theora and Vorbis), made from MOV/TITLE.STR as the game reads it
+    /// (<paramref name="stream"/>: the disc's, or an enabled pack's, named by <paramref name="packs"/>, its SHA-256)
+    /// into the cache the first time they are asked for. The retail intro's picture ends long before its
+    /// audio, which continues as the title music, so they are separate tracks.
     /// </summary>
-    public (string Video, string Music) IntroMovie(IMediaTools media)
+    public (string Video, string Music) IntroMovie(IMediaTools media, string stream, string packs = "")
     {
-        string video = Path.Combine(CachePath, "intro_video.ogv"), music = Path.Combine(CachePath, "intro_music.ogg");
+        string cache = packs.Length == 0 ? CachePath : Path.Combine(CachePath, "pack-" + packs[..16]);
+        string video = Path.Combine(cache, "intro_video.ogv"), music = Path.Combine(cache, "intro_music.ogg");
         if (File.Exists(video) && File.Exists(music)) return (video, music);
-        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe"), stream = Path.Combine(DiscPath, "MOV", "TITLE.STR");
-        Directory.CreateDirectory(CachePath);
+        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe");
+        Directory.CreateDirectory(cache);
         string partVideo = video + ".partial.ogv", partMusic = music + ".partial.ogg";
         var picture = System.Threading.Tasks.Task.Run(() => media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
             "-map", "0:v:0", "-an", "-c:v", "libtheora", "-q:v", "8", "-pix_fmt", "yuv420p", partVideo));
@@ -103,7 +105,8 @@ public sealed class RetailInstallation
         picture.GetAwaiter().GetResult();
         var shape = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", partVideo))!["streams"]![0]!;
-        if ((int)shape["width"]! != 320 || (int)shape["height"]! != 224 || int.Parse((string)shape["nb_read_frames"]!) != IntroVideoFrames)
+        // A pack's movie may run longer or shorter than the retail one; its picture is the same size.
+        if ((int)shape["width"]! != 320 || (int)shape["height"]! != 224 || (packs.Length == 0 && int.Parse((string)shape["nb_read_frames"]!) != IntroVideoFrames))
             throw new InvalidDataException("The opening movie could not be decoded as the retail picture.");
         var audio = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "stream=channels", "-of", "json", partMusic))!["streams"]![0]!;
         if ((int)audio["channels"]! != 2) throw new InvalidDataException("The title music could not be decoded in stereo.");
