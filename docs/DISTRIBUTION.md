@@ -24,14 +24,17 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-a66481a4008acb84091ab9f9049437efb81f8fc5`. Native Linux, Windows and
+`runtime-414b2caf0e73a8d26d374d703d73dbcb1433c62a`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK adds portable disc/content-pack owners and the `IMediaTools` boundary,
+This SDK rounds shapes edge by edge: "Rounded shapes" divides only the edges
+whose new point changes the shape, instead of every triangle of a curved piece
+(1.6 times the original triangles over all rooms rather than 7.5). It retains the
+portable disc/content-pack owners and the `IMediaTools` boundary,
 with Godot media execution in the backend. Type forwarders preserve the previous
 SDK’s disc/content-pack identities. It retains the host-neutral pixel contracts
 and image/PNG codec API used by the portable content decoders. Its portable DLLs are
