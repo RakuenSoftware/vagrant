@@ -101,7 +101,7 @@ public partial class FieldContracts : Node
     /// <summary>
     /// With <c>--swoop</c> in a fight (Guildenstern's final form, <c>--room=27,1</c>), Ashley keeps her full hit points
     /// and each change of scenario variable 166, by which the boss and the room's scenes hand the swoop over, is
-    /// printed with where the boss is; the boss starts at three quarters of its hit points. While it is 1 (a swoop asked for), 5 (the dive made) or 6 (broken off) she
+    /// printed with where the boss is; the boss starts at two thirds of its hit points. While it is 1 (a swoop asked for), 5 (the dive made) or 6 (broken off) she
     /// stands still, as the scenes that answer them wait for. It passes once 166 has gone 1, 4, 5 or 6 and back to 0,
     /// and fails without that in 20000 frames.
     /// </summary>
@@ -4846,9 +4846,11 @@ public partial class FieldContracts : Node
                 brawler.Hp = brawler.MaxHp;
                 int swoop = _view.Flags[166];
                 var boss = brawl.Combatants.Values.FirstOrDefault(c => c != brawler && c.Hostile && !c.Dead);
-                // The boss starts at three quarters of its hit points, so that it asks for its first swoop once its
-                // 900-frame cooldown is over rather than after a long fight.
-                if (_swoopAt < 0 && boss != null) boss.Hp = boss.MaxHp * 3 / 4;
+                // The boss starts at two thirds of its hit points, so that it asks for its first swoop once its
+                // 900-frame cooldown is over rather than after a long fight. It asks only while it is at three quarters
+                // or under as the cooldown ends, and every fighter recovers a hit point every 120 or 240 ticks of the
+                // battle clock, so a boss set to exactly three quarters is past them by then and never asks.
+                if (_swoopAt < 0 && boss != null) boss.Hp = boss.MaxHp * 2 / 3;
                 if (_swoopAt < 0) _swoopAt = _frame;
                 if (swoop.ToString() != _swoopTrail[^1..] || (_frame - _swoopAt) % 120 == 0)
                     GD.Print($"FIELD: variable 166 is {swoop} at frame {_frame}, the boss at {boss?.Actor.Position} with {boss?.Hp} hit points, Ashley at {brawler.Actor.Position}");
