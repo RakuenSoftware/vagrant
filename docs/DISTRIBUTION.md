@@ -24,14 +24,18 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-cf01acf2ab659672da3b1da0be3794d332f3070f`. Native Linux, Windows and
+`runtime-2bab1f3453fcf7d17e66854fdb3f7d3ecbb4ce9d`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK adds the installed content-pack set (`ContentPackSet`: packs are
+This SDK keeps the engine up when the window closes until the retired scenes are
+freed: a scene still finishing its own work (the disc install) can hold its deletion,
+and a room waits for its background "Rounded shapes" passes, superseded ones
+included, before it is deleted, so quitting no longer crashes mid-pass. It retains
+the installed content-pack set (`ContentPackSet`: packs are
 re-verified on every scan, replace nothing until enabled, and a later enabled pack
 wins) and whole-file pack assets (`ContentFormat.File`), which the game reads in
 place of installed disc files while a pack is enabled. It also bounds the screen
