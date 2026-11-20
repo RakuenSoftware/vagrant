@@ -35,7 +35,8 @@ the implementation and comes from the player's own copy.
 asks for your disc image (BIN/CUE), checks every file against the retail US disc,
 and copies the files and the ending's unlisted XA sectors byte for byte. The game
 decodes that content as it plays. Without a verified disc it does not start.
-Modified, patched or other-region discs are rejected.
+Modified, patched or other-region discs are rejected. Closing the window while it
+installs finishes the install first, then closes.
 
 ## Current engine implementation
 

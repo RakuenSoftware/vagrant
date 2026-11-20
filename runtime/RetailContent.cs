@@ -94,9 +94,17 @@ public partial class RetailContent : Node
         var ending = System.Threading.Tasks.Task.Run(() => installation.EndingMusic(MediaTools));
         FieldContent Content() => new FieldContent(installation.Root);
         var rooms = Content().RoomNames();
-        System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
-            (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
-        Content().Character("character_00");
+        try
+        {
+            System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
+                (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
+            Content().Character("character_00");
+        }
+        finally
+        {
+            // The movie and music convert through Godot media tools: a failed room must not leave them running unowned.
+            System.Threading.Tasks.Task.WhenAll(movie, ending).ContinueWith(_ => { }).Wait();
+        }
         movie.GetAwaiter().GetResult();
         ending.GetAwaiter().GetResult();
         progress($"Prepared {rooms.Count} rooms.");
