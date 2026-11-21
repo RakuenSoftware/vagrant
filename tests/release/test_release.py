@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Release preconditions and provenance; never export a player or compile media."""
+"""Release preconditions and provenance; never export a player."""
 import importlib.util
 import hashlib
 import zipfile
@@ -29,7 +29,6 @@ class ReleasePreflightTests(unittest.TestCase):
         self.release.root = self.root
         self.release.cache = self.root / 'cache'
         self.release.args = SimpleNamespace(target='windows-x64', version='development', output=str(self.root / 'player'))
-        self.msys = self.root / 'custom MSYS2'
 
     def tool(self, name):
         return '/tools/' + name
@@ -39,22 +38,14 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(command[1:], ['--version'])
         return subprocess.CompletedProcess(command, 0, '10.0.403\n', '')
 
-    def install_msys_fixture(self):
-        for name in ('usr/bin/bash.exe', 'usr/bin/make.exe', 'usr/bin/pkgconf.exe', 'usr/bin/diff.exe',
-                     'mingw64/bin/gcc.exe', 'mingw64/bin/ar.exe', 'mingw64/bin/ranlib.exe'):
-            path = self.msys / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b'fixture, never executed')
-
     def test_reports_all_missing_windows_requirements_before_prepare_or_output(self):
         with patch.object(release_module.platform, 'system', return_value='Windows'), \
              patch.object(release_module.shutil, 'which', return_value=None), \
-             patch.dict(os.environ, {'MSYS2_ROOT': str(self.msys)}), \
              patch.object(self.release, 'prepare') as prepare:
             with self.assertRaises(RuntimeError) as failure:
                 self.release.build()
         message = str(failure.exception)
-        for expected in ('10.0.403', 'MSYS2_ROOT', 'pacman -S --needed', 'mingw-w64-x86_64-gcc', 'curl'):
+        for expected in ('10.0.403', 'dotnet'):
             self.assertIn(expected, message)
         prepare.assert_not_called()
         self.assertFalse(Path(self.release.args.output).exists())
@@ -69,39 +60,6 @@ class ReleasePreflightTests(unittest.TestCase):
              patch.object(release_module.subprocess, 'run', side_effect=incompatible):
             with self.assertRaisesRegex(RuntimeError, r'10\.0\.403.*8\.0\.421, 10\.0\.301'):
                 self.release.preflight(managed=True)
-
-    def test_custom_msys_root_with_complete_mingw64_is_used(self):
-        self.install_msys_fixture()
-        with patch.object(release_module.platform, 'system', return_value='Windows'), \
-             patch.object(release_module.shutil, 'which', side_effect=self.tool), \
-             patch.object(release_module.subprocess, 'run', side_effect=self.resolver), \
-             patch.dict(os.environ, {'MSYS2_ROOT': str(self.msys)}):
-            self.release.preflight(managed=True, media=True)
-        self.assertEqual(self.release.media_bash, (self.msys / 'usr/bin/bash.exe').as_posix())
-
-    def test_bash_alone_does_not_satisfy_windows_compiler_requirement(self):
-        bash = self.msys / 'usr/bin/bash.exe'
-        bash.parent.mkdir(parents=True)
-        bash.write_bytes(b'fixture')
-        with patch.object(release_module.platform, 'system', return_value='Windows'), \
-             patch.object(release_module.shutil, 'which', side_effect=self.tool), \
-             patch.dict(os.environ, {'MSYS2_ROOT': str(self.msys)}):
-            with self.assertRaisesRegex(RuntimeError, 'mingw64/bin/gcc.exe'):
-                self.release.preflight(media=True)
-
-    def test_macos_compiler_stubs_without_active_developer_tools_are_rejected(self):
-        self.release.args.target = 'macos-universal'
-        with patch.object(release_module.platform, 'system', return_value='Darwin'), \
-             patch.object(release_module.shutil, 'which', side_effect=self.tool), \
-             patch.object(release_module.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'no developer directory')):
-            with self.assertRaisesRegex(RuntimeError, 'xcode-select --install'):
-                self.release.preflight(media=True)
-
-    def test_projection_checks_do_not_require_media_compilers(self):
-        with patch.object(release_module.platform, 'system', return_value='Windows'), \
-             patch.object(release_module.shutil, 'which', side_effect=lambda name: '/tools/dotnet' if name == 'dotnet' else None), \
-             patch.object(release_module.subprocess, 'run', side_effect=self.resolver):
-            self.release.preflight(managed=True)
 
     def test_zip_sources_do_not_require_git_and_record_unknown_provenance(self):
         with patch.object(release_module.platform, 'system', return_value='Windows'), \
@@ -160,7 +118,7 @@ class ReleasePreflightTests(unittest.TestCase):
         target = {'Linux': 'linux-x64', 'Windows': 'windows-x64', 'Darwin': 'macos-universal'}[release_module.platform.system()]
         output = self.root / 'output'
         result = subprocess.run([sys.executable, str(tools / 'release.py'), target, '--output', str(output)],
-                                env={**os.environ, 'PATH': '', 'MSYS2_ROOT': str(self.msys)}, capture_output=True, text=True)
+                                env={**os.environ, 'PATH': ''}, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('BUILD_FAILED: Build prerequisites are not ready', result.stderr)
         self.assertIn('10.0.403', result.stderr)

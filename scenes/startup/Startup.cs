@@ -96,8 +96,10 @@ public partial class Startup : Control
                     if (texture == null || texture.GetWidth() == 0 || texture.GetHeight() == 0)
                         throw new InvalidOperationException("Missing shared WoL branding image: " + image);
                 }
-                RetailInstallation.VerifyMediaTools(_content.MediaTools);
-                GD.Print("MEDIA_TOOLS_OK: bundled STR/XA decoding, video/audio conversion and probe work with no PATH dependencies");
+                // The disc's movie and XA music play natively from their raw sectors; no media tool is bundled.
+                foreach (string stream in new[] { "VideoStreamSTR", "AudioStreamXA" })
+                    if (!ClassDB.ClassExists(stream)) throw new InvalidOperationException("The compiled engine lacks its native " + stream + ".");
+                GD.Print("NATIVE_MEDIA_OK: STR movie and XA music streams present");
                 GD.Print("PACKAGE_OK: compiled engine present; player assembly/resources contain no tests, source or disc data");
                 GetTree().Quit();
             }
