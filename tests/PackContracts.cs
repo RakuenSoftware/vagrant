@@ -17,7 +17,7 @@ namespace Wol.Games.Vagrant.Tests;
 /// disc is kept): installed it changes nothing until enabled; enabled, the game reads the pack's file; switched off in
 /// the Settings window's Packs tab, the game reads the disc's again; the installed file stays byte for byte. With
 /// <c>--pack-zip=</c> a real pack (one <c>tools/ppf_pack.py</c> built, say) is installed and enabled too: every file it
-/// names is read from it, the game's content loads through it (the intro movie decoded from the pack's when it has one),
+/// names is read from it, the game's content loads through it (the intro movie played from the pack's when it has one),
 /// and switched off the disc's files are read again.
 /// </summary>
 public partial class PackContracts : Node
@@ -93,12 +93,9 @@ public partial class PackContracts : Node
             var pack = content.Packs.Packs.Single(known => known.Id == id);
             foreach (var (key, asset) in pack.Assets)
                 if (content.Field.DiscFile(key["disc/".Length..]) != asset.Path) throw new InvalidOperationException($"{key} is not read from the pack.");
-            string video = (content.IntroVideo as VideoStreamTheora)?.File ?? "";
-            if (pack.Assets.TryGetValue("disc/MOV/TITLE.STR", out var movie) && !video.Contains("pack-" + movie.Sha256[..16], StringComparison.Ordinal))
-                throw new InvalidOperationException("The intro movie must be decoded from the pack's MOV/TITLE.STR: " + (content.IntroVideo as VideoStreamTheora)?.File);
-            // Loading the content again (a new session, say) keeps the pack's decoded movie.
-            content.Reload();
-            if (video.Length > 0 && !File.Exists(video)) throw new InvalidOperationException("The pack's decoded intro movie must be kept between loads.");
+            string video = content.IntroVideo.File;
+            if (pack.Assets.TryGetValue("disc/MOV/TITLE.STR", out var movie) && video != movie.Path)
+                throw new InvalidOperationException("The intro movie must play the pack's MOV/TITLE.STR: " + video);
             GD.Print($"PACK_CONTRACTS_REAL: {id} stands in {pack.Assets.Count} files; intro movie {video}");
             content.EnablePacks([]);
             foreach (var key in pack.Assets.Keys)

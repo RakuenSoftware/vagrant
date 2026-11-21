@@ -9,12 +9,13 @@ The shared engine's `PlayStationDisc` (wol-engine `runtime/install/PlayStationDi
 
 The engine verifies each file against the catalog before handing it over. Streamed files are hashed over raw sector bytes 16–2352, excluding the address header.
 
-`RetailInstallation` keeps one installation: every disc file byte for byte under `disc/` and the disc's sector record in `install.json`. A new install is verified and copied into `staging/` and replaces the old one only when complete, so a rejected disc keeps the previous installation. `FieldContent` re-verifies each disc file against the retail digest the first time a session reads it. The title's pictures, fonts and HUD are decoded from those files when first needed; the opening movie is decoded once with FFmpeg into `cache/`.
+`RetailInstallation` keeps one installation: every disc file byte for byte under `disc/` and the disc's sector record in `install.json`. A new install is verified and copied into `staging/` and replaces the old one only when complete, so a rejected disc keeps the previous installation. `FieldContent` re-verifies each disc file against the retail digest the first time a session reads it. The title's pictures, fonts and HUD are decoded from those files when first needed; the opening movie and the ending music play from their raw sectors as they are.
 
 The ending's XA music lies outside the ISO filesystem. The installer also preserves raw sectors 270000–303263
 as `disc/ENDING/ENDING.XA`, verified against the US SHA-256 over the same sector bytes as other streams. Four
-consecutive sectors carry each audio packet; the derived decode takes one per group, producing stereo 37.8 kHz
-audio lasting 443.52 seconds. Raw source sectors stay unchanged; the Vorbis decode lives in `cache/`.
+consecutive sectors carry each audio packet; the engine's `AudioStreamXA` plays one per group (interleave 4), as
+the drive's audio decoder does, giving stereo 37.8 kHz audio lasting 443.52 seconds. The game re-verifies the raw
+sectors before playing them; nothing is decoded ahead of time.
 Older file-only installations are asked to reinstall from the owned disc.
 
 `TitleConversion` reproduces the retail VRAM upload of the title overlay (`TITLE/TITLE.PRG`):
@@ -27,7 +28,7 @@ Older file-only installations are asked to reinstall from the owned disc.
   - the ten glow sprites, using glow CLUT row 394.
 - From the overlay data itself it exports the publisher and developer logos, the 180×24 copyright image and the four menu palettes (word dark, word lit, glow blue, glow gold).
 
-The opening movie (`MOV/TITLE.STR`, 320×224 MDEC at 15 fps, with XA audio) is split by FFmpeg into Theora video and Vorbis audio. Its picture lasts 39.5 s, but its audio runs 74.8 s and continues as the title music.
+The opening movie (`MOV/TITLE.STR`, 320×224 MDEC at 15 fps, with XA audio) plays through the engine's `VideoStreamSTR` from its raw sectors, picture and sound together. Its picture lasts 39.5 s, but its audio runs 74.8 s and continues as the title music: the title hides the player when the picture ends and keeps it playing.
 
 ## Flow and presentation
 

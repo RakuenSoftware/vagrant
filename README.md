@@ -77,7 +77,7 @@ Players receive a compiled archive containing Project Vagrant, wol-engine and Go
 no engine source checkout or build tools are required. The release targets are
 Linux x86-64, Windows x86-64 and macOS Universal (Intel + Apple Silicon).
 See [distribution and native CI instructions](docs/DISTRIBUTION.md).
-FFmpeg and ffprobe are bundled for first-time disc conversion; player downloads need no PATH configuration.
+The disc's movie and music play natively from the installed disc files; no media tools are bundled or needed.
 
 ## Build
 
@@ -88,22 +88,10 @@ Python 3.12+ and the pinned .NET SDK **10.0.403**. Release builds use
 does not satisfy this pin. The build script reports an incompatible SDK before
 it downloads Godot or creates player output.
 
-Building bundled FFmpeg/ffprobe also needs a native C toolchain:
-
-- **Windows:** install [MSYS2](https://www.msys2.org/), open its **MINGW64** terminal
-  and run `pacman -S --needed make pkgconf diffutils mingw-w64-x86_64-gcc`.
-  The default location is `C:/msys64`; set `MSYS2_ROOT` to your installation root
-  if it is elsewhere. Git Bash alone does not supply this toolchain.
-- **Linux:** install `build-essential pkg-config diffutils curl` (Debian/Ubuntu
-  names, or your distribution's equivalents).
-- **macOS:** install Xcode Command Line Tools (`xcode-select --install`) and
-  `pkg-config` (for example with Homebrew). The build uses the native tools to
-  produce both architectures.
-
 Git clones and GitHub **Download ZIP** source archives are supported. ZIP builds
 need no Git installation; `BUILD.json` records their revision and dirty state as
 unknown. A Git checkout requires Git on PATH to record its actual provenance.
-Missing prerequisites are listed together before export or media compilation.
+Missing prerequisites are listed together before export.
 Then build a player on its native host:
 
 ```sh

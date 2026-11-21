@@ -119,8 +119,11 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Press("ps_start")) yield return f;
         foreach (int f in Until(() => _title.Screen == "menu", 10, "the title screen after skipping")) yield return f;
         Expect(_title.MusicPlaying, "skipping the picture must not stop the title music");
+        double heard = _title.MusicPosition;
 
         yield return 240;
+        // The movie's player is hidden with its picture; its sound must keep playing under the title screen.
+        Expect(_title.MusicPosition - heard > 3, $"the title music stalled with the hidden movie ({heard:0.00} s → {_title.MusicPosition:0.00} s)");
         Capture("04_title_menu");
         Expect(_title.SelectedItem == TitleMenu.NewGame, "the cursor should start on New Game");
         Expect(_title.Menu[TitleMenu.NewGame].Row == TitleMenu.Selected && _title.Menu[TitleMenu.NewGame].Brightness == 128, "New Game is not lit in the selected slot");

@@ -19,11 +19,12 @@ public sealed class RetailInstallation
 {
     public const string RecordName = "install.json";
 
-    /// <summary>Video frames the intro movie has; anything else is rejected.</summary>
-    private const int IntroVideoFrames = 593;
     // ENDING.PRG 0x8006b9b4 starts XA at 270000; its EOF audio sector is 303263.
     public const string EndingStream = "ENDING/ENDING.XA";
     public const int EndingSector = 270000, EndingSectors = 33264;
+    // Each 37.8 kHz stereo XA packet occupies four identical consecutive sectors: at 75 sectors a second the drive's
+    // audio decoder takes one packet in four (443.52 s); playing every copy would repeat samples.
+    public const int EndingInterleave = 4;
     private const string EndingDigest = "288d0f48787290c10ae74a04555fd2becde2f03e609839abf40bcedd194ea6bd";
 
     public string Root { get; }
@@ -35,11 +36,8 @@ public sealed class RetailInstallation
     public string CachePath => Path.Combine(Root, "cache");
 
     /// <summary>Installs from <paramref name="discPath"/> (BIN or CUE). Throws with a player-facing message on rejection.</summary>
-    public void Install(string discPath, IMediaTools media, Action<string> progress)
+    public void Install(string discPath, Action<string> progress)
     {
-        // Fail before copying the disc if an incomplete player package omitted its tools.
-        _ = media.Executable("ffmpeg");
-        _ = media.Executable("ffprobe");
         Directory.CreateDirectory(Root);
         string stage = Path.Combine(Root, "staging");
         if (Directory.Exists(stage)) Directory.Delete(stage, true);
@@ -85,36 +83,6 @@ public sealed class RetailInstallation
         }
     }
 
-    /// <summary>
-    /// The intro movie's picture and sound (Theora and Vorbis), made from MOV/TITLE.STR as the game reads it
-    /// (<paramref name="stream"/>: the disc's, or an enabled pack's, named by <paramref name="packs"/>, its SHA-256)
-    /// into the cache the first time they are asked for. The retail intro's picture ends long before its
-    /// audio, which continues as the title music, so they are separate tracks.
-    /// </summary>
-    public (string Video, string Music) IntroMovie(IMediaTools media, string stream, string packs = "")
-    {
-        string cache = packs.Length == 0 ? CachePath : Path.Combine(CachePath, "pack-" + packs[..16]);
-        string video = Path.Combine(cache, "intro_video.ogv"), music = Path.Combine(cache, "intro_music.ogg");
-        if (File.Exists(video) && File.Exists(music)) return (video, music);
-        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe");
-        Directory.CreateDirectory(cache);
-        string partVideo = video + ".partial.ogv", partMusic = music + ".partial.ogg";
-        var picture = System.Threading.Tasks.Task.Run(() => media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
-            "-map", "0:v:0", "-an", "-c:v", "libtheora", "-q:v", "8", "-pix_fmt", "yuv420p", partVideo));
-        media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream, "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", partMusic);
-        picture.GetAwaiter().GetResult();
-        var shape = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", partVideo))!["streams"]![0]!;
-        // A pack's movie may run longer or shorter than the retail one; its picture is the same size.
-        if ((int)shape["width"]! != 320 || (int)shape["height"]! != 224 || (packs.Length == 0 && int.Parse((string)shape["nb_read_frames"]!) != IntroVideoFrames))
-            throw new InvalidDataException("The opening movie could not be decoded as the retail picture.");
-        var audio = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "stream=channels", "-of", "json", partMusic))!["streams"]![0]!;
-        if ((int)audio["channels"]! != 2) throw new InvalidDataException("The title music could not be decoded in stereo.");
-        File.Move(partVideo, video, true);
-        File.Move(partMusic, music, true);
-        return (video, music);
-    }
-
     /// <summary>Adds the verified unlisted XA sectors to an older file-only installation, atomically.</summary>
     public void InstallEndingMusic(string discPath)
     {
@@ -147,16 +115,15 @@ public sealed class RetailInstallation
             throw new InvalidDataException("The ending music does not match the retail US disc.");
     }
 
-    /// <summary>Decodes the owned disc's unlisted XA music, leaving its raw sectors byte for byte in disc/.</summary>
-    public string EndingMusic(IMediaTools media)
+    /// <summary>
+    /// The owned disc's unlisted XA music, verified against the retail digest: its raw sectors as the disc holds them,
+    /// which the game plays as they are (<see cref="EndingInterleave"/>).
+    /// </summary>
+    public string EndingMusic()
     {
         string raw = Path.Combine(DiscPath, EndingStream);
         if (!File.Exists(raw)) throw new InvalidDataException("This older installation omits the ending music. Install again from your US disc.");
-        string music = Path.Combine(CachePath, "ending_music.ogg");
-        Directory.CreateDirectory(CachePath);
-        string stream = Path.Combine(CachePath, "ending_audio.partial.xa");
         using (var input = File.OpenRead(raw))
-        using (var decodedInput = File.Exists(music) ? null : File.Create(stream))
         using (var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
         {
             if (input.Length != (long)EndingSectors * PlayStationDisc.RawSectorSize) throw new InvalidDataException("The ending music is truncated.");
@@ -165,99 +132,10 @@ public sealed class RetailInstallation
             {
                 input.ReadExactly(sector);
                 digest.AppendData(sector, 16, sector.Length - 16);
-                // Each 37.8 kHz stereo XA packet occupies four identical consecutive sectors. At 75 sectors/s,
-                // the CD's audio decoder consumes one packet per four sectors; feeding all copies repeats samples.
-                // Take the fourth copy, including the last packet's EOF submode.
-                if (i % 4 == 3) decodedInput?.Write(sector);
             }
             if (!Convert.ToHexString(digest.GetHashAndReset()).Equals(EndingDigest, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("The installed ending music does not match the retail US disc.");
         }
-        if (File.Exists(music)) return music;
-        string part = music + ".partial.ogg";
-        media.Run(media.Executable("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "psxstr", "-i", stream,
-            "-map", "0:a:0", "-vn", "-c:a", "libvorbis", "-q:a", "6", part);
-        var audio = JsonNode.Parse(media.Run(media.Executable("ffprobe"), "-v", "error", "-show_entries", "stream=channels,sample_rate,duration", "-of", "json", part))!["streams"]![0]!;
-        if ((int)audio["channels"]! != 2 || int.Parse((string)audio["sample_rate"]!) != 37800
-            || Math.Abs(double.Parse((string)audio["duration"]!, System.Globalization.CultureInfo.InvariantCulture) - 443.52) > 0.05)
-            throw new InvalidDataException("The ending music could not be decoded as the retail stereo stream.");
-        File.Move(part, music, true);
-        File.Delete(stream);
-        return music;
+        return raw;
     }
-
-    /// <summary>Exercises the packaged encoders, probe, and game-input decoder availability without retail assets.</summary>
-    public static void VerifyMediaTools(IMediaTools media)
-    {
-        string ffmpeg = media.Executable("ffmpeg"), ffprobe = media.Executable("ffprobe");
-        string decoders = media.Run(ffmpeg, "-hide_banner", "-decoders");
-        if (!decoders.Contains(" mdec ", StringComparison.Ordinal) || !decoders.Contains(" adpcm_xa ", StringComparison.Ordinal))
-            throw new InvalidDataException("The bundled media tool cannot decode PlayStation video and XA audio.");
-        string temporary = Path.Combine(Path.GetTempPath(), "project-vagrant-media-" + Guid.NewGuid().ToString("N") + ".ogv");
-        string xa = temporary + ".str", decoded = temporary + ".wav";
-        try
-        {
-            // Eight independently constructed Mode 2 XA sectors encode stereo silence:
-            // 18 sound groups per sector, 112 samples per channel per group at 37.8 kHz.
-            // This exercises real STR probing, demuxing and ADPCM decoding without game data.
-            using (var fixture = File.Create(xa))
-            {
-                for (int index = 0; index < 8; index++)
-                {
-                    var sector = new byte[2352];
-                    for (int sync = 1; sync <= 10; sync++) sector[sync] = 0xFF;
-                    sector[13] = 2; sector[14] = (byte)index; sector[15] = 2;
-                    sector[18] = sector[22] = index == 7 ? (byte)0xE4 : (byte)0x64;
-                    sector[19] = sector[23] = 1; // Stereo, 37.8 kHz, four-bit ADPCM.
-                    fixture.Write(sector);
-                }
-            }
-            var input = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "format=format_name:stream=codec_name,channels,sample_rate", "-of", "json", xa))!;
-            if ((string?)input["format"]?["format_name"] != "psxstr"
-                || (string?)input["streams"]?[0]?["codec_name"] != "adpcm_xa")
-                throw new InvalidDataException("The bundled tools cannot recognize a PlayStation STR/XA stream.");
-            media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", xa,
-                "-map", "0:a:0", "-c:a", "pcm_s16le", decoded);
-            using (var wave = new BinaryReader(File.OpenRead(decoded)))
-            {
-                if (new string(wave.ReadChars(4)) != "RIFF") throw new InvalidDataException("XA decode did not produce PCM audio.");
-                wave.ReadUInt32();
-                if (new string(wave.ReadChars(4)) != "WAVE") throw new InvalidDataException("XA decode did not produce a WAVE stream.");
-                bool samples = false;
-                while (wave.BaseStream.Position + 8 <= wave.BaseStream.Length)
-                {
-                    string chunk = new(wave.ReadChars(4));
-                    uint length = wave.ReadUInt32();
-                    if (chunk == "data")
-                    {
-                        if (length != 8 * 18 * 112 * 2 * 2) throw new InvalidDataException("XA decode produced an unexpected sample count.");
-                        for (uint i = 0; i < length; i++)
-                            if (wave.ReadByte() != 0) throw new InvalidDataException("The synthetic XA silence did not decode correctly.");
-                        samples = true;
-                        break;
-                    }
-                    wave.BaseStream.Seek(length + (length & 1), SeekOrigin.Current);
-                }
-                if (!samples) throw new InvalidDataException("The XA decoder produced no PCM samples.");
-            }
-            media.Run(ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "color=size=32x32:rate=15:duration=0.2",
-                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=37800:duration=0.2",
-                "-c:v", "libtheora", "-pix_fmt", "yuv420p", "-c:a", "libvorbis", "-ac", "2", temporary);
-            var streams = JsonNode.Parse(media.Run(ffprobe, "-v", "error", "-show_entries", "stream=codec_name,channels,width,height", "-of", "json", temporary))!["streams"]!.AsArray();
-            bool video = false, audio = false;
-            foreach (var stream in streams)
-            {
-                if ((string?)stream!["codec_name"] == "theora" && (int?)stream["width"] == 32 && (int?)stream["height"] == 32) video = true;
-                if ((string?)stream["codec_name"] == "vorbis" && (int?)stream["channels"] == 2) audio = true;
-            }
-            if (!video || !audio) throw new InvalidDataException("The bundled tools did not produce playable Theora video and stereo Vorbis audio.");
-        }
-        finally
-        {
-            foreach (string file in new[] { temporary, xa, decoded })
-                if (File.Exists(file)) File.Delete(file);
-        }
-    }
-
 }

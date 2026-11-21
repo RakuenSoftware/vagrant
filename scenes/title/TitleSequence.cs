@@ -57,7 +57,6 @@ public partial class TitleSequence : Control
     private TextureRect _screen = null!;
     private Sprite2D _logo = null!, _copyright = null!, _panel = null!;
     private VideoStreamPlayer _video = null!;
-    private AudioStreamPlayer _music = null!;
     private SoundDriver _driver = null!;
 
     /// <summary>How many of the menu's sounds have played, for the checks.</summary>
@@ -94,7 +93,10 @@ public partial class TitleSequence : Control
     public bool SettingsOpen => _settings.Visible;
     public AcceptDialog SettingsDialog => _settings;
     public HSlider VolumeSlider => _settings.Volume;
-    public bool MusicPlaying => _musicStart >= 0;
+    /// <summary>The intro's sound, which continues as the title music after its picture, is still playing.</summary>
+    public bool MusicPlaying => _musicStart >= 0 && _video.IsPlaying();
+    /// <summary>Seconds of the intro movie played, picture and sound.</summary>
+    public double MusicPosition => _video.StreamPosition;
     public bool NoticeVisible => _notice.Visible;
     public string Failure { get; private set; } = "";
     public TitleMenu Menu => _menu;
@@ -138,8 +140,6 @@ public partial class TitleSequence : Control
         _darken = new ColorRect { Size = new Vector2(512, 448), Color = new Color(0, 0, 0), Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Sub } };
         _titleScreen.AddChild(_darken);
 
-        _music = new AudioStreamPlayer { Stream = _content.IntroMusic };
-        AddChild(_music);
         // The menu's sounds are the resident ones, through the game's own driver as in the field.
         _driver = new SoundDriver { Name = "SoundDriver" };
         AddChild(_driver);
@@ -178,8 +178,6 @@ public partial class TitleSequence : Control
     public override void _ExitTree()
     {
         _demo?.QueueFree();
-        _music.Stop();
-        _music.Stream = null;
         _video.Stop();
         _video.Stream = null;
     }
@@ -270,7 +268,7 @@ public partial class TitleSequence : Control
 
     private void StopMusic()
     {
-        _music.Stop();
+        _video.Stop();
         _musicStart = -1;
     }
 
@@ -302,7 +300,6 @@ public partial class TitleSequence : Control
         _video.Stream = _content.IntroVideo;
         _video.Show();
         _video.Play();
-        _music.Play();
         _musicStart = _frame;
         TakePressed();
         while (true)
@@ -312,8 +309,7 @@ public partial class TitleSequence : Control
             if (_frame - _musicStart >= IntroPictureFrames) break;
             if ((TakePressed() & (Pad.Circle | Pad.Start)) != 0) break;
         }
-        // The picture ends here; the music continues under the title screen.
-        _video.Stop();
+        // The picture ends here; the movie's sound continues under the title screen as its music.
         _video.Hide();
         Finished();
     }

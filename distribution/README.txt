@@ -14,9 +14,8 @@ You must provide your own US Vagrant Story disc (SLUS-01040), as BIN/CUE.
 No game files, images, music, BIOS or installed-disc cache are included.
 The first launch verifies and installs your disc locally.
 
-FFmpeg and ffprobe are included for the disc's video/audio conversion. No PATH
-configuration is needed. Their licences and source-download information are in
-the media/licenses directory beside the executables (inside the app on macOS).
+The disc's movie and music play straight from your installed disc files; no
+media tools are needed or included.
 Keep the complete extracted folder together; do not move only the executable.
 
 Linux: run ProjectVagrant.x86_64 (chmod +x ProjectVagrant.x86_64 if needed).

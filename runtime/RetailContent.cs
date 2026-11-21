@@ -41,10 +41,17 @@ public partial class RetailContent : Node
     public Vector2I DeveloperOrigin { get; private set; }
     public Vector2I CopyrightOrigin { get; private set; }
     public Vector2I PanelOrigin { get; private set; }
+    /// <summary>The opening movie, MOV/TITLE.STR as the game reads it (the disc's, or an enabled pack's), played from its
+    /// raw sectors: picture and sound together. Its picture ends long before its sound, which continues as the title music.</summary>
     public VideoStream IntroVideo { get; private set; } = null!;
-    public AudioStream IntroMusic { get; private set; } = null!;
-    /// <summary>The ending's verified XA stream, decoded on first use from the owned installation.</summary>
-    public AudioStream EndingMusic() => AudioStreamOggVorbis.LoadFromFile(new RetailInstallation(GlobalRoot).EndingMusic(MediaTools));
+    /// <summary>The ending's verified XA stream, played from the owned installation's raw sectors.</summary>
+    public AudioStream EndingMusic()
+    {
+        var music = (AudioStream)ClassDB.Instantiate("AudioStreamXA");
+        music.Set("file", new RetailInstallation(GlobalRoot).EndingMusic());
+        music.Set("interleave", RetailInstallation.EndingInterleave);
+        return music;
+    }
 
     public override void _Ready()
     {
@@ -63,9 +70,7 @@ public partial class RetailContent : Node
     public override void _ExitTree()
     {
         // Release managed references before Godot's exit-time leak check.
-        IntroMusic?.Dispose();
         IntroVideo?.Dispose();
-        IntroMusic = null!;
         IntroVideo = null!;
         // Godot's collections free their native memory from their finalizers. Run every pending one now, while the
         // engine is whole: one left to the finalizer thread can run during the engine's teardown and lock a mutex
@@ -81,32 +86,17 @@ public partial class RetailContent : Node
         GC.WaitForPendingFinalizers();
     }
 
-    /// <summary>The backend owns bundled-tool discovery, process arguments and the exported-player environment.</summary>
-    public IMediaTools MediaTools { get; } = new MediaTools("Project Vagrant");
-
-    /// <summary>Installs verified files, then prepares the host resources play needs before leaving the installer.</summary>
+    /// <summary>Installs verified files, then prepares the rooms play needs before leaving the installer.</summary>
     public void Install(string disc, Action<string> progress)
     {
         var installation = new RetailInstallation(GlobalRoot);
-        installation.Install(disc, MediaTools, progress);
+        installation.Install(disc, progress);
         progress("Preparing the game…");
-        var movie = System.Threading.Tasks.Task.Run(() => installation.IntroMovie(MediaTools, System.IO.Path.Combine(installation.DiscPath, "MOV", "TITLE.STR")));
-        var ending = System.Threading.Tasks.Task.Run(() => installation.EndingMusic(MediaTools));
         FieldContent Content() => new FieldContent(installation.Root);
         var rooms = Content().RoomNames();
-        try
-        {
-            System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
-                (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
-            Content().Character("character_00");
-        }
-        finally
-        {
-            // The movie and music convert through Godot media tools: a failed room must not leave them running unowned.
-            System.Threading.Tasks.Task.WhenAll(movie, ending).ContinueWith(_ => { }).Wait();
-        }
-        movie.GetAwaiter().GetResult();
-        ending.GetAwaiter().GetResult();
+        System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
+            (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
+        Content().Character("character_00");
         progress($"Prepared {rooms.Count} rooms.");
         progress("Installation complete.");
     }
@@ -477,9 +467,8 @@ public partial class RetailContent : Node
                 var glow = layout["glows"]![i]!;
                 TitleGlowOrigins[i] = new Vector2I((int)glow["x"]!, (int)glow["y"]!);
             }
-            var (video, music) = new RetailInstallation(GlobalRoot).IntroMovie(MediaTools, Field.DiscFile("MOV/TITLE.STR"), Packs.Replacement("disc/MOV/TITLE.STR")?.Sha256 ?? "");
-            IntroVideo = new VideoStreamTheora { File = video };
-            IntroMusic = AudioStreamOggVorbis.LoadFromFile(music);
+            IntroVideo = (VideoStream)ClassDB.Instantiate("VideoStreamSTR");
+            IntroVideo.File = Field.DiscFile("MOV/TITLE.STR");
             if (!System.IO.File.Exists(System.IO.Path.Combine(GlobalRoot, "disc", RetailInstallation.EndingStream)))
                 throw new InvalidDataException("This older installation omits the ending music. Install again from your US disc.");
             Failure = "";

@@ -24,14 +24,17 @@ binary bytes are copied unchanged. Vendored text file line endings
 are normalized to LF, and C# resource stubs contain one newline.
 
 The current SDK is the public `RakuenSoftware/wol-engine-release` release
-`runtime-2bab1f3453fcf7d17e66854fdb3f7d3ecbb4ce9d`. Native Linux, Windows and
+`runtime-86b9cc7bad58554d6b5cccb96098649afdbbd2ed`. Native Linux, Windows and
 universal macOS CI compiled and qualified each SDK from that exact private
 engine tag. A separate job independently audited all three SDKs before
 publication. Each archive and every member file has a verified SHA-256 record.
 The game vendors the downloaded release assets; its CI never fetches or builds
 private engine source.
 
-This SDK keeps the engine up when the window closes until the retired scenes are
+This SDK plays PlayStation media natively from installed raw 2352-byte sectors:
+`VideoStreamSTR` plays an STR movie's picture and XA sound in a `VideoStreamPlayer`, and
+`AudioStreamXA` plays an XA ADPCM stream in an `AudioStreamPlayer`, so the game no longer
+converts or bundles anything with FFmpeg. It retains the engine staying up when the window closes until the retired scenes are
 freed: a scene still finishing its own work (the disc install) can hold its deletion,
 and a room waits for its background "Rounded shapes" passes, superseded ones
 included, before it is deleted, so quitting no longer crashes mid-pass. It retains
@@ -42,8 +45,8 @@ place of installed disc files while a pack is enabled. It also bounds the screen
 echo, sends ordered materials and instance uniforms only when they change, and
 rounds shapes edge by edge: "Rounded shapes" divides only the edges whose new
 point changes the shape (1.6 times the original triangles over all rooms rather
-than 7.5). It retains the portable disc/content-pack owners and the `IMediaTools` boundary,
-with Godot media execution in the backend. Type forwarders preserve the previous
+than 7.5). It retains the portable disc/content-pack owners; the game does not use the
+engine's `IMediaTools` boundary. Type forwarders preserve the previous
 SDK’s disc/content-pack identities. It retains the host-neutral pixel contracts
 and image/PNG codec API used by the portable content decoders. Its portable DLLs are
 retained byte for byte from their respective platform archives. It retains controller motor
@@ -84,17 +87,16 @@ and decoded pixel planes with the host at its presentation boundary.
 Vagrant owns the controller's two-channel envelopes and timing, and the retail
 content decoders under `gameplay/installation`: title/loading art, fonts, HUD,
 manuals, overlays, effects, map geometry/textures/skies, inventory, save pictures,
-results, event-script translation, disc installation/media validation and ending
+results, event-script translation, disc installation and ending
 decompression. The retail digest catalog is embedded in the gameplay assembly
 from `gameplay/installation/retail_digests.json`; it does not use Godot resource
 loading. Images are decoded into byte-defined raster
 planes. wol-engine owns hardware controller output, native image creation and
 PNG cache encoding/decoding. Its portable core also owns generic disc reading,
 digest verification and data-only content-pack installation. The game supplies
-its retail catalog, conversion arguments and output expectations through
-`IMediaTools`; the Godot backend owns bundled-tool discovery and child-process
-execution. The exported player still requires its bundled ffmpeg/ffprobe and
-clears PATH for child processes. There is one decoder per format and one owned image
+its retail catalog. The opening movie and the ending's XA music play natively
+from their installed raw sectors through the engine's `VideoStreamSTR` and
+`AudioStreamXA`; no external media tool is bundled or run. There is one decoder per format and one owned image
 buffer; no parallel Godot decoder or second image cache remains.
 
 Run the deliberate-input contracts with the .NET SDK and vendored portable DLLs:
@@ -110,8 +112,7 @@ Godot, the backend SDK, native libraries and a disc installation are absent.
 The checks reject backend dependencies both in gameplay and transitively in the
 portable core, and exercise palette keys, transparency passes, indexed/direct
 art, save-picture palette columns, glyph metrics, controller envelopes, install rejection preserving previous
-files/cache, explicit STR input arguments, media-output validation and XA
-integrity despite a cached decode.
+files/cache, and XA integrity.
 Native player builds wait for these checks and retain the published core DLL
 byte for byte. Vendoring preserves each target’s portable core bytes, alongside its other
 managed/API assemblies. `Directory.Build.props` selects the native target for
@@ -120,7 +121,7 @@ platform SDKs may differ in .NET generator build metadata.
 
 The host still prepares the installation’s decoded room/rig cache with the
 existing orchestration; this step constructs rendering resources. No renderer is
-needed to verify/copy disc files or validate media in the portable installer.
+needed to verify/copy disc files in the portable installer.
 
 Other game systems, including character rendering, audio playback and scenes,
 still contain Godot dependencies and remain to be extracted. This is an
@@ -130,21 +131,11 @@ incremental boundary, not a claim that the whole application is portable yet.
 
 Use Python 3.12+ and the pinned .NET SDK 10.0.403 (`global.json` uses
 `latestPatch`; earlier 10.0 feature bands do not qualify). No engine credentials,
-SCons or C++ compiler are needed. Bundled media is compiled with a C toolchain:
-
-- Windows: [MSYS2](https://www.msys2.org/) at `C:/msys64` or the root specified by
-  `MSYS2_ROOT`. In its MINGW64 terminal install
-  `pacman -S --needed make pkgconf diffutils mingw-w64-x86_64-gcc`.
-- Linux: a C compiler/binutils, Bash, make, pkg-config, diff and curl; on
-  Debian/Ubuntu use `build-essential pkg-config diffutils curl`.
-- macOS: Xcode Command Line Tools (`xcode-select --install`) and pkg-config;
-  Bash, make, curl, lipo and codesign must be available.
+SCons, C compiler or media toolchain are needed.
 
 The preflight asks the .NET resolver to select the SDK in the project directory
-and checks media tools before downloading Godot, creating player output,
-exporting or compiling FFmpeg. It reports all missing prerequisites together.
-Synthetic projection checks need the managed SDK but not the media compiler.
-`--media-only` checks media prerequisites without requiring .NET.
+before downloading Godot, creating player output or exporting. It reports all
+missing prerequisites together.
 
 Both Git checkouts and GitHub source ZIPs are supported. Checkout provenance is
 read before the expensive work; missing Git or unreadable checkout metadata
@@ -207,8 +198,7 @@ provenance checks, not a bit-for-bit reproducibility claim.
 
 No retail assets, disc images, BIOS, installed files or decoded caches are
 bundled. A verified owned US disc is required. Project Vagrant remains AGPL-3.0-only;
-its game source is publicly downloadable. FFmpeg and ffprobe are bundled with
-matching source and notices. macOS packages are ad-hoc signed and need
+its game source is publicly downloadable. macOS packages are ad-hoc signed and need
 Developer ID signing/notarization for public friction-free downloads. Credentials
 stay outside Git. Linux CI builds on Ubuntu 22.04 for host-library compatibility.
 
@@ -218,26 +208,3 @@ and the macOS application is `Project Vagrant.app`. The original user-data direc
 and macOS bundle identifier are retained so existing installations, saves and
 preferences remain available after upgrading. Internal C# assembly names remain stable.
 
-## Bundled media conversion
-
-Each native CI runner builds FFmpeg 9.0.2, libogg 1.3.6, libvorbis 1.3.7 and
-libtheora 1.2.0 from the exact source archives pinned by SHA-256 in
-`distribution/media-sources.json`. `tools/build_media.sh` owns their compiler
-configuration. GPL, nonfree, networking and unrelated codecs are disabled;
-FFmpeg is LGPL-2.1-or-later and the Xiph libraries retain their BSD-style licences.
-Windows uses MSYS2's MinGW compiler with static runtime linkage; macOS builds
-Intel and Apple Silicon executables and combines them with lipo.
-
-`ffmpeg` and `ffprobe` live in `media/` beside the player executable, including
-inside `Contents/MacOS/` in the macOS app. The app is re-signed after adding them.
-The installer resolves this location first; only development/editor sessions may
-fall back to PATH. Packaged child processes run with PATH cleared. Native CI
-verifies that both game-input decoders are present and actually encodes synthetic
-Theora video/stereo Vorbis audio, then probes the result. No game files are used.
-
-Every release also provides `ProjectVagrant-media-sources.zip` with all four
-original source tarballs, their digest manifest, the exact build scripts and
-instructions. Tool licences and configuration are included in `media/licenses/`,
-and `media/MEDIA.json` records source and binary hashes. The separate media-source
-archive contains no engine implementation or retail game data. Rebuild just the
-tools with `python tools/release.py <native-target> --media-only --output <dir>`.

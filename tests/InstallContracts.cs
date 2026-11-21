@@ -40,7 +40,7 @@ public partial class InstallContracts : Node
     {
         try
         {
-            installation.Install(image, GetNode<RetailContent>("/root/RetailContent").MediaTools, _ => { });
+            installation.Install(image, _ => { });
         }
         catch (Exception error) when (error is IOException or InvalidDataException)
         {
@@ -71,7 +71,7 @@ public partial class InstallContracts : Node
         string before = File.ReadAllText(installation.RecordPath);
         if (new FileInfo(Path.Combine(installation.DiscPath, RetailInstallation.EndingStream)).Length != (long)RetailInstallation.EndingSectors * Wol.Engine.Install.PlayStationDisc.RawSectorSize)
             throw new InvalidOperationException("the installer omitted the unlisted XA sectors");
-        installation.EndingMusic(content.MediaTools);
+        installation.EndingMusic();
         foreach (string path in RetailDisc.Catalog.FileDigests.Keys)
             if (Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(installation.DiscPath, path)))) != RetailDisc.Catalog.FileDigests[path])
                 throw new InvalidOperationException($"the installed {path} is not the disc's file byte for byte");
