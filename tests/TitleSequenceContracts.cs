@@ -246,7 +246,15 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Until(() => _title.CardStage == "Slots", 200, "the slots again")) yield return f;
         foreach (int f in Press("ps_cross")) yield return f;
         foreach (int f in Until(() => _title.Screen == "intro", 200, "the intro after Continue")) yield return f;
-        if (_menuOnly) { Finish(""); yield break; }
+        if (_menuOnly)
+        {
+            Expect(_title.MenuSounds > 0, "the title menu played no sounds");
+            // Unlike the full check, this stops during active movie playback. Let the title's
+            // normal exit release its media resources before asking the engine to shut down.
+            _title.QueueFree();
+            yield return 2;
+            Finish(""); yield break;
+        }
         foreach (int f in Until(() => _title.Screen == "menu", TitleFlow.IntroPictureFrames + 10, "the unskipped intro to end")) yield return f;
         foreach (int f in Until(() => _title.Screen == "attract", TitleFlow.IntroMusicFrames + TitleFlow.IdleFrames + 200, "the idle timeout")) yield return f;
         foreach (int zone in new[] { 20, 2 })
