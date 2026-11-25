@@ -16,6 +16,7 @@ foreach (var dependency in typeof(Wol.Engine.Imaging.RasterImage).Assembly.GetRe
 ContentContracts.Check();
 InstallationContracts.Check();
 CharacterContracts.Check();
+ContentBackendContracts.Check(args);
 
 bool wasEnabled = VibrationDriver.Enabled;
 try

@@ -13,12 +13,25 @@ It returns the shared `Wol.Engine.Models.RiggedModel` contract, with no Godot or
 backend references. Retail bone lengths, texture decoding and pass selection,
 mounts, limb metadata, animation scripts, root movement and clip timing stay here.
 
-`Wol.Engine.RiggedModel3D` owns skeleton/skin, mesh, texture, material and animation
-resource construction and glTF export. The shared contract and backend live in
-wol-engine; there is no second model implementation in Vagrant. `FieldContent`
-currently composes decoding and backend construction at the existing cache and
-late-loaded animation boundaries. Existing cache and field-loading behavior is
-preserved while that host integration is extracted in later changes.
+`gameplay/FieldContent.cs` owns verified-disc lookups, game tables, model and
+texture decoding, animation selection, and cache preparation. It receives the
+plain .NET `IAssetBackend` interface. Another engine can implement that interface
+without referencing Godot: compile `RiggedModel`, encode/decode `RasterImage`,
+and supply a stable artifact compatibility identity. Cached model/image bytes
+are opaque to Vagrant. Backend identities have separate cache directories, so
+switching engines neither reads incompatible bytes nor deletes compatible caches.
+Animation sets return typed `RigClip` data, including timing and loop flags.
+
+`GodotAssetBackend` owns Godot model artifacts, template lifetime and actor
+instances. `RiggedModel3D` constructs resources and binds late animation clips.
+Vagrant's host selects the character or weapon and requested animation set; it
+no longer imports glTF or repairs backend material/animation resources. Retail
+vertex-colour gain is explicit `RigSurface.ColourMultiplier` data from the game
+decoder, rather than a hidden engine convention.
+
+This is an asset capability interface, not the complete game host interface.
+Replacing it proves content decoding can run under another engine; running the
+whole game also requires the remaining scene/input/audio boundaries below.
 
 The vendored SDK contains `RiggedModel` and `RiggedModel3D` on all three desktop
 targets. `addons/wol_engine/VENDOR.json` records the qualified upstream release
@@ -37,9 +50,12 @@ godot-dotnet --headless --path . res://tests/animation_script_contracts.tscn
 ```
 
 Use the qualified editor/API for that SDK and its normal resource identities
-under `addons/wol_engine`. The portable check uses synthetic models and sequences;
-it needs no renderer, installation or disc. The headless integration check
-verifies the existing phase handoffs and glTF round trip.
+under `addons/wol_engine`. The portable checks use a renderer-free backend and
+need no installation or disc.
+An optional `--disc=/path/to/disc.cue` (or `--installation=/path`) argument tests
+real verified content, cold/warm caches, typed late clips and backend cache
+isolation. It never supplies fallback content to the game. The headless engine
+integration verifies model instances, material preservation and clip binding.
 
 ## Other consumers inspected
 
@@ -55,17 +71,15 @@ They do not need a universal game class or title-specific code inside wol-engine
 
 ## Remaining Vagrant boundaries
 
-1. Separate `FieldContent`'s disc naming, lookup and decoded metadata from backend
-   resources and cache preparation. It still returns Godot animations today.
-2. Extract the title/menu rules, frame timing and input decisions from their
+1. Extract the title/menu rules, frame timing and input decisions from their
    Godot controls; shared presentation and input operations belong to wol-engine.
-3. Separate authoritative actors, battle rules, movement and event state from
+2. Separate authoritative actors, battle rules, movement and event state from
    `scenes/field` presentation. Replace live Dictionary/Variant state with explicit
    game types at each boundary, deleting displaced execution paths.
-4. Move reusable settings, audio output, camera/UI drawing and remaining Godot
+3. Move reusable settings, audio output, camera/UI drawing and remaining Godot
    scene composition into engine owners. Keep the choices, layouts and other game
    information in Vagrant as typed data.
 
 Each extraction must replace its production call sites and have a plain .NET
 check plus a focused engine integration check. The full separation is not yet
-complete; the model decoder is the next completed boundary.
+complete; the content and asset boundary is implemented independently of Godot.

@@ -4,9 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
-using Godot;
 using Wol.Engine.Imaging;
-using Wol.Engine.Display;
+using Wol.Engine.Models;
 using Wol.Games.Vagrant.Installation;
 
 namespace Wol.Games.Vagrant.Runtime;
@@ -52,6 +51,7 @@ public sealed class FieldContent
     /// <summary>Every file the installation keeps from the disc, by path, with the sector it starts at.</summary>
     private readonly Dictionary<string, long> _sectors = new(StringComparer.Ordinal);
     private readonly Dictionary<long, string> _paths = new();
+    private readonly IAssetBackend _backend;
     private readonly string _disc;
     private readonly byte[] _battle, _executable;
     private readonly Dictionary<string, JsonObject?> _data = new(StringComparer.Ordinal);
@@ -78,8 +78,9 @@ public sealed class FieldContent
 
     /// <summary>The installation at <paramref name="root"/> (see <see cref="RetailInstallation"/>), read through the
     /// enabled <paramref name="packs"/>.</summary>
-    public FieldContent(string root, Wol.Engine.Install.ContentPackSet? packs = null)
+    public FieldContent(string root, IAssetBackend backend, Wol.Engine.Install.ContentPackSet? packs = null)
     {
+        _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _packs = packs;
         var installation = new RetailInstallation(root);
         if (!File.Exists(installation.RecordPath)) throw new FileNotFoundException("Vagrant Story has not been installed from your disc yet.");
@@ -100,21 +101,21 @@ public sealed class FieldContent
     }
 
     /// <summary>
-    /// Under the build's folder, one folder per enabled pack set (<c>disc</c> with none): what is decoded from a pack's
+    /// Under each build and backend's folder, one folder per enabled pack set (<c>disc</c> with none): what is decoded from a pack's
     /// files is kept apart from what is decoded from the disc's, so enabling or disabling a pack never serves the other.
     /// </summary>
-    private static string? Cache(string root, string packs)
+    private string? Cache(string root, string packs)
     {
         try
         {
             string build = typeof(FieldContent).Assembly.ManifestModule.ModuleVersionId.ToString("N")
-                + typeof(TitleConversion).Assembly.ManifestModule.ModuleVersionId.ToString("N")
                 + typeof(RasterImage).Assembly.ManifestModule.ModuleVersionId.ToString("N");
             Directory.CreateDirectory(Path.Combine(root, build));
             // Older builds' folders (named by their build identity, all hex) go; other folders here (a pack's intro movie) stay.
             foreach (string old in Directory.GetDirectories(root))
                 if (Path.GetFileName(old) is var other && other != build && other.All(Uri.IsHexDigit)) Directory.Delete(old, true);
-            string folder = Path.Combine(root, build, packs.Length == 0 ? "disc" : "packs-" + packs);
+            string backend = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(_backend.CacheIdentity)));
+            string folder = Path.Combine(root, build, backend, packs.Length == 0 ? "disc" : "packs-" + packs);
             Directory.CreateDirectory(folder);
             return folder;
         }
@@ -242,9 +243,9 @@ public sealed class FieldContent
         if (_images.TryGetValue(name, out var image)) return image;
         // Images come with the document that names them.
         // A room's are "field_zzzz_mmm.key", "field_zzzz_mmm.sky" and "field_zzzz_mmm_key_framesn".
-        if (name.StartsWith("field_", StringComparison.Ordinal) && Cached(name + ".png") is { } png && System.IO.File.Exists(png))
+        if (name.StartsWith("field_", StringComparison.Ordinal) && Cached(name + ".image") is { } encoded && System.IO.File.Exists(encoded))
         {
-            return _images[name] = PixelArtScaler.DecodePng(System.IO.File.ReadAllBytes(png));
+            return _images[name] = _backend.DecodeImage(System.IO.File.ReadAllBytes(encoded));
         }
         if (name.StartsWith("field_", StringComparison.Ordinal) && name.Length >= 14) Data(name[..14]);
         else if (name.StartsWith("effect_", StringComparison.Ordinal)) Data(name[..10]);
@@ -389,7 +390,7 @@ public sealed class FieldContent
         if (Cached(room + ".json") is not { } file || !System.IO.File.Exists(file) || _cache == null) return false;
         var document = JsonNode.Parse(System.IO.File.ReadAllBytes(file));
         foreach (int character in new[] { 0 }.Concat(System.Linq.Enumerable.Select(System.Linq.Enumerable.Where(document?["room_actors"]?.AsArray() ?? new JsonArray(), actor => !(bool)(actor?["virtual"] ?? false)), actor => (int)actor!["character"]!)))
-            if (Directory.GetFiles(_cache, $"character_{character:X2}_*.glb").Length == 0) return false;
+            if (Directory.GetFiles(_cache, $"character_{character:X2}_*.model").Length == 0) return false;
         return true;
     }
 
@@ -462,7 +463,7 @@ public sealed class FieldContent
         if (Cached($"field_{name}.json") is { } cache)
         {
             foreach (var (key, image) in _images)
-                if (key.StartsWith("field_" + name, StringComparison.Ordinal)) Keep(Cached(key + ".png")!, partial => System.IO.File.WriteAllBytes(partial, PixelArtScaler.EncodePng(image)));
+                if (key.StartsWith("field_" + name, StringComparison.Ordinal)) Keep(Cached(key + ".image")!, partial => System.IO.File.WriteAllBytes(partial, _backend.EncodeImage(image)));
             Keep(cache, partial => System.IO.File.WriteAllText(partial, document.ToJsonString()));
         }
         return document;
@@ -799,21 +800,19 @@ public sealed class FieldContent
         name.StartsWith("weapon_", StringComparison.Ordinal) ? name.Length > 9 && Exists($"OBJ/{name[7..9]}.WEP")
         : Character(name) != null;
 
-    /// <summary>A weapon's model as binary glTF: OBJ/&lt;id&gt;.WEP in one of its palettes ("weapon_XX_p").</summary>
+    /// <summary>A weapon's model as an opaque backend artifact: OBJ/&lt;id&gt;.WEP in one of its palettes ("weapon_XX_p").</summary>
     public byte[] Weapon(string name)
     {
         if (_weapons.TryGetValue(name, out var model)) return model;
         string[] parts = name.Split('_');
         var weapon = CharacterConversion.Weapon(name, Read($"OBJ/{parts[1]}.WEP"), int.Parse(parts[2]));
         weapon.Export();
-        var rig = new Wol.Engine.RiggedModel3D(weapon.Model);
-        try { return _weapons[name] = rig.Export(); }
-        finally { rig.Free(); }
+        return _weapons[name] = _backend.CompileModel(weapon.Model);
     }
 
     /// <summary>
-    /// A character ("character_XX"): its definition (bones, mounts, limbs and clip events) and its rig as binary
-    /// glTF, with every animation set that names it. Null when the disc has no model for it.
+    /// A character ("character_XX"): its definition (bones, mounts, limbs and clip events) and its rig as an opaque
+    /// backend artifact, with every animation set that names it. Null when the disc has no model for it.
     /// </summary>
     public (JsonObject Definition, byte[] Model)? Character(string name)
     {
@@ -895,20 +894,17 @@ public sealed class FieldContent
         // A rig built before, from the same unit file and battle set, is kept in the cache: its definition and model
         // as they were made, and only its skeleton rebuilt, for the event sets added to it later.
         string? cached = _cache == null ? null : Path.Combine(_cache, $"{name}_{(Unit(character) ?? "obj").Replace('/', '_')}_{(_battleSets.GetValueOrDefault(character) ?? "none").Replace('/', '_')}");
-        if (cached != null && File.Exists(cached + ".json") && File.Exists(cached + ".glb") && JsonNode.Parse(File.ReadAllText(cached + ".json")) is JsonObject kept)
+        if (cached != null && File.Exists(cached + ".json") && File.Exists(cached + ".model") && JsonNode.Parse(File.ReadAllText(cached + ".json")) is JsonObject kept)
         {
             conversion.Prepare();
             _conversions[character] = (conversion, kept);
-            return (kept, File.ReadAllBytes(cached + ".glb"));
+            return (kept, File.ReadAllBytes(cached + ".model"));
         }
         var definition = conversion.Export();
-        var rig = new Wol.Engine.RiggedModel3D(conversion.Model);
-        byte[] model;
-        try { model = rig.Export(); }
-        finally { rig.Free(); }
+        byte[] model = _backend.CompileModel(conversion.Model);
         if (cached != null)
         {
-            Keep(cached + ".glb", partial => System.IO.File.WriteAllBytes(partial, model));
+            Keep(cached + ".model", partial => System.IO.File.WriteAllBytes(partial, model));
             Keep(cached + ".json", partial => System.IO.File.WriteAllText(partial, definition.ToJsonString()));
         }
         _conversions[character] = (conversion, definition);
@@ -940,7 +936,7 @@ public sealed class FieldContent
         }
         return null;
     }
-    private readonly Dictionary<(int, string), List<(string, Animation)>> _setClips = new();
+    private readonly Dictionary<(int, string), List<(string, RigClip)>> _setClips = new();
 
     /// <summary>How many sets have been loaded whose clips may have joined a character's definition: what was read from a definition before it moved may be out of date.</summary>
     public int DefinitionChanges { get; private set; }
@@ -953,10 +949,10 @@ public sealed class FieldContent
     /// The ESQ is a count, the character ids, a flag each, then offsets from 0x28 to one SEQ per character. The
     /// clips' animation scripts join the character's definition.
     /// </summary>
-    public List<(string Clip, Animation Animation)> AnimationSet(int character, string set)
+    public List<(string Clip, RigClip Animation)> AnimationSet(int character, string set)
     {
         if (_setClips.TryGetValue((character, set), out var known)) return known;
-        var clips = new List<(string, Animation)>();
+        var clips = new List<(string, RigClip)>();
         _setClips[(character, set)] = clips;
         DefinitionChanges++;
         if (Character($"character_{character:X2}") == null) return clips;
@@ -964,7 +960,7 @@ public sealed class FieldContent
         {
             string file = set[0] == 'b' ? $"OBJ/00_BT{set[2]}.SEQ" : $"OBJ/00BT{set[3]}B0{set[4]}.SEQ";
             var (conversion, definition) = _conversions[character];
-            if (Exists(file)) clips.AddRange(conversion.Clips(set, Read(file), 0, definition["events"]!.AsObject(), Movement(definition)).Select(clip => (clip.Clip, Wol.Engine.RiggedModel3D.CreateAnimation(clip.Animation))));
+            if (Exists(file)) clips.AddRange(conversion.Clips(set, Read(file), 0, definition["events"]!.AsObject(), Movement(definition)));
             return clips;
         }
         if (!set.StartsWith("esq", StringComparison.Ordinal) || !int.TryParse(set[3..], out int id)) return clips;
@@ -979,7 +975,7 @@ public sealed class FieldContent
                 if (BitConverter.ToInt32(esq, 4 + entry * 4) == owner)
                 {
                     var (conversion, definition) = _conversions[character];
-                    clips.AddRange(conversion.Clips(set, esq, start + BitConverter.ToInt32(esq, 4 + entries * 8 + entry * 4), definition["events"]!.AsObject(), Movement(definition)).Select(clip => (clip.Clip, Wol.Engine.RiggedModel3D.CreateAnimation(clip.Animation))));
+                    clips.AddRange(conversion.Clips(set, esq, start + BitConverter.ToInt32(esq, 4 + entries * 8 + entry * 4), definition["events"]!.AsObject(), Movement(definition)));
                 }
             if (clips.Count > 0) break;
         }
@@ -1000,6 +996,16 @@ public sealed class FieldContent
     /// </summary>
     /// <summary>An effect's sound sequence (its block 13), empty when it has none.</summary>
     public byte[] EffectSequence(int effect) => Exists($"EFFECT/E{effect:d3}.P") ? EffectConversion.SoundSequence(Read($"EFFECT/E{effect:d3}.P")) : Array.Empty<byte>();
+
+    /// <summary>Whether a sound bank (a count, then offsets to AKAO sound programs) holds sound <paramref name="id"/>.</summary>
+    public static bool HasSound(byte[] bank, int id)
+    {
+        if (bank.Length < 4) return false;
+        int count = BitConverter.ToInt32(bank, 0);
+        if (id < 0 || id >= count || 8 + id * 4 > bank.Length) return false;
+        int offset = BitConverter.ToInt32(bank, 4 + id * 4);
+        return offset > 0 && offset + 4 <= bank.Length;
+    }
 
     public (string BankName, byte[]? Bank, int Id, int Pan, int Group)? Sound(string key)
     {
@@ -1029,7 +1035,7 @@ public sealed class FieldContent
                 if (section > 0xF8 && section < model.Length) bank = model[section..];
             }
         }
-        if (bank == null || !SoundDriver.HasSound(bank, id)) return null;
+        if (bank == null || !HasSound(bank, id)) return null;
         return ("bank_" + kind, bank, id, pan, group);
     }
 }

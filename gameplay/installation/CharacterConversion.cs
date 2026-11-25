@@ -190,11 +190,9 @@ public sealed class CharacterConversion
             library.Add("rest", rest);
             names.Add("rest");
         }
-        var looping = new JsonArray();
         foreach (var (name, animation) in library.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
             Model.Animations.Add((name, animation));
-            if (animation.Loop) looping.Add(name);
         }
 
         // A bone record's byte 6 is its mount: 0xF0 holds the weapon (and 0xF1 the shield).
@@ -253,7 +251,7 @@ public sealed class CharacterConversion
         // The head's point above the feet (the u16 at 0x5e, body +0x646), where BATTLE.PRG's code 251 points balloons
         // and the chain cue (0x800a1280).
         int crown = _weaponTexture < 0 && _model.Length >= 0x60 ? BitConverter.ToUInt16(_model, 0x5e) : 0;
-        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["collision_radius"] = collisionRadius, ["collision_height"] = collisionHeight, ["crown"] = crown, ["rig"] = _name, ["animations"] = names, ["looping"] = looping, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["twists"] = twists, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
+        return new JsonObject { ["centre"] = centre, ["girth"] = girth, ["height"] = height, ["collision_radius"] = collisionRadius, ["collision_height"] = collisionHeight, ["crown"] = crown, ["rig"] = _name, ["animations"] = names, ["events"] = events, ["movement"] = movement, ["weapon_bone"] = weaponBone, ["shield_bone"] = shieldBone, ["head_bone"] = headBone, ["twists"] = twists, ["limb_bones"] = limbBones, ["limb_parts"] = limbParts, ["bone_limbs"] = boneLimbs, ["shadow"] = shadow, ["room_lit"] = roomLit, ["bone_lengths"] = BoneLengths() };
     }
 
     /// <summary>
@@ -410,6 +408,7 @@ public sealed class CharacterConversion
             {
                 Blend = blend switch { "mix" => RigBlend.Mix, "add" => RigBlend.Add, "subtract" => RigBlend.Subtract, _ => RigBlend.Opaque },
                 TwoSided = side != 0, VertexColours = coloured, Texture = texture,
+                ColourMultiplier = coloured ? new Vector4(2, 2, 2, 1) : Vector4.One,
             };
             surface.Vertices.AddRange(verticesInSurface);
             Model.Surfaces.Add(surface);
