@@ -2695,22 +2695,10 @@ public partial class FieldView : Node3D, IScenePresentation, IFlowPresentation<E
         if (actor.Player == null || actor.Skeleton == null) return;
         // The set's clip scripts join the character's.
         _clipEvents.Remove(actor.Character);
-        var library = actor.Player.GetAnimationLibrary("");
-        string skeleton = actor.Player.GetNode(actor.Player.RootNode).GetPathTo(actor.Skeleton).ToString();
         try
         {
-            foreach (var (clip, animation) in _content.Field.AnimationSet(actor.Character, set))
-            {
-                if (library.HasAnimation(clip)) continue;
-                var own = (Animation)animation.Duplicate();
-                for (int track = 0; track < own.GetTrackCount(); track++)
-                {
-                    string path = own.TrackGetPath(track).ToString();
-                    int bone = path.IndexOf(':');
-                    if (bone > 0) own.TrackSetPath(track, skeleton + path[bone..]);
-                }
-                library.AddAnimation(clip, own);
-            }
+            Wol.Engine.RiggedModel3D.InstallClips(actor.Player, actor.Skeleton,
+                _content.Field.AnimationSet(actor.Character, set));
         }
         catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException) { Fail(error.Message); }
     }

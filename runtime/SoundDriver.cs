@@ -277,16 +277,6 @@ public sealed partial class SoundDriver : Node
         }
     }
 
-    /// <summary>Whether a sound bank (a count, then offsets to AKAO sound programs) holds sound <paramref name="id"/>.</summary>
-    public static bool HasSound(byte[] bank, int id)
-    {
-        if (bank.Length < 4) return false;
-        int count = BitConverter.ToInt32(bank, 0);
-        if (id < 0 || id >= count || 8 + id * 4 > bank.Length) return false;
-        int offset = BitConverter.ToInt32(bank, 4 + id * 4);
-        return offset > 0 && offset + 4 <= bank.Length;
-    }
-
     /// <summary>
     /// Plays sound <paramref name="id"/> of a sound bank on a group's voices, at a pan (0x80 is centre) and volume
     /// (0 to 127). The bank stays in RAM under its name for later sounds.
@@ -295,7 +285,7 @@ public sealed partial class SoundDriver : Node
     {
         lock (_audioGate)
         {
-            if (!DriverReady || !HasSound(bank, id)) return;
+            if (!DriverReady || !FieldContent.HasSound(bank, id)) return;
             try
             {
                 if (!_banks.TryGetValue(name, out long at))
@@ -453,7 +443,7 @@ public sealed partial class SoundDriver : Node
     private long? Target(string bankName, byte[]? bank, int id)
     {
         if (bank == null) return id;
-        if (!HasSound(bank, id) || !_banks.TryGetValue(bankName, out long at)) return null;
+        if (!FieldContent.HasSound(bank, id) || !_banks.TryGetValue(bankName, out long at)) return null;
         return at + BitConverter.ToInt32(bank, 4 + id * 4);
     }
 

@@ -78,8 +78,7 @@ public partial class RetailContent : Node
         _field = null;
         _effectData.Clear();
         _effectTextures.Clear();
-        foreach (var rig in _rigs.Values) rig.Free();
-        _rigs.Clear();
+        _assets.Dispose();
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -92,7 +91,7 @@ public partial class RetailContent : Node
         var installation = new RetailInstallation(GlobalRoot);
         installation.Install(disc, progress);
         progress("Preparing the game…");
-        FieldContent Content() => new FieldContent(installation.Root);
+        FieldContent Content() => new FieldContent(installation.Root, _assets);
         var rooms = Content().RoomNames();
         System.Threading.Tasks.Parallel.ForEach(rooms, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount }, Content,
             (room, _, field) => { field.CacheRoom(room); return field; }, _ => { });
@@ -341,69 +340,14 @@ public partial class RetailContent : Node
     /// Loads an installed character rig: a scene with one skinned mesh and one AnimationPlayer holding the character's clips.
     /// Throws <see cref="InvalidDataException"/> when the rig is missing or damaged.
     /// </summary>
-    /// <summary>Each rig built this session, kept as a template: later actors take a copy rather than parse it again.</summary>
-    private readonly Dictionary<string, Node3D> _rigs = new(StringComparer.Ordinal);
+    /// <summary>The selected host backend compiles assets and owns the session's model templates.</summary>
+    private readonly Wol.Engine.GodotAssetBackend _assets = new();
 
     public Node3D Rig(string name)
     {
-        if (!_rigs.TryGetValue(name, out var template)) _rigs[name] = template = BuildRig(name);
-        var copy = (Node3D)template.Duplicate();
-        // Each actor lights and tints its own materials: a copy takes its own mesh and materials (the vertex data
-        // stays shared until written).
-        foreach (var node in copy.FindChildren("*", "MeshInstance3D", true, false))
-        {
-            var instance = (MeshInstance3D)node;
-            if (instance.Mesh is not ArrayMesh shared) continue;
-            var mesh = (ArrayMesh)shared.Duplicate();
-            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
-                if (mesh.SurfaceGetMaterial(surface) is Material material) mesh.SurfaceSetMaterial(surface, (Material)material.Duplicate());
-            instance.Mesh = mesh;
-        }
-        return copy;
-    }
-
-    private Node3D BuildRig(string name)
-    {
         byte[] model = name.StartsWith("weapon_", StringComparison.Ordinal) ? Field.Weapon(name)
             : Field.Character(name)?.Model ?? throw new InvalidDataException($"The disc has no model for {name}.");
-        using var document = new GltfDocument();
-        using var state = new GltfState();
-        if (document.AppendFromBuffer(model, "", state) != Error.Ok || document.GenerateScene(state) is not Node3D scene)
-            throw new InvalidDataException($"The installed {name} could not be read.");
-        // glTF loses loop flags. The decoder owns them: half-strides that hand off to the
-        // adjacent slot must finish, whereas a script's restart keeps its clip looping.
-        var looping = name.StartsWith("weapon_", StringComparison.Ordinal) ? null : Field.Character(name)?.Definition["looping"]?.AsArray();
-        foreach (var node in scene.FindChildren("*", "AnimationPlayer", true, false))
-            foreach (var clip in ((AnimationPlayer)node).GetAnimationList())
-            {
-                bool loop = looping == null;
-                if (looping != null) foreach (var value in looping) loop |= value?.GetValue<string>() == clip.ToString();
-                ((AnimationPlayer)node).GetAnimation(clip).LoopMode = loop ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
-            }
-        // glTF keeps a mesh's vertex colours but not the material's use of them: a Gouraud-shaded model's colours
-        // (the dragons', the shaded props') multiply its texture, doubled, as the PSX's 0x80 leaves a texel as it is.
-        foreach (var node in scene.FindChildren("*", "MeshInstance3D", true, false))
-        {
-            if (((MeshInstance3D)node).Mesh is not ArrayMesh mesh) continue;
-            for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
-            {
-                // Semi-transparent faces' surfaces are named by their blend (the conversion's), which glTF does not keep;
-                // the export numbers repeated names ("mix2").
-                if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D blended && blended.ResourceName.TrimEnd("0123456789".ToCharArray()) is ("mix" or "add" or "subtract") and var blend)
-                {
-                    blended.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-                    blended.BlendMode = blend switch { "add" => BaseMaterial3D.BlendModeEnum.Add, "subtract" => BaseMaterial3D.BlendModeEnum.Sub, _ => BaseMaterial3D.BlendModeEnum.Mix };
-                    blended.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled;
-                }
-                if (mesh.SurfaceGetMaterial(surface) is StandardMaterial3D material && (mesh.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatColor) != 0)
-                {
-                    material.VertexColorUseAsAlbedo = true;
-                    material.VertexColorIsSrgb = true;
-                    material.AlbedoColor = new Color(2, 2, 2, material.AlbedoColor.A);
-                }
-            }
-        }
-        return scene;
+        return _assets.InstantiateModel(name, model);
     }
 
     /// <summary>
@@ -430,11 +374,10 @@ public partial class RetailContent : Node
         _field = null;
         _effectData.Clear();
         _effectTextures.Clear();
-        foreach (var rig in _rigs.Values) rig.Free();
-        _rigs.Clear();
+        _assets.ClearModels();
         try
         {
-            _field = new FieldContent(GlobalRoot, Packs);
+            _field = new FieldContent(GlobalRoot, _assets, Packs);
             Vector2I Point(JsonNode node) => new((int)node[0]!, (int)node[1]!);
 
             var layout = Field.Data("title_layout")!;
