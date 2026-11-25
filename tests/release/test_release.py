@@ -111,6 +111,46 @@ class ReleasePreflightTests(unittest.TestCase):
         prepare.assert_not_called()
         self.assertEqual((output / 'keep').read_text(), 'existing output')
 
+    def test_fresh_checkout_stages_gameplay_installation_for_checks_and_export(self):
+        # Git does not preserve the old, now-empty installation directory.
+        for name in ('project.godot', 'Vagrant.csproj', 'Vagrant.sln', 'Directory.Build.props', 'export_presets.cfg'):
+            (self.root / name).write_text('deliberate project fixture')
+        for name in ('runtime', 'gameplay/installation', 'scenes', 'tests'):
+            (self.root / name).mkdir(parents=True)
+        catalog = self.root / 'gameplay/installation/retail_digests.json'
+        catalog.write_text('{"synthetic": "catalog fixture"}')
+        self.release.cache.mkdir()
+        self.release.engine = self.root / 'addons/wol_engine'
+        self.release.sdk = self.release.engine / 'platforms/windows-x64'
+        self.release.native_platform, self.release.arch = 'windows', 'x86_64'
+        for name in ('runtime', 'native/bin', 'platforms/windows-x64/managed', 'platforms/windows-x64/portable'):
+            (self.release.engine / name).mkdir(parents=True)
+        for name in ('GodotApi.props', 'WolEngine.props'):
+            (self.release.sdk / name).write_text('<Project/>')
+        (self.release.engine / 'native/spatial.gdextension').write_text('deliberate extension fixture')
+        (self.release.engine / 'native/bin/libspatial.windows.template_release.x86_64.dll').write_bytes(b'deliberate native fixture')
+        api = self.root / 'api'
+        for configuration in ('Debug', 'Release'):
+            folder = api / 'api' / configuration
+            folder.mkdir(parents=True)
+            (folder / 'GodotSharp.dll').write_bytes(b'deliberate API fixture')
+        self.assertFalse((self.root / 'installation').exists())
+
+        for operation in ('verify_projection', 'build'):
+            with self.subTest(operation=operation):
+                def inspect_stage(*command, **kwargs):
+                    self.assertEqual(command[:2], ('dotnet', 'build'))
+                    stage = Path(command[2]).parent
+                    self.assertFalse((stage / 'installation').exists())
+                    self.assertEqual((stage / 'gameplay/installation/retail_digests.json').read_bytes(), catalog.read_bytes())
+                    self.assertTrue((stage / 'addons/wol_engine/runtime').is_dir())
+                    raise RuntimeError('Compilation stage observed')
+                with patch.object(self.release, 'preflight', return_value={}), \
+                     patch.object(self.release, 'prepare', return_value=('editor', api)), \
+                     patch.object(self.release, 'run', side_effect=inspect_stage):
+                    with self.assertRaisesRegex(RuntimeError, 'Compilation stage observed'):
+                        getattr(self.release, operation)()
+
     def test_cli_missing_tools_is_actionable_without_traceback_or_partial_output(self):
         tools = self.root / 'tools'
         tools.mkdir()
