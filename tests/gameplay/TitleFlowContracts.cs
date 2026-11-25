@@ -22,11 +22,23 @@ internal static class TitleFlowContracts
         public int Intros, Stops, SettingsOpened, Rumbles, LoadsOpened, ClearSavesOpened, ClearSavesClosed, Resumes, NewGames, DemosEnded;
         public void PlayIntro() { Intros++; MusicPlaying = true; }
         public void StopMusic() { Stops++; MusicPlaying = false; }
-        public void PlaySound(int id) => Sounds.Add(id);
-        public void PreviewVibration() => Rumbles++;
+        public void PlaySound(int id, int voice, int pan, int volume)
+        {
+            Expect(voice == 1 && pan == 0x80 && volume == 0x7F, "the game omitted retail sound parameters");
+            Sounds.Add(id);
+        }
+        public void PreviewVibration(float weak, float strong, float seconds)
+        {
+            Expect(weak == 0.5f && strong == 1f && seconds == 0.25f, "the game omitted the preview envelope");
+            Rumbles++;
+        }
         public void OpenSettings() { SettingsOpened++; SettingsOpen = true; }
         public void OpenLoad() => LoadsOpened++;
-        public void OpenClearSave() => ClearSavesOpened++;
+        public void OpenClearSave(int location)
+        {
+            Expect(location == 48, "the post-credits save location changed");
+            ClearSavesOpened++;
+        }
         public TitleCardResult StepCards(TitlePad pressed) { LastCardInput = pressed; return CardResult; }
         public void CloseClearSave() => ClearSavesClosed++;
         public void ResumeGame() => Resumes++;

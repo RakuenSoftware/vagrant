@@ -42,6 +42,8 @@ specific to Vagrant's title. Reusable renderer/device capabilities belong in
 wol-engine; title timing, menu choices and demo locations remain game information.
 The renderer-free title tests cover these decisions without disc or renderer.
 The installed `title_sequence_contracts.tscn` still checks the real Godot host.
+Its optional `--menu-only` argument stops after options, Settings and LOAD/cancel;
+the default also runs both retail demos, interruption and New Game handoff.
 
 This is an asset capability interface, not the complete game host interface.
 Together with the title port, it proves content decoding and title decisions can

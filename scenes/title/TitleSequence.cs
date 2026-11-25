@@ -174,13 +174,13 @@ public partial class TitleSequence : Control, ITitleHost
     void ITitleHost.OpenSettings() => _settings.Open();
     void ITitleHost.PlayIntro() { _video.Stream = _content.IntroVideo; _video.Play(); }
     void ITitleHost.StopMusic() => _video.Stop();
-    void ITitleHost.PlaySound(int id) => _driver.PlayResident(id, 1, 0x80, 0x7F);
-    void ITitleHost.PreviewVibration()
+    void ITitleHost.PlaySound(int id, int voice, int pan, int volume) => _driver.PlayResident(id, voice, pan, volume);
+    void ITitleHost.PreviewVibration(float weak, float strong, float seconds)
     {
-        foreach (int device in Input.GetConnectedJoypads()) Input.StartJoyVibration(device, 0.5f, 1f, 0.25f);
+        foreach (int device in Input.GetConnectedJoypads()) Input.StartJoyVibration(device, weak, strong, seconds);
     }
     void ITitleHost.OpenLoad() => _cards.OpenLoad(fadeOut: true);
-    void ITitleHost.OpenClearSave() => _cards.OpenSave(48);
+    void ITitleHost.OpenClearSave(int location) => _cards.OpenSave(location);
     TitleCardResult ITitleHost.StepCards(TitlePad pressed)
     {
         int result = _cards.Step(action => Array.Find(Buttons, b => b.Action == action) is var (_, button)

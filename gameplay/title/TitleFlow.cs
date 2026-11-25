@@ -50,7 +50,7 @@ public sealed class TitleFlow
     }
 
     /// <summary>Retail resident sound selection, also used by the card screens.</summary>
-    public void PlaySound(int id) { MenuSounds++; _host.PlaySound(id); }
+    public void PlaySound(int id) { MenuSounds++; _host.PlaySound(id, 1, 0x80, 0x7F); }
     private void Fail(string detail) { Failure = detail; _presentation = null; }
 
     /// <summary>Moves to a screen and starts presenting it.</summary>
@@ -314,7 +314,7 @@ public sealed class TitleFlow
                 PlaySound(5);
                 confirm(option);
                 if (option == TitleMenuState.VibrationOn)
-                    _host.PreviewVibration();
+                    _host.PreviewVibration(0.5f, 1f, 0.25f);
                 break;
             }
             if ((_held & TitlePad.Cross) != 0) { PlaySound(6); break; }
@@ -397,7 +397,7 @@ public sealed class TitleFlow
 
     private IEnumerator<int> ClearSaveScreens()
     {
-        _host.OpenClearSave();
+        _host.OpenClearSave(48);
         TakePressed();
         TitleCardResult result = TitleCardResult.Pending;
         while (result == TitleCardResult.Pending)

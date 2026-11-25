@@ -21,6 +21,7 @@ public partial class TitleSequenceContracts : Node
     private IEnumerator<int>? _script;
     private int _wait;
     private string _capture = "";
+    private bool _menuOnly;
     private readonly List<string> _screens = new();
 
     public override void _Ready()
@@ -28,7 +29,10 @@ public partial class TitleSequenceContracts : Node
         // The check's own memory cards, empty, never the player's, and apart from other runs'.
         Scenes.Field.FieldView.IsolateSaves("user://contract_saves_title");
         foreach (string argument in OS.GetCmdlineUserArgs())
+        {
             if (argument.StartsWith("--capture=", StringComparison.Ordinal)) _capture = argument["--capture=".Length..];
+            if (argument == "--menu-only") _menuOnly = true;
+        }
         var content = GetNode<RetailContent>("/root/RetailContent");
         if (!content.Installed) Finish("installation unavailable: " + content.Failure);
         else
@@ -242,6 +246,7 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Until(() => _title.CardStage == "Slots", 200, "the slots again")) yield return f;
         foreach (int f in Press("ps_cross")) yield return f;
         foreach (int f in Until(() => _title.Screen == "intro", 200, "the intro after Continue")) yield return f;
+        if (_menuOnly) { Finish(""); yield break; }
         foreach (int f in Until(() => _title.Screen == "menu", TitleFlow.IntroPictureFrames + 10, "the unskipped intro to end")) yield return f;
         foreach (int f in Until(() => _title.Screen == "attract", TitleFlow.IntroMusicFrames + TitleFlow.IdleFrames + 200, "the idle timeout")) yield return f;
         foreach (int zone in new[] { 20, 2 })

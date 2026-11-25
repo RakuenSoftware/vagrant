@@ -27,12 +27,12 @@ public interface ITitleHost
     bool MusicPlaying { get; }
     void PlayIntro();
     void StopMusic();
-    void PlaySound(int id);
-    void PreviewVibration();
+    void PlaySound(int id, int voice, int pan, int volume);
+    void PreviewVibration(float weak, float strong, float seconds);
     bool SettingsOpen { get; }
     void OpenSettings();
     void OpenLoad();
-    void OpenClearSave();
+    void OpenClearSave(int location);
     TitleCardResult StepCards(TitlePad pressed);
     void CloseClearSave();
     void ResumeGame();
