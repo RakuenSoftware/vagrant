@@ -15,6 +15,7 @@ foreach (var dependency in typeof(Wol.Engine.Imaging.RasterImage).Assembly.GetRe
         throw new InvalidOperationException("The portable core depends on a backend: " + dependency.FullName);
 ContentContracts.Check();
 InstallationContracts.Check();
+CharacterContracts.Check();
 
 bool wasEnabled = VibrationDriver.Enabled;
 try
