@@ -50,6 +50,9 @@ or port. A separate Unreal Engine 5 backend is not currently supplied. The work
 here establishes the gameplay behavior that future engine implementations can
 preserve and reuse.
 
+See [the engine contract](docs/ENGINE_CONTRACT.md) for the ownership boundary,
+portable model decoding and the remaining extraction work.
+
 ## Acknowledgements
 
 Thanks to [ser-pounce/rood-reverse](https://github.com/ser-pounce/rood-reverse) and

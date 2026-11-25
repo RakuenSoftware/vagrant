@@ -4,15 +4,17 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
-using Godot;
+using System.Numerics;
+using Wol.Engine.Models;
+using Wol.Engine.Imaging;
 
 namespace Wol.Games.Vagrant.Installation;
 
 /// <summary>
-/// Converts a retail character (an SHP model with its SEQ animation sets) into a skinned glTF rig for the shared engine.
+/// Converts a retail character (an SHP model with its SEQ animation sets) into typed rig data for the shared engine.
 /// The model is rigid per bone: each vertex belongs to one bone, and faces may span bones. Each bone sits at minus its
 /// parent's length along the parent's x axis; animations rotate bones locally by Rz·Ry·Rx with 8192 units per turn.
-/// The rig keeps retail space and units inside a "Space" node that turns them into the engine's y-up metres.
+/// Its root transform converts retail space and units into the engine's y-up metres.
 /// </summary>
 public sealed class CharacterConversion
 {
@@ -124,33 +126,28 @@ public sealed class CharacterConversion
     /// </summary>
     public const float ModelScale = 1820f / 4096;
 
-    /// <summary>The model as a binary glTF, once <see cref="Export"/> has built it.</summary>
-    public byte[] Model { get; private set; } = Array.Empty<byte>();
+    /// <summary>The decoded model data, once <see cref="Export"/> has built it.</summary>
+    public RiggedModel Model { get; private set; } = new();
 
-    /// <summary>Builds the model (<see cref="Model"/>) and returns its definition: bones, mounts, limbs and clip events.</summary>
     /// <summary>
     /// Readies the conversion for <see cref="Clips"/> without building the rig: a rig already made (kept between
     /// sessions) takes event sets on its skeleton.
     /// </summary>
-    public void Prepare() => BuildSkeleton().Free();
+    public void Prepare() => BuildSkeleton();
 
+    /// <summary>Decodes <see cref="Model"/> and returns game metadata: bones, mounts, limbs and clip events.</summary>
     public JsonObject Export()
     {
-        var root = new Node3D { Name = "Character" };
         float size = _weaponTexture < 0 ? ModelScale : 1;
-        var space = new Node3D { Name = "Space", Basis = new Basis(Vector3.Right, Mathf.Pi).Scaled(Vector3.One * size / MapConversion.UnitsPerMetre) };
-        root.AddChild(space);
-        space.Owner = root;
-        var skeleton = BuildSkeleton();
-        space.AddChild(skeleton);
-        skeleton.Owner = root;
-        var mesh = BuildMesh(skeleton);
-        skeleton.AddChild(mesh);
-        mesh.Owner = root;
-        var player = new AnimationPlayer { Name = "AnimationPlayer" };
-        root.AddChild(player);
-        player.Owner = root;
-        var library = new AnimationLibrary();
+        Model = new RiggedModel { Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI), Scale = size / MapConversion.UnitsPerMetre };
+        BuildSkeleton();
+        for (int i = 0; i < _bones; i++)
+        {
+            int parent = _skeleton[i].Parent;
+            Model.Bones.Add(new RigBone(parent, parent >= 0 ? new Vector3(-_skeleton[parent].Length, 0, 0) : Vector3.Zero));
+        }
+        BuildMesh();
+        var library = new Dictionary<string, RigClip>(StringComparer.Ordinal);
         var names = new JsonArray();
         var events = new JsonObject();
         var movement = new JsonObject();
@@ -158,8 +155,8 @@ public sealed class CharacterConversion
             foreach (var (clip, animation) in Clips(set, data, offset, events, movement))
             {
                 // A slot two sets of the same name fill takes the first's (a unit's room set before its own).
-                if (library.HasAnimation(clip)) continue;
-                library.AddAnimation(clip, animation);
+                if (library.ContainsKey(clip)) continue;
+                library.Add(clip, animation);
                 names.Add(clip);
             }
         // A model without animations (a prop: the opening's dead men, 0x73 to 0x76) still has one clip, the pose the field
@@ -170,15 +167,13 @@ public sealed class CharacterConversion
         // (Episode 1 at 16:50, MAP172: the man slumped in the chair, the man spread on his back across the table).
         if (names.Count == 0)
         {
-            // glTF drops animations without tracks, so the rest pose holds the root bone explicitly.
-            var rest = new Animation { Length = 1 / EventConversion.FramesPerSecond, LoopMode = Animation.LoopModeEnum.Linear };
-            int track = rest.AddTrack(Animation.TrackType.Rotation3D);
-            rest.TrackSetPath(track, "Space/Skeleton:b0");
-            rest.RotationTrackInsertKey(track, 0, Quaternion.Identity);
+            // An unanimated prop holds the root bone in its rest pose.
+            var rest = new RigClip { Length = 1 / EventConversion.FramesPerSecond, Loop = true };
+            var rootTrack = new RigBoneTrack { Bone = 0 };
+            rest.Tracks.Add(rootTrack);
+            rootTrack.Rotations.Add(new(0, Quaternion.Identity));
             if (_bones >= 2 && (_weaponTexture >= 0 || _model.Length >= 0x74 && BitConverter.ToInt16(_model, 0x72) != 0))
             {
-                track = rest.AddTrack(Animation.TrackType.Position3D);
-                rest.TrackSetPath(track, "Space/Skeleton:b0");
                 // The lift is in map units; the skeleton is in the model's own, ModelScale of them.
                 var place = new Vector3(0, _skeleton[1].Length / 2, 0);
                 // The man slumped in MAP172's chair (0x73) is drawn against the chair's back, 54 units from the place
@@ -187,25 +182,21 @@ public sealed class CharacterConversion
                 // the chair) and 16:54 (over Ashley's shoulder), where the same fit leaves the man on the table (0x74)
                 // where his script puts him. How retail comes by it was not found.
                 if (_name == "character_73") place += new Vector3(-11, 0, 53);
-                rest.PositionTrackInsertKey(track, 0, place / ModelScale);
-                track = rest.AddTrack(Animation.TrackType.Rotation3D);
-                rest.TrackSetPath(track, "Space/Skeleton:b1");
-                rest.RotationTrackInsertKey(track, 0, Rotation(new Vector3(2048, 0, 6144)));
+                rootTrack.Positions.Add(new(0, place / ModelScale));
+                var hip = new RigBoneTrack { Bone = 1 };
+                hip.Rotations.Add(new(0, Rotation(new Vector3(2048, 0, 6144))));
+                rest.Tracks.Add(hip);
             }
-            library.AddAnimation("rest", rest);
+            library.Add("rest", rest);
             names.Add("rest");
         }
-        player.AddAnimationLibrary("", library);
         var looping = new JsonArray();
-        foreach (var clip in library.GetAnimationList()) if (library.GetAnimation(clip).LoopMode != Animation.LoopModeEnum.None) looping.Add(clip.ToString());
+        foreach (var (name, animation) in library.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            Model.Animations.Add((name, animation));
+            if (animation.Loop) looping.Add(name);
+        }
 
-        using var document = new GltfDocument();
-        using var state = new GltfState();
-        var error = document.AppendFromScene(root, state);
-        if (error != Error.Ok) throw new InvalidDataException($"{_name} could not be converted ({error}).");
-        Model = document.GenerateBuffer(state);
-        if (Model.Length == 0) throw new InvalidDataException($"{_name} could not be built.");
-        root.Free();
         // A bone record's byte 6 is its mount: 0xF0 holds the weapon (and 0xF1 the shield).
         int weaponBone = -1;
         int shieldBone = -1, headBone = -1;
@@ -266,16 +257,16 @@ public sealed class CharacterConversion
     }
 
     /// <summary>
-    /// One animation set's clips for this model (once <see cref="Export"/> has built its skeleton), named
+    /// One animation set's clips for this model (once <see cref="Export"/> or <see cref="Prepare"/> has read its skeleton), named
     /// "&lt;set&gt;_&lt;number&gt;" by each SEQ slot's animation number; their animation scripts go into <paramref name="events"/>.
     /// A set whose bone count differs is for another body (an id or alias shared across models) and has none.
     /// </summary>
-    public List<(string Clip, Animation Animation)> Clips(string set, byte[] data, int offset, JsonObject events, JsonObject? movement = null)
+    public List<(string Clip, RigClip Animation)> Clips(string set, byte[] data, int offset, JsonObject events, JsonObject? movement = null)
     {
-        var clips = new List<(string, Animation)>();
+        var clips = new List<(string, RigClip)>();
         var seq = data[offset..];
         if (seq.Length < 3 || seq[2] != _bones) return clips;
-        var animations = new List<Animation>(Animations(seq));
+        var animations = new List<RigClip>(Animations(seq));
         var scripts = ScriptLengths == null ? null : Scripts(seq, ScriptLengths);
         int slots = BitConverter.ToUInt16(seq, 0), table = (int)BitConverter.ToUInt32(seq, 12) + 8;
         for (int number = 0; number < slots; number++)
@@ -286,17 +277,17 @@ public sealed class CharacterConversion
             clips.Add((clip, animations[index]));
             if (scripts != null && index < scripts.Count && scripts[index].Count > 0) events[clip] = scripts[index].DeepClone();
             // A clip that moves its actor keeps how far, by frame (x, y, z each).
-            if (movement != null && animations[index].HasMeta("movement"))
+            if (movement != null && animations[index].Movement is { } moves)
             {
                 var steps = new JsonArray();
-                foreach (var step in animations[index].GetMeta("movement").AsGodotArray()) { var v = step.AsVector3(); steps.Add(new JsonArray { (int)v.X, (int)v.Y, (int)v.Z }); }
+                foreach (var v in moves) steps.Add(new JsonArray { (int)v.X, (int)v.Y, (int)v.Z });
                 movement[clip] = steps;
             }
             // A clip whose script starts it over (operation 1) loops; one without holds its last frame.
             bool loops = false, changes = false;
             if (scripts != null && index < scripts.Count) foreach (var entry in scripts[index]) { int op = (int)entry![1]!; loops |= op == 1; changes |= op is 23 or 24; }
             // Event clips loop only so; every other set's clips loop.
-            animations[index].LoopMode = !changes && (!set.StartsWith("esq", StringComparison.Ordinal) || loops) ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None;
+            animations[index].Loop = !changes && (!set.StartsWith("esq", StringComparison.Ordinal) || loops);
         }
         return clips;
     }
@@ -309,29 +300,20 @@ public sealed class CharacterConversion
         return lengths;
     }
 
-    private Skeleton3D BuildSkeleton()
+    private void BuildSkeleton()
     {
         _bones = _model[4];
         _skeleton = new (int, int)[_bones];
-        var skeleton = new Skeleton3D { Name = "Skeleton" };
         for (int i = 0; i < _bones; i++)
         {
             int length = (int)BitConverter.ToUInt32(_model, _bonesAt + i * 16);
             int parent = (sbyte)_model[_bonesAt + i * 16 + 4];
             if (parent < 0 || parent >= i) parent = -1;
             _skeleton[i] = (length, parent);
-            skeleton.AddBone($"b{i}");
-            if (parent >= 0)
-            {
-                skeleton.SetBoneParent(i, parent);
-                skeleton.SetBoneRest(i, new Transform3D(Basis.Identity, new Vector3(-_skeleton[parent].Length, 0, 0)));
-            }
-            skeleton.ResetBonePose(i);
         }
-        return skeleton;
     }
 
-    private MeshInstance3D BuildMesh(Skeleton3D skeleton)
+    private void BuildMesh()
     {
         int groups = _model[5];
         int faces = BitConverter.ToUInt16(_model, 6) + BitConverter.ToUInt16(_model, 8) + BitConverter.ToUInt16(_model, 10);
@@ -344,7 +326,8 @@ public sealed class CharacterConversion
             int bone = BitConverter.ToInt16(_model, groupPointer + group * 4), last = BitConverter.ToUInt16(_model, groupPointer + group * 4 + 2);
             if (bone < 0 || bone >= _bones || last > vertices || last < first) throw new InvalidDataException($"{_name} has a malformed vertex group.");
             // Rest poses have no rotation, so a bone's rest origin is the sum of its ancestors' offsets.
-            var origin = skeleton.GetBoneGlobalRest(bone).Origin;
+            var origin = Vector3.Zero;
+            for (int parent = _skeleton[bone].Parent; parent >= 0; parent = _skeleton[parent].Parent) origin.X -= _skeleton[parent].Length;
             for (int v = first; v < last; v++)
             {
                 positions[v] = origin + new Vector3(BitConverter.ToInt16(_model, vertexPointer + v * 8), BitConverter.ToInt16(_model, vertexPointer + v * 8 + 2), BitConverter.ToInt16(_model, vertexPointer + v * 8 + 4));
@@ -353,22 +336,14 @@ public sealed class CharacterConversion
             first = last;
         }
 
-        var textures = new Dictionary<(int, float), ImageTexture?> { [(0, 1f)] = Texture(out int width, out int height, 0, 1) };
+        var textures = new Dictionary<(int, float), RasterImage?> { [(0, 1f)] = Texture(out int width, out int height, 0, 1) };
         // One-sided faces (BATTLE.PRG 0x800B3CF0 draws a face only when its screen winding, nclip, is positive) and
         // two-sided ones (a plain face's byte 2, bit 0, as the rooms' type bit 0) go to their own surfaces, and so do
         // semi-transparent faces by how they blend: byte 2 bit 4 makes a face semi-transparent and bits 5 and 6 are its
         // blend (half and half, add, subtract, add a quarter), which the draw hands the GPU (0x800B4088 to 0x800B40C0).
         // As on the rooms' polygons, a half-and-half face carries its masked texels at half alpha, and an additive or
         // subtractive one is drawn twice: its unmasked texels opaque and its masked ones blended.
-        var surfaces = new Dictionary<(int Side, string Blend, int Mask, float Gain), SurfaceTool>();
-        SurfaceTool Surface((int, string, int, float) key)
-        {
-            if (surfaces.TryGetValue(key, out var made)) return made;
-            made = new SurfaceTool();
-            made.SetSkinWeightCount(SurfaceTool.SkinWeightCount.Skin4Weights);
-            made.Begin(Mesh.PrimitiveType.Triangles);
-            return surfaces[key] = made;
-        }
+        var surfaces = new Dictionary<(int Side, string Blend, int Mask, float Gain), List<RigVertex>>();
         int cursor = facePointer;
         // Most models' faces open with their primitive type and size (0x24 triangles, 0x2C quads) and are lit by the
         // field. Props whose faces open with a vertex index are Gouraud-shaded instead: indices, then each corner's
@@ -393,7 +368,7 @@ public sealed class CharacterConversion
             int corners = quad ? 4 : 3;
             var index = new int[corners];
             var uv = new Vector2[corners];
-            var colour = new Color[corners];
+            var colour = new Vector4[corners];
             for (int c = 0; c < corners; c++)
             {
                 index[c] = BitConverter.ToUInt16(_model, cursor + (coloured ? 0 : 4) + c * 2) / 4;
@@ -404,7 +379,7 @@ public sealed class CharacterConversion
                 int at = !coloured ? cursor + 4 + corners * 2 + pair * 2 : quad ? cursor + 24 + c * 2 : c == 0 ? cursor + 6 : cursor + 18 + c * 2;
                 uv[c] = new Vector2(_model[at] / (float)width, _model[at + 1] / (float)height);
                 int shade = cursor + 8 + c * 4;
-                colour[c] = coloured ? Color.Color8(_model[shade], _model[shade + 1], _model[shade + 2]) : Colors.White;
+                colour[c] = coloured ? new Vector4(_model[shade] / 255f, _model[shade + 1] / 255f, _model[shade + 2] / 255f, 1) : Vector4.One;
             }
             // Gouraud-shaded props keep both sides: where their side flag sits was not read.
             bool head = headBone >= 0 && Array.TrueForAll(index, i => owners[i] == headBone);
@@ -419,53 +394,26 @@ public sealed class CharacterConversion
             };
             foreach (var pass in passes)
             {
-                var surface = Surface(pass);
+                if (!surfaces.TryGetValue(pass, out var surface)) surfaces[pass] = surface = new();
                 foreach (int c in quad ? new[] { 0, 1, 2, 1, 3, 2 } : new[] { 0, 1, 2 })
                 {
-                    surface.SetUV(uv[c]);
-                    if (coloured) surface.SetColor(colour[c]);
-                    surface.SetBones(new[] { owners[index[c]], 0, 0, 0 });
-                    surface.SetWeights(new[] { 1f, 0, 0, 0 });
-                    surface.AddVertex(positions[index[c]]);
+                    surface.Add(new RigVertex(positions[index[c]], uv[c], colour[c], owners[index[c]]));
                 }
             }
             cursor += size;
         }
-        var mesh = new ArrayMesh();
         // Opaque surfaces first, as the field draws its blended ones after them.
-        foreach (var ((side, blend, mask, gain), surface) in surfaces.OrderBy(entry => entry.Key.Blend != "opaque").ThenBy(entry => entry.Key.Side))
+        foreach (var ((side, blend, mask, gain), verticesInSurface) in surfaces.OrderBy(entry => entry.Key.Blend != "opaque").ThenBy(entry => entry.Key.Side))
         {
             if (!textures.TryGetValue((mask, gain), out var texture)) textures[(mask, gain)] = texture = Texture(out _, out _, mask, gain);
-            // glTF keeps a material's name but not how it blends; the field restores that from the name.
-            var material = new StandardMaterial3D
+            var surface = new RigSurface
             {
-                ResourceName = blend,
-                AlbedoTexture = texture,
-                Transparency = BaseMaterial3D.TransparencyEnum.AlphaScissor,
-                AlphaScissorThreshold = 0.5f,
-                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                CullMode = side == 0 ? BaseMaterial3D.CullModeEnum.Back : BaseMaterial3D.CullModeEnum.Disabled,
-                TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest,
+                Blend = blend switch { "mix" => RigBlend.Mix, "add" => RigBlend.Add, "subtract" => RigBlend.Subtract, _ => RigBlend.Opaque },
+                TwoSided = side != 0, VertexColours = coloured, Texture = texture,
             };
-            if (blend != "opaque")
-            {
-                material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-                material.BlendMode = blend switch { "add" => BaseMaterial3D.BlendModeEnum.Add, "subtract" => BaseMaterial3D.BlendModeEnum.Sub, _ => BaseMaterial3D.BlendModeEnum.Mix };
-                material.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Disabled;
-            }
-            // A Gouraud colour of 0x80 leaves the texel as it is, so shaded props double the stored colour.
-            if (coloured)
-            {
-                material.VertexColorUseAsAlbedo = true;
-                material.VertexColorIsSrgb = true;
-                material.AlbedoColor = new Color(2, 2, 2);
-            }
-            surface.SetMaterial(material);
-            surface.Commit(mesh);
+            surface.Vertices.AddRange(verticesInSurface);
+            Model.Surfaces.Add(surface);
         }
-        var instance = new MeshInstance3D { Name = "Mesh", Mesh = mesh, Skeleton = new NodePath("..") };
-        instance.Skin = skeleton.CreateSkinFromRestTransforms();
-        return instance;
     }
 
     /// <summary>Whether a tenth or more of the edges of the faces wholly on <paramref name="bone"/> (by place) are shared by more than two faces.</summary>
@@ -499,7 +447,7 @@ public sealed class CharacterConversion
     }
 
     /// <summary>The model's texture: an 8-byte header, two palettes, then an 8-bit or 4-bit image. The first palette is the character's own.</summary>
-    private ImageTexture? Texture(out int width, out int height, int mask, float gain)
+    private RasterImage? Texture(out int width, out int height, int mask, float gain)
     {
         if (_weaponTexture >= 0) return WeaponTexture(out width, out height, mask, gain);
         int magic = (int)BitConverter.ToUInt32(_model, 0xF4) + 0xF8;
@@ -523,10 +471,10 @@ public sealed class CharacterConversion
                 ushort colour = index < colours ? BitConverter.ToUInt16(_model, at + 8 + index * 2) : (ushort)0;
                 TitleConversion.WriteTexel(data, (y * width + x) * 4, colour, mask, gain);
             }
-        return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
+        return new RasterImage(width, height, pixels: data);
     }
 
-    private ImageTexture WeaponTexture(out int width, out int height, int mask, float gain)
+    private RasterImage WeaponTexture(out int width, out int height, int mask, float gain)
     {
         int at = _weaponTexture;
         width = _model[at + 5] * 2;
@@ -540,14 +488,14 @@ public sealed class CharacterConversion
         var data = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++) TitleConversion.WriteTexel(data, (y * width + x) * 4, Colour(_model[image + y * width + x]), mask, gain);
-        return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, data));
+        return new RasterImage(width, height, pixels: data);
     }
 
     /// <summary>
     /// Decodes one SEQ set. Each bone stream is a big-endian base rotation (half units) followed by velocity keys
     /// covering the animation's frames; an axis a key omits keeps its previous velocity.
     /// </summary>
-    private IEnumerable<Animation> Animations(byte[] seq)
+    private IEnumerable<RigClip> Animations(byte[] seq)
     {
         int slots = BitConverter.ToUInt16(seq, 0), bones = seq[2];
         if (bones != _bones) throw new InvalidDataException($"{_name}'s animations are for another skeleton ({bones} bones, not {_bones}).");
@@ -558,7 +506,7 @@ public sealed class CharacterConversion
             int header = 16 + index * stride;
             int frames = BitConverter.ToUInt16(seq, header);
             int other = (sbyte)seq[header + 2];
-            var animation = new Animation { Length = Math.Max(1, frames) / EventConversion.FramesPerSecond, LoopMode = Animation.LoopModeEnum.None };
+            var animation = new RigClip { Length = Math.Max(1, frames) / EventConversion.FramesPerSecond };
             // The translation stream places the root bone above the actor's floor position: its first value in map
             // units, and its keyed deltas in half units. An animation built on a base animation starts from the base's
             // first value, as its rotations do.
@@ -566,16 +514,16 @@ public sealed class CharacterConversion
                 int stream = table + BitConverter.ToUInt16(seq, header + 6);
                 int baseStream = other >= 0 && other < count ? table + BitConverter.ToUInt16(seq, 16 + other * stride + 6) : stream;
                 var position = new Vector3(BigSigned(seq, baseStream), BigSigned(seq, baseStream + 2), BigSigned(seq, baseStream + 4));
-                int track = animation.AddTrack(Animation.TrackType.Position3D);
-                animation.TrackSetPath(track, "Space/Skeleton:b0");
-                animation.PositionTrackInsertKey(track, 0, position);
+                var track = new RigBoneTrack { Bone = 0 };
+                animation.Tracks.Add(track);
+                track.Positions.Add(new(0, position));
                 // Its own stream is then only keys; a stream of its own opens with its first value.
                 int frame = 0;
                 foreach (var (velocity, span) in Keys(seq, baseStream == stream ? stream + 6 : stream, frames))
                 {
                     position += velocity * span / 2;
                     frame += span;
-                    animation.PositionTrackInsertKey(track, frame / EventConversion.FramesPerSecond, position);
+                    track.Positions.Add(new(frame / EventConversion.FramesPerSecond, position));
                 }
             }
             // The movement stream (header +8, the clip's own; BATTLE.PRG 0x800AFA28) moves the actor itself: it opens with a
@@ -588,7 +536,7 @@ public sealed class CharacterConversion
                 var value = new Vector3(BigSigned(seq, at), BigSigned(seq, at + 2), BigSigned(seq, at + 4)) * 2;
                 int frame = 0;
                 var moved = Vector3.Zero;
-                var moves = new Godot.Collections.Array();
+                var moves = animation.Movement = new();
                 foreach (var (velocity, span) in Keys(seq, at + 6, frames))
                 {
                     for (int k = 0; k < span && frame < frames - 1; k++, frame++)
@@ -598,22 +546,21 @@ public sealed class CharacterConversion
                         moves.Add(moved);
                     }
                 }
-                animation.SetMeta("movement", moves);
             }
             for (int bone = 0; bone < bones; bone++)
             {
                 int stream = table + BitConverter.ToUInt16(seq, header + 10 + bone * 2);
                 int baseStream = other >= 0 && other < count ? table + BitConverter.ToUInt16(seq, 16 + other * stride + 10 + bone * 2) : stream;
                 var rotation = new Vector3(BigSigned(seq, baseStream), BigSigned(seq, baseStream + 2), BigSigned(seq, baseStream + 4)) * 2;
-                int track = animation.AddTrack(Animation.TrackType.Rotation3D);
-                animation.TrackSetPath(track, $"Space/Skeleton:b{bone}");
-                animation.RotationTrackInsertKey(track, 0, Rotation(rotation));
+                var track = new RigBoneTrack { Bone = bone };
+                animation.Tracks.Add(track);
+                track.Rotations.Add(new(0, Rotation(rotation)));
                 int frame = 0;
                 foreach (var (velocity, span) in Keys(seq, baseStream == stream ? stream + 6 : stream, frames))
                 {
                     rotation += velocity * span;
                     frame += span;
-                    animation.RotationTrackInsertKey(track, frame / EventConversion.FramesPerSecond, Rotation(rotation));
+                    track.Rotations.Add(new(frame / EventConversion.FramesPerSecond, Rotation(rotation)));
                 }
             }
             // Each bone's scale (64 is whole), after its rotation streams (BATTLE.PRG 0x800ACFA0 sets it as the clip
@@ -632,11 +579,10 @@ public sealed class CharacterConversion
                     if (seq[at] == 254 && seq[at + 1] == 1) { scale = new Vector3(BigSigned(seq, at + 2), BigSigned(seq, at + 4), BigSigned(seq, at + 6)); offset = 8; }
                     else { scale = new Vector3(seq[at], seq[at + 1], seq[at + 2]); offset = 3; }
                 }
-                int track = animation.AddTrack(Animation.TrackType.Scale3D);
-                animation.TrackSetPath(track, $"Space/Skeleton:b{bone}");
-                // A bone scaled to nothing is hidden (Callo's idle starts bone 26 at 0); the skeleton takes a scale a
-                // hair above zero, as a zero one breaks its pose.
-                animation.ScaleTrackInsertKey(track, 0, (scale / 64).Max(Vector3.One / 4096));
+                var track = new RigBoneTrack { Bone = bone };
+                animation.Tracks.Add(track);
+                // A bone scaled to nothing is hidden (Callo's idle starts bone 26 at 0).
+                track.Scales.Add(new(0, scale / 64));
                 if (!steps) continue;
                 int stream = table + BitConverter.ToUInt16(seq, header + 10 + (bones + bone) * 2);
                 int frame = 0;
@@ -644,20 +590,7 @@ public sealed class CharacterConversion
                 {
                     scale += velocity * span;
                     frame += span;
-                    animation.ScaleTrackInsertKey(track, frame / EventConversion.FramesPerSecond, (scale / 64).Max(Vector3.One / 4096));
-                }
-            }
-            // glTF derives duration from the last key, discarding a trailing held frame. Keep the
-            // final SEQ tick so script commands on frame `frames` (including stride handoffs) run.
-            // Interpolate without looping here, or the trailing hold becomes the first pose again.
-            for (int track = 0; track < animation.GetTrackCount(); track++)
-            {
-                double end = animation.Length;
-                switch (animation.TrackGetType(track))
-                {
-                    case Animation.TrackType.Position3D: animation.PositionTrackInsertKey(track, end, animation.PositionTrackInterpolate(track, end)); break;
-                    case Animation.TrackType.Rotation3D: animation.RotationTrackInsertKey(track, end, animation.RotationTrackInterpolate(track, end)); break;
-                    case Animation.TrackType.Scale3D: animation.ScaleTrackInsertKey(track, end, animation.ScaleTrackInterpolate(track, end)); break;
+                    track.Scales.Add(new(frame / EventConversion.FramesPerSecond, scale / 64));
                 }
             }
             yield return animation;
@@ -725,8 +658,7 @@ public sealed class CharacterConversion
     /// <summary>Rz·Ry·Rx for retail angles in 8192 units per turn.</summary>
     private static Quaternion Rotation(Vector3 angles)
     {
-        var turn = angles * (Mathf.Pi / 4096f);
-        var basis = new Basis(Vector3.Back, turn.Z) * new Basis(Vector3.Up, turn.Y) * new Basis(Vector3.Right, turn.X);
-        return basis.GetRotationQuaternion();
+        var turn = angles * (MathF.PI / 4096f);
+        return Quaternion.Normalize(Quaternion.CreateFromAxisAngle(Vector3.UnitZ, turn.Z) * Quaternion.CreateFromAxisAngle(Vector3.UnitY, turn.Y) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, turn.X));
     }
 }

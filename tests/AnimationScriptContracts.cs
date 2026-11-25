@@ -36,7 +36,7 @@ public partial class AnimationScriptContracts : Node
             seq[streams+6]=0x82;seq[streams+7]=2; // Three ticks of root velocity: final x=3, then hold.
             var lengths=new byte[65];lengths[23]=lengths[24]=1;
             decoder=new CharacterConversion("synthetic",model,Array.Empty<(string,byte[],int)>()){ScriptLengths=lengths};decoder.Prepare();
-            var events=new JsonObject();var clips=decoder.Clips("base",seq,0,events);
+            var events=new JsonObject();var clips=decoder.Clips("base",seq,0,events).Select(clip => (clip.Clip, Animation: Wol.Engine.RiggedModel3D.CreateAnimation(clip.Animation))).ToList();
             if(clips.Count!=2 || clips.Any(c=>c.Animation.LoopMode!=Animation.LoopModeEnum.None || Math.Abs(c.Animation.Length-31/30.0)>.00001))
                 throw new InvalidOperationException("The decoder looped a half-stride or dropped its final script tick.");
             if(events["base_13"]![0]![1]!.GetValue<int>()!=24 || events["base_14"]![0]![1]!.GetValue<int>()!=23)

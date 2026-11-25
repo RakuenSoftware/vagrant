@@ -806,7 +806,9 @@ public sealed class FieldContent
         string[] parts = name.Split('_');
         var weapon = CharacterConversion.Weapon(name, Read($"OBJ/{parts[1]}.WEP"), int.Parse(parts[2]));
         weapon.Export();
-        return _weapons[name] = weapon.Model;
+        var rig = new Wol.Engine.RiggedModel3D(weapon.Model);
+        try { return _weapons[name] = rig.Export(); }
+        finally { rig.Free(); }
     }
 
     /// <summary>
@@ -900,13 +902,17 @@ public sealed class FieldContent
             return (kept, File.ReadAllBytes(cached + ".glb"));
         }
         var definition = conversion.Export();
+        var rig = new Wol.Engine.RiggedModel3D(conversion.Model);
+        byte[] model;
+        try { model = rig.Export(); }
+        finally { rig.Free(); }
         if (cached != null)
         {
-            Keep(cached + ".glb", partial => System.IO.File.WriteAllBytes(partial, conversion.Model));
+            Keep(cached + ".glb", partial => System.IO.File.WriteAllBytes(partial, model));
             Keep(cached + ".json", partial => System.IO.File.WriteAllText(partial, definition.ToJsonString()));
         }
         _conversions[character] = (conversion, definition);
-        return (definition, conversion.Model);
+        return (definition, model);
     }
 
     private readonly Dictionary<int, (CharacterConversion Conversion, JsonObject Definition)> _conversions = new();
@@ -958,7 +964,7 @@ public sealed class FieldContent
         {
             string file = set[0] == 'b' ? $"OBJ/00_BT{set[2]}.SEQ" : $"OBJ/00BT{set[3]}B0{set[4]}.SEQ";
             var (conversion, definition) = _conversions[character];
-            if (Exists(file)) clips.AddRange(conversion.Clips(set, Read(file), 0, definition["events"]!.AsObject(), Movement(definition)));
+            if (Exists(file)) clips.AddRange(conversion.Clips(set, Read(file), 0, definition["events"]!.AsObject(), Movement(definition)).Select(clip => (clip.Clip, Wol.Engine.RiggedModel3D.CreateAnimation(clip.Animation))));
             return clips;
         }
         if (!set.StartsWith("esq", StringComparison.Ordinal) || !int.TryParse(set[3..], out int id)) return clips;
@@ -973,7 +979,7 @@ public sealed class FieldContent
                 if (BitConverter.ToInt32(esq, 4 + entry * 4) == owner)
                 {
                     var (conversion, definition) = _conversions[character];
-                    clips.AddRange(conversion.Clips(set, esq, start + BitConverter.ToInt32(esq, 4 + entries * 8 + entry * 4), definition["events"]!.AsObject(), Movement(definition)));
+                    clips.AddRange(conversion.Clips(set, esq, start + BitConverter.ToInt32(esq, 4 + entries * 8 + entry * 4), definition["events"]!.AsObject(), Movement(definition)).Select(clip => (clip.Clip, Wol.Engine.RiggedModel3D.CreateAnimation(clip.Animation))));
                 }
             if (clips.Count > 0) break;
         }
