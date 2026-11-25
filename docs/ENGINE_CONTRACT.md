@@ -29,9 +29,23 @@ no longer imports glTF or repairs backend material/animation resources. Retail
 vertex-colour gain is explicit `RigSurface.ColourMultiplier` data from the game
 decoder, rather than a hidden engine convention.
 
+`gameplay/title/TitleFlow.cs` owns the title's 60 Hz clock, accumulated pad edges,
+logo/movie/menu timing, options, idle demo selection, card-result decisions and
+field handoffs. `TitleMenuState` owns the retail wheel, brightness, warmth, glow
+and palette arithmetic. The Godot scene reads that same mutable state and owns
+only resources and device/scene bindings; it no longer runs another title flow.
+
+`ITitleHost` is a Vagrant-owned presentation port that any engine can implement.
+It uses typed buttons, card results and simple playback/UI/lifecycle operations;
+no Godot node, resource, Dictionary or save payload crosses it. It is intentionally
+specific to Vagrant's title. Reusable renderer/device capabilities belong in
+wol-engine; title timing, menu choices and demo locations remain game information.
+The renderer-free title tests cover these decisions without disc or renderer.
+The installed `title_sequence_contracts.tscn` still checks the real Godot host.
+
 This is an asset capability interface, not the complete game host interface.
-Replacing it proves content decoding can run under another engine; running the
-whole game also requires the remaining scene/input/audio boundaries below.
+Together with the title port, it proves content decoding and title decisions can
+run under another engine; running the whole game also requires the remaining scene/input/audio boundaries below.
 
 The vendored SDK contains `IAssetBackend`, `RiggedModel`, `GodotAssetBackend`
 and `RiggedModel3D` on all three desktop targets. `addons/wol_engine/VENDOR.json` records the qualified upstream release
@@ -47,6 +61,8 @@ During development, an unpacked new SDK can be selected with both
 dotnet build -m:1 -p:WolEngineSdkRoot=/path/to/sdk -p:WolEngineCoreRoot=/path/to/sdk/portable
 dotnet run --project tests/gameplay/GameplayContracts.csproj -p:WolEngineCoreRoot=/path/to/sdk/portable
 godot-dotnet --headless --path . res://tests/animation_script_contracts.tscn
+# This integration check needs the player's verified installation.
+godot-dotnet --headless --path . res://tests/title_sequence_contracts.tscn -- --install-root=/path/to/installation
 ```
 
 Use the qualified editor/API for that SDK and its normal resource identities
@@ -71,8 +87,9 @@ They do not need a universal game class or title-specific code inside wol-engine
 
 ## Remaining Vagrant boundaries
 
-1. Extract the title/menu rules, frame timing and input decisions from their
-   Godot controls; shared presentation and input operations belong to wol-engine.
+1. Move shared title drawing, resource composition and input/device operations
+   from the Godot host into engine presentation owners. The title rules and
+   timing already live in the portable gameplay library.
 2. Separate authoritative actors, battle rules, movement and event state from
    `scenes/field` presentation. Replace live Dictionary/Variant state with explicit
    game types at each boundary, deleting displaced execution paths.
@@ -82,4 +99,4 @@ They do not need a universal game class or title-specific code inside wol-engine
 
 Each extraction must replace its production call sites and have a plain .NET
 check plus a focused engine integration check. The full separation is not yet
-complete; the content and asset boundary is implemented independently of Godot.
+complete; the content, asset and title-rule boundaries are implemented independently of Godot.

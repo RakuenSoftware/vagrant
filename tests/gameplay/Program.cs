@@ -17,6 +17,7 @@ ContentContracts.Check();
 InstallationContracts.Check();
 CharacterContracts.Check();
 ContentBackendContracts.Check(args);
+TitleFlowContracts.Check();
 
 bool wasEnabled = VibrationDriver.Enabled;
 try
