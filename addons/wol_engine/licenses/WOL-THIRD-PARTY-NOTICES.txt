@@ -60,3 +60,5 @@ From the Noah project (https://github.com/yaz0r/Noah), checkout d725fe231e56a895
 originally MAME's SPU emulator by pSXAuthor, adapted by R. Belmont.
 Licensed under the BSD 3-Clause License; the full notice is in native/src/ps1_spu/LICENSE.
 Used only by NativePs1AudioSandbox for install-time audio conversion.
+Local changes: the current reverb setting is per SPU instance instead of shared by all instances, and the current
+transfer address can be read.

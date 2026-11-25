@@ -20,12 +20,15 @@ currently composes decoding and backend construction at the existing cache and
 late-loaded animation boundaries. Existing cache and field-loading behavior is
 preserved while that host integration is extracted in later changes.
 
-This change requires a wol-engine SDK containing `RiggedModel` and
-`RiggedModel3D`. The previously pinned SDK does not contain them. Qualify and
-publish the paired engine change, then vendor its three desktop SDKs with the
-existing release tool before merging/releasing the consumer. Do not relabel old
-SDK binaries or edit their provenance manifests. During development, an unpacked
-new SDK can be selected with both `WolEngineSdkRoot` and `WolEngineCoreRoot`:
+The vendored SDK contains `RiggedModel` and `RiggedModel3D` on all three desktop
+targets. `addons/wol_engine/VENDOR.json` records the qualified upstream release
+and archive checksums; ordinary builds use these binaries directly.
+
+For future contract changes, qualify and publish the engine change, then vendor
+its three desktop SDKs with the existing release tool before merging/releasing
+the consumer. Do not relabel old SDK binaries or edit their provenance manifests.
+During development, an unpacked new SDK can be selected with both
+`WolEngineSdkRoot` and `WolEngineCoreRoot`:
 
 ```sh
 dotnet build -m:1 -p:WolEngineSdkRoot=/path/to/sdk -p:WolEngineCoreRoot=/path/to/sdk/portable
