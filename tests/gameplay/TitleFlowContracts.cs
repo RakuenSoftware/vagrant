@@ -164,6 +164,12 @@ internal static class TitleFlowContracts
         clear.CardResult = TitleCardResult.Cancelled; cleared.Tick(TitlePad.Cross);
         Expect(clear.ClearSavesClosed == 1 && cleared.Stage == TitleStage.Intro && cleared.MenuSounds == 1,
             "post-credits SAVE cancellation did not clean up and return to the title");
+        var savedClearHost = new Host();
+        var savedClear = new TitleFlow(savedClearHost, palettes, clearSave: true);
+        savedClear.Tick(TitlePad.None);
+        savedClearHost.CardResult = TitleCardResult.Saved; savedClear.Tick(TitlePad.Circle);
+        Expect(savedClearHost.ClearSavesClosed == 1 && savedClear.Stage == TitleStage.Intro && savedClearHost.Resumes == 0,
+            "a completed post-credits SAVE did not close before returning to the title loop");
         var brokenHost = new Host();
         var broken = new TitleFlow(brokenHost, palettes);
         for (int i = 0; i < 7000 && brokenHost.Demos.Count == 0; i++) broken.Tick(TitlePad.None);

@@ -11,7 +11,7 @@ public enum TitlePad
 public enum TitleStage { Publisher, Developer, Intro, Menu, NewGame, Field, Continue, Attract, ClearSave }
 public enum TitleCanvas { Boot, Title }
 public enum TitleLogo { None, Publisher, Developer }
-public enum TitleCardResult { Pending, Cancelled, Loaded }
+public enum TitleCardResult { Pending, Cancelled, Loaded, Saved }
 
 /// <summary>
 /// Vagrant's title ports. Any host can implement these operations without Godot types.

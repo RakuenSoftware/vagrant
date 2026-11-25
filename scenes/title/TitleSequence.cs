@@ -185,7 +185,8 @@ public partial class TitleSequence : Control, ITitleHost
     {
         int result = _cards.Step(action => Array.Find(Buttons, b => b.Action == action) is var (_, button)
             && button != TitlePad.None && (pressed & button) != 0);
-        return result == 0 ? TitleCardResult.Pending : result > 0 && _cards.Loaded != null ? TitleCardResult.Loaded : TitleCardResult.Cancelled;
+        return result == 0 ? TitleCardResult.Pending : result < 0 ? TitleCardResult.Cancelled
+            : _cards.Loaded != null ? TitleCardResult.Loaded : TitleCardResult.Saved;
     }
     void ITitleHost.CloseClearSave() => _cards.SaveData = null;
     void ITitleHost.ResumeGame()
