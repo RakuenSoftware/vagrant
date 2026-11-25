@@ -33,8 +33,8 @@ This is an asset capability interface, not the complete game host interface.
 Replacing it proves content decoding can run under another engine; running the
 whole game also requires the remaining scene/input/audio boundaries below.
 
-The vendored SDK contains `RiggedModel` and `RiggedModel3D` on all three desktop
-targets. `addons/wol_engine/VENDOR.json` records the qualified upstream release
+The vendored SDK contains `IAssetBackend`, `RiggedModel`, `GodotAssetBackend`
+and `RiggedModel3D` on all three desktop targets. `addons/wol_engine/VENDOR.json` records the qualified upstream release
 and archive checksums; ordinary builds use these binaries directly.
 
 For future contract changes, qualify and publish the engine change, then vendor
