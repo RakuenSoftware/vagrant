@@ -112,7 +112,8 @@ Godot, the backend SDK, native libraries and a disc installation are absent.
 The checks reject backend dependencies both in gameplay and transitively in the
 portable core, and exercise palette keys, transparency passes, indexed/direct
 art, save-picture palette columns, glyph metrics, controller envelopes, install rejection preserving previous
-files/cache, and XA integrity.
+files/cache, XA integrity, renderer-free content backends, and title timing/menu
+choices through typed host operations.
 Native player builds wait for these checks and retain the published core DLL
 byte for byte. Vendoring preserves each target’s portable core bytes, alongside its other
 managed/API assemblies. `Directory.Build.props` selects the native target for

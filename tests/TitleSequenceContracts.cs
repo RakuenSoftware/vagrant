@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Godot;
+using Wol.Games.Vagrant.Title;
 using Wol.Engine;
 using Wol.Games.Vagrant.Runtime;
 using Wol.Games.Vagrant.Scenes.Title;
@@ -20,6 +21,7 @@ public partial class TitleSequenceContracts : Node
     private IEnumerator<int>? _script;
     private int _wait;
     private string _capture = "";
+    private bool _menuOnly;
     private readonly List<string> _screens = new();
 
     public override void _Ready()
@@ -27,7 +29,10 @@ public partial class TitleSequenceContracts : Node
         // The check's own memory cards, empty, never the player's, and apart from other runs'.
         Scenes.Field.FieldView.IsolateSaves("user://contract_saves_title");
         foreach (string argument in OS.GetCmdlineUserArgs())
+        {
             if (argument.StartsWith("--capture=", StringComparison.Ordinal)) _capture = argument["--capture=".Length..];
+            if (argument == "--menu-only") _menuOnly = true;
+        }
         var content = GetNode<RetailContent>("/root/RetailContent");
         if (!content.Installed) Finish("installation unavailable: " + content.Failure);
         else
@@ -105,7 +110,7 @@ public partial class TitleSequenceContracts : Node
         Capture("01_publisher");
         foreach (int f in Until(() => _title.Screen == "developer", 400, "the developer logo")) yield return f;
         long publisher = _title.Frame - start;
-        Expect(Math.Abs(publisher - TitleSequence.LogoFrames) <= 2, $"publisher logo lasted {publisher} frames");
+        Expect(Math.Abs(publisher - TitleFlow.LogoFrames) <= 2, $"publisher logo lasted {publisher} frames");
         yield return 60;
         Capture("02_developer");
         start = _title.Frame;
@@ -125,35 +130,35 @@ public partial class TitleSequenceContracts : Node
         // The movie's player is hidden with its picture; its sound must keep playing under the title screen.
         Expect(_title.MusicPosition - heard > 3, $"the title music stalled with the hidden movie ({heard:0.00} s → {_title.MusicPosition:0.00} s)");
         Capture("04_title_menu");
-        Expect(_title.SelectedItem == TitleMenu.NewGame, "the cursor should start on New Game");
-        Expect(_title.Menu[TitleMenu.NewGame].Row == TitleMenu.Selected && _title.Menu[TitleMenu.NewGame].Brightness == 128, "New Game is not lit in the selected slot");
-        Expect(_title.Menu[TitleMenu.NewGame].Warmth == 16, "New Game did not warm to its lit palette");
+        Expect(_title.SelectedItem == TitleMenuState.NewGame, "the cursor should start on New Game");
+        Expect(_title.Menu[TitleMenuState.NewGame].Row == TitleMenuState.Selected && _title.Menu[TitleMenuState.NewGame].Brightness == 128, "New Game is not lit in the selected slot");
+        Expect(_title.Menu[TitleMenuState.NewGame].Warmth == 16, "New Game did not warm to its lit palette");
 
         foreach (int f in Press("ps_down")) yield return f;
         yield return 40;
         Capture("05_continue");
-        Expect(_title.SelectedItem == TitleMenu.Continue, "Down did not select Continue");
-        Expect(_title.Menu[TitleMenu.Continue].Row == TitleMenu.Selected, "Continue did not rotate into the selected slot");
+        Expect(_title.SelectedItem == TitleMenuState.Continue, "Down did not select Continue");
+        Expect(_title.Menu[TitleMenuState.Continue].Row == TitleMenuState.Selected, "Continue did not rotate into the selected slot");
         foreach (int f in Press("ps_down")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.Vibration, "Down did not select Vibration");
+        Expect(_title.SelectedItem == TitleMenuState.Vibration, "Down did not select Vibration");
 
         Expect(_title.Vibration, "vibration should default to on");
         foreach (int f in Press("ps_circle")) yield return f;
         yield return 90;
         Capture("06_vibration_options");
-        Expect(_title.Menu[TitleMenu.VibrationOn].Enabled && _title.Menu[TitleMenu.VibrationOff].Enabled, "the vibration options did not open");
+        Expect(_title.Menu[TitleMenuState.VibrationOn].Enabled && _title.Menu[TitleMenuState.VibrationOff].Enabled, "the vibration options did not open");
         foreach (int f in Press("ps_down")) yield return f;
         yield return 30;
         foreach (int f in Press("ps_circle")) yield return f;
         yield return 80;
         Expect(!_title.Vibration, "choosing Off did not disable vibration");
-        Expect(!_title.Menu[TitleMenu.VibrationOn].Enabled, "the vibration options did not close");
-        Expect(_title.Menu[TitleMenu.Vibration].Row == TitleMenu.Selected, "Vibration did not return to the selected slot");
+        Expect(!_title.Menu[TitleMenuState.VibrationOn].Enabled, "the vibration options did not close");
+        Expect(_title.Menu[TitleMenuState.Vibration].Row == TitleMenuState.Selected, "Vibration did not return to the selected slot");
 
         foreach (int f in Press("ps_down")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.Sound, "Down did not select Sound");
+        Expect(_title.SelectedItem == TitleMenuState.Sound, "Down did not select Sound");
         foreach (int f in Press("ps_circle")) yield return f;
         yield return 90;
         Capture("07_sound_options");
@@ -170,17 +175,17 @@ public partial class TitleSequenceContracts : Node
 
         foreach (int f in Press("ps_up")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.Vibration, "Up did not select Vibration");
+        Expect(_title.SelectedItem == TitleMenuState.Vibration, "Up did not select Vibration");
         foreach (int f in Press("ps_up")) yield return f;
         yield return 40;
         foreach (int f in Press("ps_up")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.NewGame, "Up did not return to New Game");
+        Expect(_title.SelectedItem == TitleMenuState.NewGame, "Up did not return to New Game");
 
         // The added Settings word sits between Sound and New Game on the wheel.
         foreach (int f in Press("ps_up")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.Settings, "Up from New Game did not select Settings");
+        Expect(_title.SelectedItem == TitleMenuState.Settings, "Up from New Game did not select Settings");
         Capture("08_settings_selected");
         foreach (int f in Press("ps_circle")) yield return f;
         foreach (int f in Until(() => _title.SettingsOpen, 10, "the Settings dialog")) yield return f;
@@ -213,7 +218,7 @@ public partial class TitleSequenceContracts : Node
         controls.GetNode<Button>("Reset").EmitSignal(BaseButton.SignalName.Pressed);
         Expect(!HasKey("ps_triangle", Key.J) && defaults.TrueForAll(key => HasKey("ps_triangle", (Key)key)), "Reset did not restore Triangle's keys");
         if (preferences != null) using (var file = Godot.FileAccess.Open(Wol.Engine.Display.DisplaySettings.Preferences, Godot.FileAccess.ModeFlags.Write)) file.StoreBuffer(preferences);
-        long frozen = _title.Menu[TitleMenu.Settings].Row;
+        long frozen = _title.Menu[TitleMenuState.Settings].Row;
         yield return 60;
         Expect(_title.SettingsOpen && _title.Screen == "menu", "the title did not wait while Settings was open");
         Input.ParseInputEvent(new InputEventKey { Keycode = Key.Escape, PhysicalKeycode = Key.Escape, Pressed = true });
@@ -221,11 +226,11 @@ public partial class TitleSequenceContracts : Node
         Input.ParseInputEvent(new InputEventKey { Keycode = Key.Escape, PhysicalKeycode = Key.Escape, Pressed = false });
         foreach (int f in Until(() => !_title.SettingsOpen, 10, "Settings to close")) yield return f;
         yield return 30;
-        Expect(!_title.SettingsOpen && _title.SelectedItem == TitleMenu.Settings && _title.Menu[TitleMenu.Settings].Row == frozen,
+        Expect(!_title.SettingsOpen && _title.SelectedItem == TitleMenuState.Settings && _title.Menu[TitleMenuState.Settings].Row == frozen,
             "closing Settings disturbed the title menu");
         foreach (int f in Press("ps_down")) yield return f;
         yield return 40;
-        Expect(_title.SelectedItem == TitleMenu.NewGame, "Down from Settings did not return to New Game");
+        Expect(_title.SelectedItem == TitleMenuState.NewGame, "Down from Settings did not return to New Game");
         // Continue opens the LOAD screens: the empty card says so, and Cross leaves them for the title loop; idle then
         // loops back through the attract exit.
         foreach (int f in Press("ps_down")) yield return f;
@@ -241,11 +246,20 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Until(() => _title.CardStage == "Slots", 200, "the slots again")) yield return f;
         foreach (int f in Press("ps_cross")) yield return f;
         foreach (int f in Until(() => _title.Screen == "intro", 200, "the intro after Continue")) yield return f;
-        foreach (int f in Until(() => _title.Screen == "menu", TitleSequence.IntroPictureFrames + 10, "the unskipped intro to end")) yield return f;
-        foreach (int f in Until(() => _title.Screen == "attract", TitleSequence.IntroMusicFrames + TitleSequence.IdleFrames + 200, "the idle timeout")) yield return f;
+        if (_menuOnly)
+        {
+            Expect(_title.MenuSounds > 0, "the title menu played no sounds");
+            // Unlike the full check, this stops during active movie playback. Let the title's
+            // normal exit release its media resources before asking the engine to shut down.
+            _title.QueueFree();
+            yield return 2;
+            Finish(""); yield break;
+        }
+        foreach (int f in Until(() => _title.Screen == "menu", TitleFlow.IntroPictureFrames + 10, "the unskipped intro to end")) yield return f;
+        foreach (int f in Until(() => _title.Screen == "attract", TitleFlow.IntroMusicFrames + TitleFlow.IdleFrames + 200, "the idle timeout")) yield return f;
         foreach (int zone in new[] { 20, 2 })
         {
-            foreach (int f in Until(() => _title.Demo != null, TitleSequence.LeaveFrames + 10, "the field demo")) yield return f;
+            foreach (int f in Until(() => _title.Demo != null, TitleFlow.LeaveFrames + 10, "the field demo")) yield return f;
             Expect(_title.Demo!.Zone == zone && _title.Demo.Map == (zone == 20 ? 0 : 1), "the idle demos did not alternate in retail order");
             Expect(_title.Demo.Flags[13] == 1 && _title.Demo.Flags[14] == 1, "the field demo flags were not set");
             GD.Print($"TITLE: retail demo {zone},{_title.Demo.Map} started");
@@ -254,10 +268,10 @@ public partial class TitleSequenceContracts : Node
             foreach (int f in Until(() => _title.Screen == "intro", 60 * 600, "the field demo to finish without input")) yield return f;
             Expect(_title.Demo == null, "the demo field survived its return to the title");
             GD.Print($"TITLE: retail demo {zone} completed without input");
-            foreach (int f in Until(() => _title.Screen == "menu", TitleSequence.IntroPictureFrames + 10, "the intro after the demo")) yield return f;
-            foreach (int f in Until(() => _title.Screen == "attract", TitleSequence.IntroMusicFrames + TitleSequence.IdleFrames + 200, "the next idle demo")) yield return f;
+            foreach (int f in Until(() => _title.Screen == "menu", TitleFlow.IntroPictureFrames + 10, "the intro after the demo")) yield return f;
+            foreach (int f in Until(() => _title.Screen == "attract", TitleFlow.IntroMusicFrames + TitleFlow.IdleFrames + 200, "the next idle demo")) yield return f;
         }
-        foreach (int f in Until(() => _title.Demo != null, TitleSequence.LeaveFrames + 10, "the interruptible demo")) yield return f;
+        foreach (int f in Until(() => _title.Demo != null, TitleFlow.LeaveFrames + 10, "the interruptible demo")) yield return f;
         foreach (int f in Press("ps_l1")) yield return f;
         foreach (int f in Until(() => _title.Screen == "intro", 10, "a shoulder button to leave the demo")) yield return f;
         Expect(!_screens.GetRange(1, _screens.Count - 1).Contains("publisher"), "the logos played again after the first title visit");
@@ -266,12 +280,12 @@ public partial class TitleSequenceContracts : Node
         foreach (int f in Press("ps_start")) yield return f;
         foreach (int f in Until(() => _title.Screen == "menu", 10, "the title screen")) yield return f;
         yield return 200;
-        Expect(_title.SelectedItem == TitleMenu.NewGame, "the title did not return to New Game");
+        Expect(_title.SelectedItem == TitleMenuState.NewGame, "the title did not return to New Game");
         Capture("10_new_game");
         foreach (int f in Press("ps_circle")) yield return f;
         foreach (int f in Until(() => _title.Screen == "new_game", 10, "New Game")) yield return f;
         Expect(!_title.MusicPlaying, "New Game must stop the title music");
-        foreach (int f in Until(() => _title.Screen == "field", TitleSequence.LeaveFrames + 10, "the opening field")) yield return f;
+        foreach (int f in Until(() => _title.Screen == "field", TitleFlow.LeaveFrames + 10, "the opening field")) yield return f;
         var scenes = GetNode<SceneManager>("/root/SceneManager");
         Expect(scenes.IsTransitioning, "New Game did not start the scene change");
         // While the field loads, retail's own NOW LOADING picture is to show (the scene change then replaces this scene).

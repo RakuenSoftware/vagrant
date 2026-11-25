@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using Godot;
+using Wol.Games.Vagrant.Title;
 using Wol.Games.Vagrant.Runtime;
 using Wol.Games.Vagrant.Scenes.Field;
 
@@ -400,7 +401,7 @@ public partial class FieldContracts : Node
                     }
                     if (!_clearResume) { Finish(""); return; }
                     if (!_clearSaved) { Finish("the earned ending skipped its cleared-game SAVE screens"); return; }
-                    if (_titleFrames % 30 == 0) Input.ActionPress(title.SelectedItem == Wol.Games.Vagrant.Scenes.Title.TitleMenu.Continue ? "ps_circle" : "ps_down");
+                    if (_titleFrames % 30 == 0) Input.ActionPress(title.SelectedItem == TitleMenuState.Continue ? "ps_circle" : "ps_down");
                     return;
                 }
                 if (_clearResume && title.Screen == "continue")
